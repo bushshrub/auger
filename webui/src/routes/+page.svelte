@@ -11,12 +11,17 @@
 	let draft = $state('');
 
 	/**
+	 * @typedef {{ tokens?: number|null, ttftMs?: number|null, tps?: number|null }} MsgMeta
 	 * @typedef {{ kind: 'user'|'assistant'|'tool'|'error', text?: string,
 	 *   toolName?: string, toolId?: string, args?: any, result?: any,
-	 *   decided?: 'approved'|'denied' }} ChatItem
+	 *   decided?: 'approved'|'denied', meta?: MsgMeta }} ChatItem
 	 */
 	let items = $state(/** @type {ChatItem[]} */ ([]));
 	let pending = $state(/** @type {{ toolId: string, name: string, args: any } | null} */ (null));
+
+	// context usage (latest known)
+	let ctxUsed = $state(0);
+	let ctxWindow = $state(0);
 
 	let assistantIdx = -1; // index of the assistant bubble currently being streamed
 	/** @type {AbortController | null} */
@@ -32,6 +37,7 @@
 		status = 'connecting';
 		try {
 			session = await createSession(model.trim() || undefined);
+			ctxWindow = session.context_window;
 			sub = subscribeEvents(session.session_id, session.owner_token, onEvent, (err) => {
 				items.push({ kind: 'error', text: `stream: ${err.message}` });
 				status = 'error';
@@ -52,6 +58,7 @@
 					assistantIdx = items.length - 1;
 				}
 				items[assistantIdx].text = (items[assistantIdx].text ?? '') + ev.data.text;
+				ctxUsed += approxTokens(ev.data.text); // live estimate; corrected by metrics
 				break;
 			}
 			case 'tool_call':
@@ -69,6 +76,22 @@
 				const t = items.find((i) => i.kind === 'tool' && i.toolId === ev.data.id);
 				if (t) t.result = ev.data.content;
 				assistantIdx = -1;
+				break;
+			}
+			case 'metrics': {
+				const m = ev.data;
+				if (m.context_window) ctxWindow = m.context_window;
+				// snap live estimate to the server's authoritative count
+				if (m.total_tokens != null) ctxUsed = m.total_tokens;
+				else if (m.prompt_tokens != null && m.completion_tokens != null)
+					ctxUsed = m.prompt_tokens + m.completion_tokens;
+				if (assistantIdx !== -1) {
+					items[assistantIdx].meta = {
+						tokens: m.completion_tokens,
+						ttftMs: m.ttft_ms,
+						tps: m.tokens_per_sec
+					};
+				}
 				break;
 			}
 			case 'turn_complete':
@@ -90,6 +113,7 @@
 		if (!text || !session || status !== 'idle') return;
 		draft = '';
 		items.push({ kind: 'user', text });
+		ctxUsed += approxTokens(text); // live estimate; corrected by metrics
 		assistantIdx = -1;
 		status = 'running';
 		scroll();
@@ -126,6 +150,23 @@
 
 	/** @param {any} v */
 	const pretty = (v) => (typeof v === 'string' ? v : JSON.stringify(v, null, 2));
+
+	/** @param {number} n */
+	const fmtInt = (n) => n.toLocaleString('en-US');
+
+	/** Rough client-side token estimate (~4 chars/token) for live bar fill. */
+	const approxTokens = (/** @type {string} */ s) => Math.ceil(s.length / 4);
+
+	let ctxPct = $derived(ctxWindow > 0 ? Math.min(100, (ctxUsed / ctxWindow) * 100) : 0);
+
+	/** @param {MsgMeta} m */
+	function metaLine(m) {
+		const parts = [];
+		if (m.tokens != null) parts.push(`${fmtInt(m.tokens)} tok`);
+		if (m.tps != null) parts.push(`${m.tps.toFixed(1)} tok/s`);
+		if (m.ttftMs != null) parts.push(`TTFT ${fmtInt(Math.round(m.ttftMs))} ms`);
+		return parts.join(' · ');
+	}
 </script>
 
 <div class="app">
@@ -146,6 +187,14 @@
 			</button>
 		</div>
 	{:else}
+		<div class="ctx" title="{fmtInt(ctxUsed)} / {ctxWindow ? fmtInt(ctxWindow) : '?'} context tokens">
+			<div class="ctx-meter" class:warn={ctxPct >= 75} class:full={ctxPct >= 90}>
+				<div class="ctx-fill" style="width: {ctxPct}%"></div>
+			</div>
+			<span class="ctx-label">
+				{fmtInt(ctxUsed)} / {ctxWindow ? fmtInt(ctxWindow) : '—'} tok ({Math.round(ctxPct)}%)
+			</span>
+		</div>
 		<div class="log" bind:this={log}>
 			{#each items as item}
 				{#if item.kind === 'user'}
@@ -154,6 +203,7 @@
 					<div class="msg assistant">
 						<!-- eslint-disable-next-line svelte/no-at-html-tags -->
 						<div class="bubble md">{@html renderMarkdown(item.text)}</div>
+						{#if item.meta}<div class="meta">{metaLine(item.meta)}</div>{/if}
 					</div>
 				{:else if item.kind === 'error'}
 					<div class="msg error"><div class="bubble">⚠ {item.text}</div></div>
@@ -237,6 +287,43 @@
 		font-family: ui-monospace, monospace;
 		font-size: 0.78rem;
 	}
+	.ctx {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.4rem 1rem;
+		border-bottom: 1px solid var(--border);
+	}
+	.ctx-meter {
+		flex: 1;
+		height: 6px;
+		border-radius: 999px;
+		background: var(--border);
+		overflow: hidden;
+	}
+	.ctx-fill {
+		height: 100%;
+		background: var(--accent);
+		transition: width 0.3s ease;
+	}
+	.ctx-meter.warn .ctx-fill {
+		background: #e0b341;
+	}
+	.ctx-meter.full .ctx-fill {
+		background: var(--error);
+	}
+	.ctx-label {
+		color: var(--muted);
+		font-size: 0.74rem;
+		font-family: ui-monospace, monospace;
+		white-space: nowrap;
+	}
+	.meta {
+		margin-top: 0.25rem;
+		color: var(--muted);
+		font-size: 0.72rem;
+		font-family: ui-monospace, monospace;
+	}
 	.connect {
 		margin: auto;
 		display: flex;
@@ -261,6 +348,10 @@
 	}
 	.msg.user {
 		justify-content: flex-end;
+	}
+	.msg.assistant {
+		flex-direction: column;
+		align-items: flex-start;
 	}
 	.bubble {
 		max-width: 80%;

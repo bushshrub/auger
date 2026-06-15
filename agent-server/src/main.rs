@@ -1,5 +1,7 @@
 mod agent;
+mod prompt;
 mod session;
+mod conversation;
 
 use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
@@ -17,6 +19,7 @@ use agent_tools::{ReadFile, Tool};
 use futures::stream;
 use provider::Provider;
 use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
+use prompt::SystemPrompt;
 use session::{
     ApproveRequest, CreateSessionRequest, CreateSessionResponse, Session,
     SessionStatus, UserInputRequest,
@@ -25,6 +28,7 @@ use tokio::{net::TcpListener, sync::RwLock};
 use uuid::Uuid;
 
 const DEFAULT_MODEL: &str = "gemma4-12b";
+const DEFAULT_CONTEXT_WINDOW: usize = 8192;
 const SYSTEM_PROMPT: &str = "You are a coding agent. Use tools to read, write, and run code.";
 
 #[derive(Clone)]
@@ -32,8 +36,9 @@ struct AppState {
     provider: Arc<dyn Provider + Send + Sync>,
     sessions: Arc<RwLock<HashMap<Uuid, Arc<Session>>>>,
     tools: Arc<Vec<Arc<dyn Tool>>>,
-    system_prompt: Arc<String>,
+    system_prompt: Arc<SystemPrompt>,
     default_model: String,
+    context_window: usize,
 }
 
 #[tokio::main]
@@ -51,13 +56,34 @@ async fn main() {
         provider,
         sessions: Arc::new(RwLock::new(HashMap::new())),
         tools: Arc::new(vec![Arc::new(ReadFile)]),
-        system_prompt: Arc::new(SYSTEM_PROMPT.to_string()),
+        system_prompt: Arc::new(SystemPrompt::new(SYSTEM_PROMPT)),
         default_model: std::env::var("MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
+        // Manual override wins; otherwise read the live context size from the
+        // server, falling back to a default if it can't be reached.
+        context_window: match std::env::var("CONTEXT_WINDOW").ok().and_then(|v| v.parse().ok()) {
+            Some(n) => n,
+            None => fetch_context_window(&base_url).await.unwrap_or(DEFAULT_CONTEXT_WINDOW),
+        },
     };
+    eprintln!("context window: {}", state.context_window);
 
     let listener = TcpListener::bind(&addr).await.expect("bind failed");
     eprintln!("agent-server listening on {addr}");
     axum::serve(listener, router(state)).await.expect("server error");
+}
+
+/// Read the loaded model's context size from the llama.cpp `/props` endpoint
+/// (`default_generation_settings.n_ctx`). `base_url` is the OpenAI-compatible
+/// base (e.g. `http://host:8081/v1`); `/props` lives at the server root.
+async fn fetch_context_window(base_url: &str) -> Option<usize> {
+    let root = base_url.trim_end_matches('/').trim_end_matches("/v1");
+    let url = format!("{root}/props");
+    let resp = reqwest::get(&url).await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    json.get("default_generation_settings")?
+        .get("n_ctx")?
+        .as_u64()
+        .map(|n| n as usize)
 }
 
 fn router(state: AppState) -> Router {
@@ -74,11 +100,12 @@ async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     let model = req.model.unwrap_or_else(|| state.default_model.clone());
-    let session = Session::new(Uuid::new_v4(), model);
+    let session = Session::new(Uuid::new_v4(), model, state.context_window);
     let resp = CreateSessionResponse {
         session_id: session.id,
         owner_token: session.owner_token.clone(),
         viewer_token: session.viewer_token.clone(),
+        context_window: session.context_window,
     };
     state.sessions.write().await.insert(session.id, session);
     Json(resp)

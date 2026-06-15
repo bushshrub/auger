@@ -16,6 +16,7 @@ const BASE = '/v1';
  * @property {string} session_id
  * @property {string} owner_token
  * @property {string} viewer_token
+ * @property {number} context_window
  */
 
 /**

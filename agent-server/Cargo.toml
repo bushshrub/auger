@@ -9,6 +9,7 @@ axum = { version = "0.8.9", features = ["macros"] }
 futures.workspace = true
 provider = { path = "../provider" }
 provider-openai-chatcompletions = { version = "0.1.0", path = "../provider-openai-chatcompletions" }
+reqwest.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["full"] }

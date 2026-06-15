@@ -235,7 +235,12 @@ impl Provider for OpenAiChatCompletionsProvider {
         &self,
         req: &ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamEvent, ProviderError>>, ProviderError> {
-        let oai_req = to_oai_request(req);
+        let mut oai_req = to_oai_request(req);
+        // Ask the server to emit a final usage chunk so we can report token counts.
+        oai_req.stream_options = Some(async_openai::types::chat::ChatCompletionStreamOptions {
+            include_usage: Some(true),
+            include_obfuscation: None,
+        });
         let client = self.client.clone();
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, ProviderError>>(64);
@@ -253,10 +258,19 @@ impl Provider for OpenAiChatCompletionsProvider {
             // index → (id, name, accumulated_args)
             let mut tc_acc: HashMap<u32, (String, String, String)> = HashMap::new();
             let mut finish_reason = ProviderFinishReason::Stop;
+            let mut usage: Option<Usage> = None;
 
             while let Some(chunk) = stream.next().await {
                 match chunk {
                     Ok(resp) => {
+                        // The final chunk (choices empty) carries request token usage.
+                        if let Some(u) = resp.usage {
+                            usage = Some(Usage {
+                                prompt_tokens: u.prompt_tokens as usize,
+                                completion_tokens: u.completion_tokens as usize,
+                                total_tokens: u.total_tokens as usize,
+                            });
+                        }
                         for choice in resp.choices {
                             if let Some(text) = choice.delta.content {
                                 full_content.push_str(&text);
@@ -303,7 +317,7 @@ impl Provider for OpenAiChatCompletionsProvider {
                 content: full_content,
                 tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
                 finish_reason,
-                usage: None,
+                usage,
             };
 
             let _ = tx.send(Ok(StreamEvent::Done(response))).await;

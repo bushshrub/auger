@@ -17,10 +17,14 @@ pub enum ToolError {
     Execution(String),
 }
 
+pub struct ToolDetails {
+    pub name: &'static str,
+    pub description: &'static str,
+}
+
 #[async_trait]
 pub trait Tool: Send + Sync {
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
+    fn details(&self) -> ToolDetails;
     /// JSON Schema describing the tool's arguments.
     fn parameters(&self) -> serde_json::Value;
     async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value, ToolError>;
