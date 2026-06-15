@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["provider", "provider-anthropic", "provider-openai-responses"]
+members = ["agent-server","agent-tools","provider", "provider-anthropic", "provider-openai-chatcompletions", "provider-openai-responses"]
 
 [workspace.dependencies]
 async-trait = "0.1.89"
@@ -9,4 +9,4 @@ serde_json = "1.0"
 futures = "0.3.32"
 thiserror = "2.0"
 reqwest = { version = "0.12", features = ["json", "stream"] }
-tokio = { version = "1", features = ["rt", "sync"] }
+tokio = { version = "1", features = ["fs", "rt", "sync"] }

@@ -2,6 +2,7 @@ pub mod types;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
+use serde::Serialize;
 use thiserror::Error;
 
 pub use types::*;
@@ -20,7 +21,8 @@ pub trait Provider {
 }
 
 /// Incremental events emitted during a streaming response.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum StreamEvent {
     /// A delta of assistant text content.
     Content(String),
