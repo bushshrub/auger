@@ -19,3 +19,8 @@ Design goals:
     - Sed commands `sed -n '{1,10}p'` are rewritten to `head -n 10`
     - Escaping of `"` and `\` characters in shell commands
   - Subagents (model customizable)
+
+## Clanker usage
+
+Clankers are allowed for prototyping and scaffolding.
+Don't use clankers to write documentation.
