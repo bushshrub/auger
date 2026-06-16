@@ -1,32 +1,25 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use axum::extract::{Path, State};
+use axum::{Json, Router};
+use axum::http::HeaderMap;
+use axum::response::IntoResponse;
+use axum::routing::{get, post};
+use serde_json::json;
+use tokio::net::TcpListener;
+use tokio::sync::RwLock;
+use uuid::Uuid;
+use agent_tools::{ReadFile, Tool};
+use provider::LlmProvider;
+use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
+use crate::server_types::{ApproveRequest, CreateSessionRequest, UserInputRequest};
+use crate::session::Session;
+
 mod agent;
-mod prompt;
 mod session;
 mod conversation;
 mod system_prompt;
-
-use std::{collections::HashMap, convert::Infallible, sync::Arc};
-
-use axum::{
-    Router,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode},
-    response::{
-        IntoResponse, Json,
-        sse::{Event, KeepAlive, Sse},
-    },
-    routing::{get, post},
-};
-use agent_tools::{ReadFile, Tool};
-use futures::stream;
-use provider::Provider;
-use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
-use prompt::SystemPrompt;
-use session::{
-    ApproveRequest, CreateSessionRequest, CreateSessionResponse, Session,
-    SessionStatus, UserInputRequest,
-};
-use tokio::{net::TcpListener, sync::RwLock};
-use uuid::Uuid;
+mod server_types;
 
 const DEFAULT_MODEL: &str = "gemma4-12b";
 const DEFAULT_CONTEXT_WINDOW: usize = 8192;
@@ -34,7 +27,8 @@ const SYSTEM_PROMPT: &str = "You are a coding agent. Use tools to read, write, a
 
 #[derive(Clone)]
 struct AppState {
-    provider: Arc<dyn Provider + Send + Sync>,
+    // TODO: support multiple providers
+    provider: Arc<dyn LlmProvider>,
     sessions: Arc<RwLock<HashMap<Uuid, Session>>>,
     tools: Arc<Vec<Arc<dyn Tool>>>,
     default_model: String
@@ -47,22 +41,15 @@ async fn main() {
         .unwrap_or_else(|_| "http://server-slop:8081/v1".to_string());
     let api_key = std::env::var("PROVIDER_API_KEY").unwrap_or_default();
 
-    let provider: Arc<dyn Provider + Send + Sync> = Arc::new(
+    let provider: Arc<dyn LlmProvider + Send + Sync> = Arc::new(
         OpenAiChatCompletionsProvider::with_config(&base_url, &api_key),
     );
 
     let state = AppState {
-        provider,
+        provider: Arc::clone(&provider),
         sessions: Arc::new(RwLock::new(HashMap::new())),
         tools: Arc::new(vec![Arc::new(ReadFile)]),
-        system_prompt: Arc::new(SystemPrompt::new(SYSTEM_PROMPT)),
         default_model: std::env::var("MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
-        // Manual override wins; otherwise read the live context size from the
-        // server, falling back to a default if it can't be reached.
-        context_window: match std::env::var("CONTEXT_WINDOW").ok().and_then(|v| v.parse().ok()) {
-            Some(n) => n,
-            None => fetch_context_window(&base_url).await.unwrap_or(DEFAULT_CONTEXT_WINDOW),
-        },
     };
 
     let listener = TcpListener::bind(&addr).await.expect("bind failed");
@@ -70,19 +57,6 @@ async fn main() {
     axum::serve(listener, router(state)).await.expect("server error");
 }
 
-/// Read the loaded model's context size from the llama.cpp `/props` endpoint
-/// (`default_generation_settings.n_ctx`). `base_url` is the OpenAI-compatible
-/// base (e.g. `http://host:8081/v1`); `/props` lives at the server root.
-async fn fetch_context_window(base_url: &str) -> Option<usize> {
-    let root = base_url.trim_end_matches('/').trim_end_matches("/v1");
-    let url = format!("{root}/props");
-    let resp = reqwest::get(&url).await.ok()?;
-    let json: serde_json::Value = resp.json().await.ok()?;
-    json.get("default_generation_settings")?
-        .get("n_ctx")?
-        .as_u64()
-        .map(|n| n as usize)
-}
 
 fn router(state: AppState) -> Router {
     Router::new()
@@ -93,140 +67,53 @@ fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Request to create a session
 async fn create_session(
     State(state): State<AppState>,
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
-    let model = req.model.unwrap_or_else(|| state.default_model.clone());
-    let session = Session::new(Uuid::new_v4(), model);
-    let resp = CreateSessionResponse {
-        session_id: session.id,
-        owner_token: session.owner_token.clone(),
-        viewer_token: session.viewer_token.clone(),
-        context_window: session.context_window,
-    };
-    state.sessions.write().await.insert(session.id, session);
-    Json(resp)
+    req.model.unwrap_or_else(|| DEFAULT_MODEL.into());
+    // TODO: customizable system prompt
+    let sys_prompt = SYSTEM_PROMPT.to_string();
+    let sess = Session::new(sys_prompt.into(), &state.provider);
+
+    let sess_id = sess.id();
+    state.sessions.write().await.insert(sess_id, sess);
+    // TODO: hardcoded json
+    // TODO: return read, write tokens
+    Json(json!({ "session_id": sess_id }))
 }
 
+/// Submit input to the clanker
 async fn send_input(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
     Json(req): Json<UserInputRequest>,
 ) -> impl IntoResponse {
-    let session = get_session(&state, id).await?;
+    let mut sess = state.sessions.read().await.get(&id).expect("session not found todo: better err handling").clone();
+    sess.user_send_message(req.input.into()).await.expect("failed to send input");
 
-    require_owner(&session, &headers)?;
-
-    {
-        let status = session.status.lock().await;
-        if *status != SessionStatus::Idle {
-            return Err((StatusCode::CONFLICT, "session is not idle"));
-        }
-    }
-
-    session.history.lock().await.push(provider::Message {
-        role: provider::Role::User,
-        content: req.content,
-        tool_calls: None,
-        tool_call_id: None,
-    });
-
-    let session_arc = Arc::clone(&session);
-    let provider = Arc::clone(&state.provider);
-    let tools = Arc::clone(&state.tools);
-    let system_prompt = Arc::clone(&state.system_prompt);
-    tokio::spawn(async move {
-        agent::run(session_arc, provider, tools, system_prompt).await;
-    });
-
-    Ok(StatusCode::ACCEPTED)
+    // TODO: bad return type
+    Ok(Json(json!({ "message": sess })))
 }
 
+/// Approve the usage of a tool
 async fn approve_tool(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
     Json(req): Json<ApproveRequest>,
 ) -> impl IntoResponse {
-    let session = get_session(&state, id).await?;
-
-    require_owner(&session, &headers)?;
-
-    let pending = session.pending_approval.lock().await.take();
-    match pending {
-        None => Err((StatusCode::CONFLICT, "no tool call pending approval")),
-        Some(p) if p.tool_call_id != req.tool_call_id => {
-            // put it back — wrong id
-            *session.pending_approval.lock().await = Some(p);
-            Err((StatusCode::UNPROCESSABLE_ENTITY, "tool_call_id mismatch"))
-        }
-        Some(p) => {
-            let _ = p.tx.send(req.approved);
-            Ok(StatusCode::OK)
-        }
-    }
+    todo!()
 }
 
+/// Get a stream of events for a session, including LLM responses and user events.
 async fn event_stream(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let session = get_session(&state, id).await.map_err(IntoResponse::into_response)?;
-
-    let token = bearer_token(&headers).unwrap_or_default();
-    if !session.can_view(token) {
-        return Err((StatusCode::UNAUTHORIZED, "invalid token").into_response());
-    }
-
-    let rx = session.events.subscribe();
-    let sse = stream::unfold(rx, |mut rx| async move {
-        match rx.recv().await {
-            Ok(event) => {
-                let data = serde_json::to_string(&event).unwrap_or_default();
-                Some((Ok::<_, Infallible>(Event::default().data(data)), rx))
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                let data = format!(r#"{{"type":"lagged","missed":{n}}}"#);
-                Some((Ok(Event::default().data(data)), rx))
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
-        }
-    });
-
-    Ok(Sse::new(sse).keep_alive(KeepAlive::default()).into_response())
+    todo!()
 }
 
-// --- helpers ---
-
-async fn get_session(
-    state: &AppState,
-    id: Uuid,
-) -> Result<Arc<Session>, (StatusCode, &'static str)> {
-    state
-        .sessions
-        .read()
-        .await
-        .get(&id)
-        .cloned()
-        .ok_or((StatusCode::NOT_FOUND, "session not found"))
-}
-
-fn require_owner(
-    session: &Session,
-    headers: &HeaderMap,
-) -> Result<(), (StatusCode, &'static str)> {
-    match bearer_token(headers) {
-        Some(t) if session.is_owner(t) => Ok(()),
-        _ => Err((StatusCode::UNAUTHORIZED, "owner token required")),
-    }
-}
-
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-}

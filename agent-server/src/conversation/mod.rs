@@ -5,7 +5,7 @@ pub use user::{UserTurn, UserContent};
 pub use clanker::ClankerTurn;
 
 
-/// The System prompt
+/// The system prompt
 pub struct SystemMessage(Vec<String>);
 
 

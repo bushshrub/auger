@@ -1,7 +1,8 @@
 use std::pin::Pin;
 use futures_core::Stream;
-use crate::tool::ToolCall;
+use crate::types::ToolCall;
 
+/// Token usage details
 #[derive(Debug, Clone)]
 pub struct TokenUsage {
     pub prompt_tokens: Option<i32>,
@@ -11,6 +12,7 @@ pub struct TokenUsage {
     pub cache_creation_tokens: Option<i32>,
 }
 
+/// Events that can be emitted while streaming a response from the clanker.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     Text(String),
@@ -23,6 +25,7 @@ pub enum StreamEvent {
         /// Incomplete arguments
         arguments: String,
     },
+    /// Clanker is done clanking.
     Done {
         usage: Option<TokenUsage>,
         stop_reason: Option<String>,
@@ -31,8 +34,11 @@ pub enum StreamEvent {
 
 #[derive(Debug, Clone)]
 pub struct LlmResponse {
+    // TODO: include thinking
     pub content: String,
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// Token usage details after this response is complete.
+    /// May be None if the provider doesn't expose token usage details
     pub usage: Option<TokenUsage>,
     pub stop_reason: Option<String>,
 }

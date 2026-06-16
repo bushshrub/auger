@@ -2,7 +2,7 @@ use std::sync::{mpsc, Arc};
 use axum::response::sse::Event;
 use tokio::sync::broadcast;
 use uuid::Uuid;
-use provider::Provider;
+use provider::{LlmProvider};
 use crate::conversation::{Conversation, UserContent};
 use crate::system_prompt::SystemPrompt;
 
@@ -17,12 +17,12 @@ pub struct Session {
     id: Uuid,
     conversation: Conversation,
     status: SessionStatus,
-    provider: Arc<dyn Provider>,
+    /// The provider of the clanker
+    provider: Arc<dyn LlmProvider>,
 }
 
 pub enum AgentEvent {
     UserMessage { content: Vec<UserContent> },
-
     Reasoning { delta: String },
     Content { delta: String }
 }
@@ -40,11 +40,12 @@ enum Cmd {
 impl Session {
 
     /// Start a new session
-    pub fn new(prompt: SystemPrompt, provider: &Arc<dyn Provider>) -> Self {
+    pub fn new(prompt: SystemPrompt, provider: &Arc<dyn LlmProvider>) -> Self {
         let id = Uuid::new_v4();
         let conversation = Conversation::new(prompt.into());
+        let status = SessionStatus::Idle;
         Self {
-            id, conversation, provider: Arc::clone(provider),
+            id, conversation, status, provider: Arc::clone(provider),
         }
     }
 
@@ -52,7 +53,7 @@ impl Session {
         todo!()
     }
 
-    pub fn id(&self) -> String {
-        self.id.to_string()
+    pub fn id(&self) -> Uuid {
+        self.id.clone()
     }
 }

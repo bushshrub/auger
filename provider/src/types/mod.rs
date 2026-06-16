@@ -1,6 +1,7 @@
 mod request;
 mod response;
-pub mod tool;
+mod tool;
 
 pub use request::*;
 pub use response::*;
+pub use tool::*;
