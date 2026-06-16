@@ -23,6 +23,7 @@ name = "agent-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "json-schema-derive",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -945,6 +946,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "json-schema-derive"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91df1c9902aca0e708752319c1a0caa7496ee28c634a2aec60b96537c2339075"
+dependencies = [
+ "json-schema-derive-macro",
+ "serde_json",
+]
+
+[[package]]
+name = "json-schema-derive-macro"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21ceb059759ae7dcb65d06a3e29d078e8caf17206d447d5626a0ee541fff5cf3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1194,22 +1216,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
+ "futures-core",
  "serde",
  "serde_json",
  "thiserror",
-]
-
-[[package]]
-name = "provider-anthropic"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures",
- "provider",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -1217,19 +1227,6 @@ name = "provider-openai-chatcompletions"
 version = "0.1.0"
 dependencies = [
  "async-openai",
- "async-trait",
- "futures",
- "provider",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "provider-openai-responses"
-version = "0.1.0"
-dependencies = [
  "async-trait",
  "futures",
  "provider",

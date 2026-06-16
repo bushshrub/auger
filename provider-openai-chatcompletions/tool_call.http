@@ -1,0 +1,97 @@
+###
+POST http://server-slop:8081/v1/chat/completions
+Content-Type: application/json
+
+{
+  "model": "gemma4-12b",
+  "stream": true,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the current weather in a location",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {
+              "type": "string",
+              "description": "The city and state, e.g. San Francisco, CA"
+            }
+          },
+          "required": ["location"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_time",
+        "description": "Get the current time in a timezone",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "timezone": {
+              "type": "string",
+              "description": "The timezone, e.g. America/New_York"
+            }
+          },
+          "required": ["timezone"]
+        }
+      }
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Tokyo and what time is it in New York?"
+    }
+  ]
+}
+
+###
+
+POST http://server-slop:8081/v1/messages
+Content-Type: application/json
+
+{
+  "model": "gemma4-12b",
+  "max_tokens": 1024,
+  "stream": true,
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get the current weather in a location",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "The city and state, e.g. San Francisco, CA"
+          }
+        },
+        "required": ["location"]
+      }
+    },
+    {
+      "name": "get_time",
+      "description": "Get the current time in a timezone",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "timezone": {
+            "type": "string",
+            "description": "The timezone, e.g. America/New_York"
+          }
+        },
+        "required": ["timezone"]
+      }
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in Tokyo and what time is it in New York?"
+    }
+  ]
+}

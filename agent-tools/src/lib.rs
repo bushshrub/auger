@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 pub use read::ReadFile;
-pub use web_fetch::WebFetch;
+// pub use web_fetch::WebFetch;
 
 #[derive(Debug, Error)]
 pub enum ToolError {
@@ -17,15 +17,20 @@ pub enum ToolError {
     Execution(String),
 }
 
+/// Details of a tool that the clanker should know about.
 pub struct ToolDetails {
+    /// Name of the tool, will be given to the clanker.
     pub name: &'static str,
+    /// Description of the tool, will be given to the clanker.
     pub description: &'static str,
 }
+
+pub struct JsonSchema(serde_json::Value);
 
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn details(&self) -> ToolDetails;
     /// JSON Schema describing the tool's arguments.
-    fn parameters(&self) -> serde_json::Value;
+    fn parameters(&self) -> JsonSchema;
     async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value, ToolError>;
 }

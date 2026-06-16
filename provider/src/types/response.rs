@@ -1,34 +1,41 @@
-use serde::{Deserialize, Serialize};
+use std::pin::Pin;
+use futures_core::Stream;
+use crate::tool::ToolCall;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: String,
+#[derive(Debug, Clone)]
+pub struct TokenUsage {
+    pub prompt_tokens: Option<i32>,
+    pub completion_tokens: Option<i32>,
+    pub total_tokens: Option<i32>,
+    pub cached_tokens: Option<i32>,
+    pub cache_creation_tokens: Option<i32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FinishReason {
-    Stop,
-    Length,
-    ToolCalls,
-    Error,
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    Text(String),
+    /// Thinking output from clanker
+    Reasoning(String),
+    /// Tool call delta from clanker.
+    ToolCall {
+        id: String,
+        name: String,
+        /// Incomplete arguments
+        arguments: String,
+    },
+    Done {
+        usage: Option<TokenUsage>,
+        stop_reason: Option<String>,
+    },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Usage {
-    pub prompt_tokens: usize,
-    pub completion_tokens: usize,
-    pub total_tokens: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatResponse {
+#[derive(Debug, Clone)]
+pub struct LlmResponse {
     pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
-    pub finish_reason: FinishReason,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<Usage>,
+    pub usage: Option<TokenUsage>,
+    pub stop_reason: Option<String>,
 }
+
+pub struct LlmError {}
+pub type LlmStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, LlmError>> + Send>>;

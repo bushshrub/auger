@@ -2,6 +2,7 @@ mod agent;
 mod prompt;
 mod session;
 mod conversation;
+mod system_prompt;
 
 use std::{collections::HashMap, convert::Infallible, sync::Arc};
 
@@ -34,11 +35,9 @@ const SYSTEM_PROMPT: &str = "You are a coding agent. Use tools to read, write, a
 #[derive(Clone)]
 struct AppState {
     provider: Arc<dyn Provider + Send + Sync>,
-    sessions: Arc<RwLock<HashMap<Uuid, Arc<Session>>>>,
+    sessions: Arc<RwLock<HashMap<Uuid, Session>>>,
     tools: Arc<Vec<Arc<dyn Tool>>>,
-    system_prompt: Arc<SystemPrompt>,
-    default_model: String,
-    context_window: usize,
+    default_model: String
 }
 
 #[tokio::main]
@@ -65,7 +64,6 @@ async fn main() {
             None => fetch_context_window(&base_url).await.unwrap_or(DEFAULT_CONTEXT_WINDOW),
         },
     };
-    eprintln!("context window: {}", state.context_window);
 
     let listener = TcpListener::bind(&addr).await.expect("bind failed");
     eprintln!("agent-server listening on {addr}");
@@ -100,7 +98,7 @@ async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     let model = req.model.unwrap_or_else(|| state.default_model.clone());
-    let session = Session::new(Uuid::new_v4(), model, state.context_window);
+    let session = Session::new(Uuid::new_v4(), model);
     let resp = CreateSessionResponse {
         session_id: session.id,
         owner_token: session.owner_token.clone(),
