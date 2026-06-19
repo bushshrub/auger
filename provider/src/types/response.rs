@@ -1,5 +1,6 @@
 use std::pin::Pin;
 use futures_core::Stream;
+use thiserror::Error;
 use crate::types::ToolCall;
 
 /// Token usage details
@@ -43,6 +44,16 @@ pub struct LlmResponse {
     pub stop_reason: Option<String>,
 }
 
-pub struct LlmError {}
+#[derive(Error, Debug, Clone)]
+pub struct LlmError {
+    pub message: String,
+}
+
+impl std::fmt::Display for LlmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
 /// Stream of events from the LLM. You can either get StreamEvents, or Errors.
 pub type LlmStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, LlmError>> + Send>>;

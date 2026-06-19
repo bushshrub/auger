@@ -41,7 +41,7 @@ async fn main() {
         .unwrap_or_else(|_| "http://server-slop:8081/v1".to_string());
     let api_key = std::env::var("PROVIDER_API_KEY").unwrap_or_default();
 
-    let provider = Arc::new(OpenAiChatCompletionsProvider::new());
+    let provider = Arc::new(OpenAiChatCompletionsProvider::new(api_key, base_url));
 
     let state = AppState {
         provider: Arc::clone(&provider),
