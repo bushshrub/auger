@@ -2,7 +2,5 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/provider-anthropic" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/provider-openai-responses" vcs="Git" />
   </component>
 </project>

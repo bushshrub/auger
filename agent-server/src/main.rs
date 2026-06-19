@@ -13,9 +13,9 @@ use agent_tools::{ReadFile, Tool};
 use provider::LlmProvider;
 use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
 use crate::server_types::{ApproveRequest, CreateSessionRequest, UserInputRequest};
-use crate::session::Session;
+use crate::session::{Session, SessionHandle};
 
-mod agent;
+
 mod session;
 mod conversation;
 mod system_prompt;
@@ -28,8 +28,8 @@ const SYSTEM_PROMPT: &str = "You are a coding agent. Use tools to read, write, a
 #[derive(Clone)]
 struct AppState {
     // TODO: support multiple providers
-    provider: Arc<dyn LlmProvider>,
-    sessions: Arc<RwLock<HashMap<Uuid, Session>>>,
+    provider: Arc<OpenAiChatCompletionsProvider>,
+    sessions: Arc<RwLock<HashMap<Uuid, SessionHandle>>>,
     tools: Arc<Vec<Arc<dyn Tool>>>,
     default_model: String
 }
@@ -41,9 +41,7 @@ async fn main() {
         .unwrap_or_else(|_| "http://server-slop:8081/v1".to_string());
     let api_key = std::env::var("PROVIDER_API_KEY").unwrap_or_default();
 
-    let provider: Arc<dyn LlmProvider + Send + Sync> = Arc::new(
-        OpenAiChatCompletionsProvider::with_config(&base_url, &api_key),
-    );
+    let provider = Arc::new(OpenAiChatCompletionsProvider::new());
 
     let state = AppState {
         provider: Arc::clone(&provider),
@@ -60,60 +58,59 @@ async fn main() {
 
 fn router(state: AppState) -> Router {
     Router::new()
-        .route("/v1/sessions", post(create_session))
-        .route("/v1/sessions/{id}/input", post(send_input))
-        .route("/v1/sessions/{id}/approve", post(approve_tool))
-        .route("/v1/sessions/{id}/events", get(event_stream))
+        // .route("/v1/sessions", post(create_session))
+        // .route("/v1/sessions/{id}/input", post(send_input))
+        // .route("/v1/sessions/{id}/approve", post(approve_tool))
+        // .route("/v1/sessions/{id}/events", get(event_stream))
         .with_state(state)
 }
 
-/// Request to create a session
-async fn create_session(
-    State(state): State<AppState>,
-    Json(req): Json<CreateSessionRequest>,
-) -> impl IntoResponse {
-    req.model.unwrap_or_else(|| DEFAULT_MODEL.into());
-    // TODO: customizable system prompt
-    let sys_prompt = SYSTEM_PROMPT.to_string();
-    let sess = Session::new(sys_prompt.into(), &state.provider);
+// /// Request to create a session
+// async fn create_session(
+//     State(state): State<AppState>,
+//     Json(req): Json<CreateSessionRequest>,
+// ) -> impl IntoResponse {
+//     req.model.unwrap_or_else(|| DEFAULT_MODEL.into());
+//     // TODO: customizable system prompt
+//     let sys_prompt = SYSTEM_PROMPT.to_string();
+//     todo!();
 
-    let sess_id = sess.id();
-    state.sessions.write().await.insert(sess_id, sess);
-    // TODO: hardcoded json
-    // TODO: return read, write tokens
-    Json(json!({ "session_id": sess_id }))
-}
+//     let sess_id = sess.id();
+//     state.sessions.write().await.insert(sess_id, sess);
+//     // TODO: hardcoded json
+//     // TODO: return read, write tokens
+//     Json(json!({ "session_id": sess_id }))
+// }
 
-/// Submit input to the clanker
-async fn send_input(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    headers: HeaderMap,
-    Json(req): Json<UserInputRequest>,
-) -> impl IntoResponse {
-    let mut sess = state.sessions.read().await.get(&id).expect("session not found todo: better err handling").clone();
-    sess.user_send_message(req.input.into()).await.expect("failed to send input");
+// /// Submit input to the clanker
+// async fn send_input(
+//     State(state): State<AppState>,
+//     Path(id): Path<Uuid>,
+//     headers: HeaderMap,
+//     Json(req): Json<UserInputRequest>,
+// ) -> impl IntoResponse {
+//     let mut sess = state.sessions.read().await.get(&id).expect("session not found todo: better err handling").clone();
+//     // sess.send_message(req.input.into()).await.expect("failed to send input");
 
-    // TODO: bad return type
-    Ok(Json(json!({ "message": sess })))
-}
+//     // TODO: bad return type
+//     Ok(Json(json!({ "message": sess })))
+// }
 
-/// Approve the usage of a tool
-async fn approve_tool(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    headers: HeaderMap,
-    Json(req): Json<ApproveRequest>,
-) -> impl IntoResponse {
-    todo!()
-}
+// /// Approve the usage of a tool
+// async fn approve_tool(
+//     State(state): State<AppState>,
+//     Path(id): Path<Uuid>,
+//     headers: HeaderMap,
+//     Json(req): Json<ApproveRequest>,
+// ) -> impl IntoResponse {
+//     todo!()
+// }
 
-/// Get a stream of events for a session, including LLM responses and user events.
-async fn event_stream(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    todo!()
-}
-
+// /// Get a stream of events for a session, including LLM responses and user events.
+// async fn event_stream(
+//     State(state): State<AppState>,
+//     Path(id): Path<Uuid>,
+//     headers: HeaderMap,
+// ) -> impl IntoResponse {
+//     todo!()
+// }

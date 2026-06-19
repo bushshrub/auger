@@ -44,4 +44,5 @@ pub struct LlmResponse {
 }
 
 pub struct LlmError {}
+/// Stream of events from the LLM. You can either get StreamEvents, or Errors.
 pub type LlmStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, LlmError>> + Send>>;
