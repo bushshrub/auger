@@ -76,7 +76,6 @@ impl Session {
                         messages: vec![provider::Message::User(user_text)],
                         tools: vec![],
                     };
-                    debug!("Sending request to provider: {:#?}", request);
                     if let Ok(mut stream) = self.provider.stream(request).await {
                         while let Some(event_result) = stream.next().await {
                             match event_result {
@@ -91,7 +90,10 @@ impl Session {
                                 Ok(provider::StreamEvent::ToolCall { .. }) => {
                                     // TODO: handle tool calls
                                 }
-                                Ok(provider::StreamEvent::Done { .. }) => break,
+                                Ok(provider::StreamEvent::Done { .. }) => {
+                                    debug!("Response has finished generating");
+                                    let _ = self.events.send(AgentEvent::Done);
+                                },
                                 // TODO: Handle errors while streaming e.g. rate limit, connection drops.
                                 Err(_) => break,
                             }

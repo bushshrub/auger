@@ -15,6 +15,8 @@ pub(crate) enum AgentEvent {
     UserMessage { content: Vec<UserContent> },
     Reasoning { delta: String },
     Content { delta: String },
+    /// The agent has finished responding and will not send any more events.
+    Done
 }
 
 impl From<Vec<UserContent>> for AgentEvent {

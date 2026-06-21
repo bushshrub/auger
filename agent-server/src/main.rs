@@ -25,7 +25,7 @@ mod conversation;
 mod system_prompt;
 mod server_types;
 
-const DEFAULT_MODEL: &str = "gemma4-12b";
+const DEFAULT_MODEL: &str = "qwen3.6-27b";
 const DEFAULT_CONTEXT_WINDOW: usize = 8192;
 const SYSTEM_PROMPT: &str = "You are a coding agent. Use tools to read, write, and run code.";
 
