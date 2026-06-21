@@ -16,9 +16,10 @@ pub struct TokenUsage {
 /// Events that can be emitted while streaming a response from the clanker.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
-    Text(String),
+
+    TextDelta(String),
     /// Thinking output from clanker
-    Reasoning(String),
+    ReasoningDelta(String),
     /// Tool call delta from clanker.
     ToolCall {
         id: String,

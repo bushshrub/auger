@@ -34,6 +34,4 @@ impl Conversation {
         }
     }
 
-
-
 }

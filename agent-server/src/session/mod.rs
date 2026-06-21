@@ -79,11 +79,11 @@ impl Session {
                     if let Ok(mut stream) = self.provider.stream(request).await {
                         while let Some(event_result) = stream.next().await {
                             match event_result {
-                                Ok(provider::StreamEvent::Text(text)) => {
+                                Ok(provider::StreamEvent::TextDelta(text)) => {
                                     trace!("text delta: {}", text);
                                     let _ = self.events.send(SessionEvent::Content { delta: text });
                                 }
-                                Ok(provider::StreamEvent::Reasoning(text)) => {
+                                Ok(provider::StreamEvent::ReasoningDelta(text)) => {
                                     trace!("reasoning delta: {}", text);
                                     let _ = self.events.send(SessionEvent::Reasoning { delta: text });
                                 }

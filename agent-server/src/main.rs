@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use axum::extract::{Path, State};
-use axum::{Json, Router};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Sse};
+use axum::extract::{Path, Request, State};
+use axum::{middleware, Json, Router};
+use axum::http::StatusCode;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response, Sse};
 use axum::routing::{get, post};
+use axum::Extension;
 use futures::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use serde_json::json;
@@ -13,8 +15,6 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 use uuid::Uuid;
 use agent_tools::{ReadFile, Tool};
-use provider::LlmProvider;
-use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
 use provider_openai_responses::OpenAiResponsesProvider;
 use session::handle::SessionHandle;
 use crate::server_types::{ApproveRequest, CreateSessionRequest, UserInputRequest};
@@ -37,6 +37,48 @@ struct AppState {
     sessions: Arc<RwLock<HashMap<Uuid, SessionHandle>>>,
     tools: Arc<Vec<Arc<dyn Tool>>>,
     default_model: String
+}
+
+async fn write_auth(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let token = match request.headers().get("Authorization") {
+        Some(v) => v.to_str().unwrap_or_default().strip_prefix("Bearer ").unwrap_or_default().to_owned(),
+        None => return (StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response(),
+    };
+    let handle = match state.sessions.read().await.get(&id).cloned() {
+        Some(h) => h,
+        None => return (StatusCode::NOT_FOUND, "Session not found").into_response(),
+    };
+    if token != handle.write_token.to_string() {
+        return (StatusCode::UNAUTHORIZED, "Invalid write token").into_response();
+    }
+    request.extensions_mut().insert(handle);
+    next.run(request).await
+}
+
+async fn read_auth(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let token = match request.headers().get("Authorization") {
+        Some(v) => v.to_str().unwrap_or_default().strip_prefix("Bearer ").unwrap_or_default().to_owned(),
+        None => return (StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response(),
+    };
+    let handle = match state.sessions.read().await.get(&id).cloned() {
+        Some(h) => h,
+        None => return (StatusCode::NOT_FOUND, "Session not found").into_response(),
+    };
+    if token != handle.read_token.to_string() && token != handle.write_token.to_string() {
+        return (StatusCode::UNAUTHORIZED, "Invalid read token").into_response();
+    }
+    request.extensions_mut().insert(handle);
+    next.run(request).await
 }
 
 #[tokio::main]
@@ -66,11 +108,19 @@ async fn main() {
 
 
 fn router(state: AppState) -> Router {
+    let write_routes = Router::new()
+        .route("/sessions/{id}/input", post(send_input))
+        .route("/sessions/{id}/tool", post(response_to_tool_call))
+        .route_layer(middleware::from_fn_with_state(state.clone(), write_auth));
+
+    let read_routes = Router::new()
+        .route("/sessions/{id}/events", get(event_stream))
+        .route_layer(middleware::from_fn_with_state(state.clone(), read_auth));
+
     Router::new()
         .route("/sessions", post(create_session))
-        .route("/sessions/{id}/input", post(send_input))
-        .route("/sessions/{id}/events", get(event_stream))
-        .route("/sessions/{id}/tool", post(response_to_tool_call))
+        .merge(write_routes)
+        .merge(read_routes)
         .with_state(state)
 }
 
@@ -93,93 +143,38 @@ async fn create_session(
 }
 
 /// Submit input to the clanker
-#[tracing::instrument(skip(state, headers, req))]
+#[tracing::instrument(skip(session_handle, req))]
 async fn send_input(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    headers: HeaderMap,
+    Extension(session_handle): Extension<SessionHandle>,
     Json(req): Json<UserInputRequest>,
 ) -> impl IntoResponse {
-    let session_handle = {
-        let sessions = state.sessions.read().await;
-        match sessions.get(&id) {
-            Some(handle) => {
-                debug!("Session found");
-                handle.clone()
-            },
-            None => return Err((StatusCode::NOT_FOUND, "Session not found").into_response())
-        }
-    };
-    let write_token = match headers.get("Authorization") {
-        Some(token) => token.to_str().unwrap().strip_prefix("Bearer ").unwrap_or_default(),
-        None => return Err((StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response())
-    };
-    if write_token != session_handle.write_token.to_string() {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid write token").into_response());
-    }
     debug!("Enqueued message: '{}'", req.input);
     session_handle.enqueue(vec![req.input.into()]).await.expect("closed");
 
     // TODO: bad return type
-    Ok(Json(json!({ "status": "ok" })))
+    Json(json!({ "status": "ok" }))
 }
 
 /// Response to a tool call
 async fn response_to_tool_call(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    headers: HeaderMap,
+    Extension(session_handle): Extension<SessionHandle>,
     Json(req): Json<ApproveRequest>,
 ) -> impl IntoResponse {
-    let session_handle = {
-        let sessions = state.sessions.read().await;
-        debug!("Looking up session {id}");
-        match sessions.get(&id) {
-            Some(handle) => handle.clone(),
-            None => return Err((StatusCode::NOT_FOUND, "Session not found").into_response())
-        }
-    };
-    let write_token = match headers.get("Authorization") {
-        Some(token) => token.to_str().unwrap().strip_prefix("Bearer ").unwrap_or_default(),
-        None => return Err((StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response())
-    };
-    if write_token != session_handle.write_token.to_string() {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid write token").into_response());
-    }
-    debug!(session_id = %id, call_id = %req.tool_call_id, "Approving tool");
+    debug!(session_id = %session_handle.id, call_id = %req.tool_call_id, "Approving tool");
     session_handle.respond_to_tool_call(req.tool_call_id, req.approved).await.expect("closed");
     // TODO: garbage return type
-    Ok(Json(json!({ "status": "ok" })))
+    Json(json!({ "status": "ok" }))
 }
 
 /// Get a stream of events for a session, including LLM responses and user events.
-#[tracing::instrument(skip(state, headers))]
+#[tracing::instrument(skip(session_handle))]
 async fn event_stream(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    headers: HeaderMap,
+    Extension(session_handle): Extension<SessionHandle>,
 ) -> impl IntoResponse {
-    let session_handle = {
-        let sessions = state.sessions.read().await;
-        debug!("Looking up session {id}");
-        match sessions.get(&id) {
-            Some(handle) => handle.clone(),
-            None => return Err((StatusCode::NOT_FOUND, "Session not found").into_response())
-        }
-    };
-    let read_token = match headers.get("Authorization") {
-        Some(token) => token.to_str().unwrap().strip_prefix("Bearer ").unwrap_or_default(),
-        None => return Err((StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response())
-    };
-    let sess_read_token = session_handle.read_token.to_string();
-    let sess_write_token = session_handle.write_token.to_string();
-    if read_token != sess_read_token && read_token != sess_write_token {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid read token").into_response());
-    }
     let stream = BroadcastStream::new(session_handle.subscribe());
-    Ok(Sse::new(stream.filter_map(|result| async move {
+    Sse::new(stream.filter_map(|result| async move {
         let event = result.ok()?;
         let json = serde_json::to_string(&event).ok()?;
         Some(Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(json)))
-    })))
+    }))
 }
