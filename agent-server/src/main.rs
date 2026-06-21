@@ -16,7 +16,7 @@ use agent_tools::{ReadFile, Tool};
 use provider::LlmProvider;
 use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
 use session::handle::SessionHandle;
-use crate::server_types::{CreateSessionRequest, UserInputRequest};
+use crate::server_types::{ApproveRequest, CreateSessionRequest, UserInputRequest};
 use crate::session::Session;
 use crate::system_prompt::SystemPrompt;
 
@@ -69,7 +69,7 @@ fn router(state: AppState) -> Router {
         .route("/sessions", post(create_session))
         .route("/sessions/{id}/input", post(send_input))
         .route("/sessions/{id}/events", get(event_stream))
-        // .route("/sessions/{id}/approve", post(approve_tool))
+        .route("/sessions/{id}/tool", post(response_to_tool_call))
         .with_state(state)
 }
 
@@ -120,15 +120,33 @@ async fn send_input(
     Ok(Json(json!({ "status": "ok" })))
 }
 
-// /// Approve the usage of a tool
-// async fn approve_tool(
-//     State(state): State<AppState>,
-//     Path(id): Path<Uuid>,
-//     headers: HeaderMap,
-//     Json(req): Json<ApproveRequest>,
-// ) -> impl IntoResponse {
-//     todo!()
-// }
+/// Response to a tool call
+async fn response_to_tool_call(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(req): Json<ApproveRequest>,
+) -> impl IntoResponse {
+    let session_handle = {
+        let sessions = state.sessions.read().await;
+        debug!("Looking up session {id}");
+        match sessions.get(&id) {
+            Some(handle) => handle.clone(),
+            None => return Err((StatusCode::NOT_FOUND, "Session not found").into_response())
+        }
+    };
+    let write_token = match headers.get("Authorization") {
+        Some(token) => token.to_str().unwrap().strip_prefix("Bearer ").unwrap_or_default(),
+        None => return Err((StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response())
+    };
+    if write_token != session_handle.write_token.to_string() {
+        return Err((StatusCode::UNAUTHORIZED, "Invalid write token").into_response());
+    }
+    debug!(session_id = %id, call_id = %req.tool_call_id, "Approving tool");
+    session_handle.respond_to_tool_call(req.tool_call_id, req.approved).await.expect("closed");
+    // TODO: garbage return type
+    Ok(Json(json!({ "status": "ok" })))
+}
 
 /// Get a stream of events for a session, including LLM responses and user events.
 async fn event_stream(
