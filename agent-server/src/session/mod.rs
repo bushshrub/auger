@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use agent_tools::{Dummy, Tool};
 use crate::conversation::{Conversation, UserContent};
 use crate::system_prompt::SystemPrompt;
@@ -43,7 +44,7 @@ impl Session {
 
         let session = Session {
             id,
-            model,
+            model: model.clone(),
             conversation: Conversation::new(prompt.into()),
             status: SessionStatus::Idle,
             provider: provider.clone(),
@@ -51,7 +52,7 @@ impl Session {
         };
 
         tokio::spawn(session.run(cmds_rx));
-        SessionHandle::new(id, cmds_tx, events_tx)
+        SessionHandle::new(id, model, cmds_tx, events_tx)
     }
 
     /// Runs the session. The user will send commands via `rx`.
@@ -85,6 +86,7 @@ impl Session {
                         }],
                     };
                     if let Ok(mut stream) = self.provider.stream(request).await {
+
                         while let Some(event_result) = stream.next().await {
                             match event_result {
                                 Ok(provider::StreamEvent::TextDelta(text)) => {
@@ -95,8 +97,14 @@ impl Session {
                                     trace!("reasoning delta: {}", text);
                                     let _ = self.events.send(SessionEvent::Reasoning { delta: text });
                                 }
-                                Ok(provider::StreamEvent::ToolCall { .. }) => {
-                                    // TODO: handle tool calls
+                                Ok(provider::StreamEvent::ToolCall { id, name, arguments }) => {
+                                    trace!(tool_call_id = %id, tool = %name, "tool call delta: {}", arguments)
+                                    // TODO: handle tool call deltas
+                                }
+                                // clanker has finished generating tool call request
+                                Ok(provider::StreamEvent::ToolCallComplete {id, name, arguments}) => {
+                                    debug!(tool_call_id = %id, tool = %name, "tool call complete: {}", arguments);
+                                    let _ = self.events.send(SessionEvent::ToolCall { id, name, arguments });
                                 }
                                 Ok(provider::StreamEvent::Done { .. }) => {
                                     debug!("Response has finished generating");
@@ -126,9 +134,9 @@ impl Session {
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Copy)]
 pub(crate) struct ReadToken (Uuid);
 
-impl ReadToken {
-    pub fn to_string(&self) -> String {
-        self.0.to_string()
+impl Display for ReadToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }
 
@@ -141,9 +149,9 @@ impl From<ReadToken> for String {
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Copy)]
 pub(crate) struct WriteToken (Uuid);
 
-impl WriteToken {
-    pub fn to_string(&self) -> String {
-        self.0.to_string()
+impl Display for WriteToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }
 

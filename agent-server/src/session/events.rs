@@ -18,6 +18,13 @@ pub(crate) enum SessionEvent {
     UserMessage { content: Vec<UserContent> },
     Reasoning { delta: String },
     Content { delta: String },
+    /// Fully complete tool call.
+    // TODO: Support deltas and merge the deltas at the end.
+    ToolCall{
+        id: String,
+        name: String,
+        arguments: String,
+    },
     /// The agent has finished responding and will not send any more events.
     Done
 }

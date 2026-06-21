@@ -1,3 +1,4 @@
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 use crate::conversation::UserContent;
@@ -7,6 +8,8 @@ use crate::session::events::{SessionEvent, Cmd};
 #[derive(Clone)]
 pub(crate) struct SessionHandle {
     pub(crate) id: SessionId,
+    pub(crate) model: String,
+    pub(crate) created_at: u64,
     pub(crate) read_token: ReadToken,
     pub(crate) write_token: WriteToken,
     /// Sender for commands to the session task.
@@ -17,9 +20,15 @@ pub(crate) struct SessionHandle {
 
 impl SessionHandle {
 
-    pub fn new(id: SessionId, cmd_tx: mpsc::Sender<Cmd>, event_tx: broadcast::Sender<SessionEvent>) -> Self {
+    pub fn new(id: SessionId, model: String, cmd_tx: mpsc::Sender<Cmd>, event_tx: broadcast::Sender<SessionEvent>) -> Self {
+        let created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         Self {
             id,
+            model,
+            created_at,
             read_token: ReadToken(Uuid::new_v4()),
             write_token: WriteToken(Uuid::new_v4()),
             cmds: cmd_tx,

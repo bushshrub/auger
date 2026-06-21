@@ -27,6 +27,12 @@ pub enum StreamEvent {
         /// Incomplete arguments
         arguments: String,
     },
+    ToolCallComplete {
+        id: String,
+        name: String,
+        /// Complete arguments
+        arguments: String,
+    },
     /// Clanker is done clanking.
     Done {
         usage: Option<TokenUsage>,

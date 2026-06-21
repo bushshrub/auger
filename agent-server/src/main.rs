@@ -118,10 +118,26 @@ fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), read_auth));
 
     Router::new()
-        .route("/sessions", post(create_session))
+        .route("/sessions", get(list_sessions).post(create_session))
         .merge(write_routes)
         .merge(read_routes)
         .with_state(state)
+}
+
+/// List all active sessions
+async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
+    let sessions = state.sessions.read().await;
+    let list: Vec<_> = sessions.values().map(|h| json!({
+        "session_id": h.id,
+        "model": h.model,
+        "created_at": h.created_at,
+        "context_window": DEFAULT_CONTEXT_WINDOW,
+        "tokens": {
+            "read": h.read_token.to_string(),
+            "write": h.write_token.to_string(),
+        }
+    })).collect();
+    Json(json!({ "sessions": list }))
 }
 
 /// Request to create a session
@@ -129,14 +145,14 @@ async fn create_session(
     State(state): State<AppState>,
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
-    let model = req.model.unwrap_or_else(|| DEFAULT_MODEL.into());
+    let model = req.model.unwrap_or_else(|| state.default_model.clone());
     let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string());
     let session_handle = Session::spawn(sys_prompt, &state.provider, model);
     let session_id = session_handle.id;
     let read_token = session_handle.read_token;
     let write_token = session_handle.write_token;
     state.sessions.write().await.insert(session_id, session_handle);
-    Json(json!({ "session_id": session_id, "tokens": {
+    Json(json!({ "session_id": session_id, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
         "read": read_token,
         "write": write_token
     } }))
