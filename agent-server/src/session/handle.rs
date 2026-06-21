@@ -20,7 +20,7 @@ pub(crate) struct SessionHandle {
 
 impl SessionHandle {
 
-    pub fn new(id: SessionId, model: String, cmd_tx: mpsc::Sender<Cmd>, event_tx: broadcast::Sender<SessionEvent>) -> Self {
+    pub(crate) fn new(id: SessionId, model: String, cmd_tx: mpsc::Sender<Cmd>, event_tx: broadcast::Sender<SessionEvent>) -> Self {
         let created_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -35,7 +35,7 @@ impl SessionHandle {
             events: event_tx,
         }
     }
-    pub fn id(&self) -> SessionId {
+    pub(crate) fn id(&self) -> SessionId {
         self.id
     }
 

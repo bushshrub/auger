@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::sync::Arc;
-use provider::LlmProvider;
+use provider::{LlmProvider, ToolCall};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 use crate::conversation::Conversation;
@@ -7,6 +8,10 @@ use crate::session::events::{Cmd, SessionEvent};
 use crate::session::handle::SessionHandle;
 use crate::session::{SessionId, SessionStatus};
 use crate::system_prompt::SystemPrompt;
+use futures::stream::StreamExt;
+use tracing::{debug, error, info, trace};
+use agent_tools::{Dummy, Tool};
+use crate::conversation::UserContent;
 
 /// Represents a conversation between the user and a clanker.
 pub(crate) struct Session {
@@ -19,6 +24,7 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    // TODO: no need to share LlmProvider. session should take care of spawning it.
     pub fn spawn(prompt: SystemPrompt, provider: &Arc<impl LlmProvider + 'static>, model: String) -> SessionHandle {
         let (cmds_tx, cmds_rx) = mpsc::channel(32);
         let (events_tx, _) = broadcast::channel(32);
@@ -40,11 +46,9 @@ impl Session {
 
     /// Runs the session. The user will send commands via `rx`.
     async fn run(self, mut rx: mpsc::Receiver<Cmd>) {
-        use futures::stream::StreamExt;
-        use tracing::{debug, error, info, trace};
-        use agent_tools::{Dummy, Tool};
-        use crate::conversation::UserContent;
-        use crate::session::events::SessionEvent;
+
+        let mut tool_calls: HashMap<String, (String, String)> = HashMap::new();
+
         info!(session_id = %self.id, "Starting session");
         while let Some(cmd) = rx.recv().await {
             match cmd {
@@ -91,10 +95,12 @@ impl Session {
                                 // clanker has finished generating tool call request
                                 Ok(provider::StreamEvent::ToolCallComplete {id, name, arguments}) => {
                                     debug!(tool_call_id = %id, tool = %name, "tool call complete: {}", arguments);
-                                    let _ = self.events.send(SessionEvent::ToolCall { id, name, arguments });
+                                    tool_calls.insert(id.clone(), (name.clone(), arguments.clone()));
+                                    let _ = self.events.send(SessionEvent::ToolCallRequest { id, name, arguments });
+
                                 }
-                                Ok(provider::StreamEvent::Done { .. }) => {
-                                    debug!("Response has finished generating");
+                                Ok(provider::StreamEvent::Done { usage, stop_reason }) => {
+                                    debug!("Response has finished generating. Usage: {:?}, stop reason: {:?}", usage, stop_reason);
                                     let _ = self.events.send(SessionEvent::Done);
                                 },
                                 // TODO: Handle errors while streaming e.g. rate limit, connection drops.
@@ -106,6 +112,13 @@ impl Session {
                     }
                 }
                 Cmd::ApproveToolCall { tool_call_id } => {
+                    let (tool_name, tool_args) = match tool_calls.get(&tool_call_id) {
+                        Some((name, args)) => (name.clone(), args.clone()),
+                        None => {
+                            error!(tool_call_id = %tool_call_id, "No tool call found with this ID");
+                            continue;
+                        }
+                    };
                     debug!(tool_call_id = %tool_call_id, "Tool call approved by user");
                 }
                 Cmd::DenyToolCall { tool_call_id } => {

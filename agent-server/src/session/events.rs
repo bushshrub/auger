@@ -16,11 +16,12 @@ pub(crate) enum Cmd {
 pub(crate) enum SessionEvent {
     /// The user sent a message
     UserMessage { content: Vec<UserContent> },
+    // todo: split clanker events off into separate enum
     Reasoning { delta: String },
     Content { delta: String },
-    /// Fully complete tool call.
+    /// Fully complete tool call request from the clanker.
     // TODO: Support deltas and merge the deltas at the end.
-    ToolCall{
+    ToolCallRequest {
         id: String,
         name: String,
         arguments: String,
