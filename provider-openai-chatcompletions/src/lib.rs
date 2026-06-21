@@ -149,6 +149,7 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
 
         Ok(LlmResponse {
             content: choice.message.content.clone().unwrap_or_default(),
+            reasoning: None,
             tool_calls,
             usage: response.usage.map(map_usage),
             stop_reason: choice.finish_reason.as_ref().map(finish_reason_string),

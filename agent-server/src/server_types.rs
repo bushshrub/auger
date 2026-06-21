@@ -1,7 +1,11 @@
+use serde::Deserialize;
+
+#[derive(Deserialize, Debug)]
 pub(crate) struct CreateSessionRequest {
     pub(crate) model: Option<String>,
 }
 
+#[derive(Deserialize, Debug)]
 pub(crate) struct UserInputRequest {
     pub(crate) input: String
 }

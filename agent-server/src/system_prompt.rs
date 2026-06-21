@@ -26,6 +26,6 @@ impl From<String> for SystemPrompt {
 
 impl From<SystemPrompt> for SystemMessage {
     fn from(prompt: SystemPrompt) -> Self {
-        todo!()
+        SystemMessage::from(prompt.base)
     }
 }

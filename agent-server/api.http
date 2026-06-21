@@ -1,0 +1,26 @@
+POST http://localhost:3000/sessions
+Content-Type: application/json
+
+{
+  "model": "qwen3.6-27b"
+}
+
+> {%
+
+    client.global.set("session_id", response.body.session_id);
+    client.global.set("read_token", response.body.tokens.read);
+    client.global.set("write_token", response.body.tokens.write);
+    console.log(client.global)
+%}
+
+###
+# sess id: e0e0feec-2c7b-4410-9b2b-f38b14b6e6f1
+# d05cf00e-779a-4908-a5ed-5c14c5a6bdf3
+POST http://localhost:3000/sessions/{{ session_id }}/input
+Content-Type: application/json
+Authorization: Bearer {{ write_token }}
+
+{
+  "input": "What can you do?"
+}
+

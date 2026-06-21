@@ -2,19 +2,23 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::{Json, Router};
-use axum::http::HeaderMap;
-use axum::response::IntoResponse;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Sse};
 use axum::routing::{get, post};
+use futures::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+use tracing::{debug, info};
 use uuid::Uuid;
 use agent_tools::{ReadFile, Tool};
 use provider::LlmProvider;
 use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
-use crate::server_types::{ApproveRequest, CreateSessionRequest, UserInputRequest};
-use crate::session::{Session, SessionHandle};
-
+use session::handle::SessionHandle;
+use crate::server_types::{CreateSessionRequest, UserInputRequest};
+use crate::session::Session;
+use crate::system_prompt::SystemPrompt;
 
 mod session;
 mod conversation;
@@ -36,9 +40,13 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     let addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
     let base_url = std::env::var("PROVIDER_BASE_URL")
-        .unwrap_or_else(|_| "http://server-slop:8081/v1".to_string());
+        .unwrap_or_else(|_| "http://server-slop:8080/v1".to_string());
     let api_key = std::env::var("PROVIDER_API_KEY").unwrap_or_default();
 
     let provider = Arc::new(OpenAiChatCompletionsProvider::new(api_key, base_url));
@@ -51,50 +59,66 @@ async fn main() {
     };
 
     let listener = TcpListener::bind(&addr).await.expect("bind failed");
-    eprintln!("agent-server listening on {addr}");
+    info!("agent-server listening on {addr}");
     axum::serve(listener, router(state)).await.expect("server error");
 }
 
 
 fn router(state: AppState) -> Router {
     Router::new()
-        // .route("/v1/sessions", post(create_session))
-        // .route("/v1/sessions/{id}/input", post(send_input))
-        // .route("/v1/sessions/{id}/approve", post(approve_tool))
-        // .route("/v1/sessions/{id}/events", get(event_stream))
+        .route("/sessions", post(create_session))
+        .route("/sessions/{id}/input", post(send_input))
+        .route("/sessions/{id}/events", get(event_stream))
+        // .route("/sessions/{id}/approve", post(approve_tool))
         .with_state(state)
 }
 
-// /// Request to create a session
-// async fn create_session(
-//     State(state): State<AppState>,
-//     Json(req): Json<CreateSessionRequest>,
-// ) -> impl IntoResponse {
-//     req.model.unwrap_or_else(|| DEFAULT_MODEL.into());
-//     // TODO: customizable system prompt
-//     let sys_prompt = SYSTEM_PROMPT.to_string();
-//     todo!();
+/// Request to create a session
+async fn create_session(
+    State(state): State<AppState>,
+    Json(req): Json<CreateSessionRequest>,
+) -> impl IntoResponse {
+    let model = req.model.unwrap_or_else(|| DEFAULT_MODEL.into());
+    let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string());
+    let session_handle = Session::spawn(sys_prompt, &state.provider, model);
+    let session_id = session_handle.id;
+    let read_token = session_handle.read_token;
+    let write_token = session_handle.write_token;
+    state.sessions.write().await.insert(session_id, session_handle);
+    Json(json!({ "session_id": session_id, "tokens": {
+        "read": read_token,
+        "write": write_token
+    } }))
+}
 
-//     let sess_id = sess.id();
-//     state.sessions.write().await.insert(sess_id, sess);
-//     // TODO: hardcoded json
-//     // TODO: return read, write tokens
-//     Json(json!({ "session_id": sess_id }))
-// }
+/// Submit input to the clanker
+async fn send_input(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(req): Json<UserInputRequest>,
+) -> impl IntoResponse {
+    let session_handle = {
+        let sessions = state.sessions.read().await;
+        debug!("Looking up session {id}");
+        match sessions.get(&id) {
+            Some(handle) => handle.clone(),
+            None => return Err((StatusCode::NOT_FOUND, "Session not found").into_response())
+        }
+    };
+    let write_token = match headers.get("Authorization") {
+        Some(token) => token.to_str().unwrap().strip_prefix("Bearer ").unwrap_or_default(),
+        None => return Err((StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response())
+    };
+    if write_token != session_handle.write_token.to_string() {
+        return Err((StatusCode::UNAUTHORIZED, "Invalid write token").into_response());
+    }
+    debug!(session_id = %id, "Enqueued message: {}", req.input);
+    session_handle.enqueue(vec![req.input.into()]).await.expect("closed");
 
-// /// Submit input to the clanker
-// async fn send_input(
-//     State(state): State<AppState>,
-//     Path(id): Path<Uuid>,
-//     headers: HeaderMap,
-//     Json(req): Json<UserInputRequest>,
-// ) -> impl IntoResponse {
-//     let mut sess = state.sessions.read().await.get(&id).expect("session not found todo: better err handling").clone();
-//     // sess.send_message(req.input.into()).await.expect("failed to send input");
-
-//     // TODO: bad return type
-//     Ok(Json(json!({ "message": sess })))
-// }
+    // TODO: bad return type
+    Ok(Json(json!({ "status": "ok" })))
+}
 
 // /// Approve the usage of a tool
 // async fn approve_tool(
@@ -106,11 +130,33 @@ fn router(state: AppState) -> Router {
 //     todo!()
 // }
 
-// /// Get a stream of events for a session, including LLM responses and user events.
-// async fn event_stream(
-//     State(state): State<AppState>,
-//     Path(id): Path<Uuid>,
-//     headers: HeaderMap,
-// ) -> impl IntoResponse {
-//     todo!()
-// }
+/// Get a stream of events for a session, including LLM responses and user events.
+async fn event_stream(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let session_handle = {
+        let sessions = state.sessions.read().await;
+        debug!("Looking up session {id}");
+        match sessions.get(&id) {
+            Some(handle) => handle.clone(),
+            None => return Err((StatusCode::NOT_FOUND, "Session not found").into_response())
+        }
+    };
+    let read_token = match headers.get("Authorization") {
+        Some(token) => token.to_str().unwrap().strip_prefix("Bearer ").unwrap_or_default(),
+        None => return Err((StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response())
+    };
+    let sess_read_token = session_handle.read_token.to_string();
+    let sess_write_token = session_handle.write_token.to_string();
+    if read_token != sess_read_token && read_token != sess_write_token {
+        return Err((StatusCode::UNAUTHORIZED, "Invalid read token").into_response());
+    }
+    let stream = BroadcastStream::new(session_handle.subscribe());
+    Ok(Sse::new(stream.filter_map(|result| async move {
+        let event = result.ok()?;
+        let json = serde_json::to_string(&event).ok()?;
+        Some(Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(json)))
+    })))
+}

@@ -4,11 +4,14 @@ use provider::LlmProvider;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
+use tracing::{debug, info, trace};
 use uuid::Uuid;
 
 mod events;
-use events::{AgentEvent, Cmd};
+pub(crate) mod handle;
 
+use events::{AgentEvent, Cmd};
+use handle::SessionHandle;
 
 /// The status of a session
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +26,7 @@ pub(crate) type SessionId = Uuid;
 /// Represents a conversation between the user and a clanker.
 pub(crate) struct Session {
     id: SessionId,
+    model: String,
     conversation: Conversation,
     status: SessionStatus,
     provider: Arc<dyn LlmProvider>,
@@ -30,17 +34,33 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    pub fn spawn(prompt: SystemPrompt, provider: &Arc<dyn LlmProvider>) -> SessionHandle {
-        todo!()
+    pub fn spawn(prompt: SystemPrompt, provider: &Arc<impl LlmProvider + 'static>, model: String) -> SessionHandle {
+        let (cmds_tx, mut cmds_rx) = mpsc::channel(32);
+        let (events_tx, _) = broadcast::channel(32);
+
+        let id = Uuid::new_v4();
+
+        let session = Session {
+            id,
+            model,
+            conversation: Conversation::new(prompt.into()),
+            status: SessionStatus::Idle,
+            provider: provider.clone(),
+            events: events_tx.clone(),
+        };
+
+        tokio::spawn(session.run(cmds_rx));
+        SessionHandle::new(id, cmds_tx, events_tx)
     }
 
     /// Runs the session. The user will send commands via `rx`.
     async fn run(self, mut rx: mpsc::Receiver<Cmd>) {
         use futures::stream::StreamExt;
-
+        info!("Starting session: {}", self.id);
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 Cmd::SendMessage(content) => {
+                    debug!(session_id = %self.id, "Received user message: {:#?}", content);
                     let _ = self.events.send(content.clone().into());
 
                     let user_text = content.iter()
@@ -52,18 +72,20 @@ impl Session {
                         .join("\n");
 
                     let request = provider::LlmRequest {
-                        model: "qwen3.6-27b".to_string(),
+                        model: self.model.clone(),
                         messages: vec![provider::Message::User(user_text)],
                         tools: vec![],
                     };
-
+                    debug!("Sending request to provider: {:#?}", request);
                     if let Ok(mut stream) = self.provider.stream(request).await {
                         while let Some(event_result) = stream.next().await {
                             match event_result {
                                 Ok(provider::StreamEvent::Text(text)) => {
+                                    trace!("Received text from provider: {}", text);
                                     let _ = self.events.send(AgentEvent::Content { delta: text });
                                 }
                                 Ok(provider::StreamEvent::Reasoning(text)) => {
+                                    trace!("Received reasoning from provider: {}", text);
                                     let _ = self.events.send(AgentEvent::Reasoning { delta: text });
                                 }
                                 Ok(provider::StreamEvent::ToolCall { .. }) => {
@@ -88,45 +110,34 @@ impl Session {
 }
 
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Copy)]
 pub(crate) struct ReadToken (Uuid);
 
-#[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct WriteToken (Uuid);
-
-#[derive(Clone)]
-pub(crate) struct SessionHandle {
-    id: SessionId,
-    read_token: ReadToken,
-    write_token: WriteToken,
-    cmds: tokio::sync::mpsc::Sender<Cmd>,      // <-- was std::sync::mpsc
-    events: tokio::sync::broadcast::Sender<AgentEvent>,
+impl ReadToken {
+    pub fn to_string(&self) -> String {
+        self.0.to_string()
+    }
 }
 
-impl SessionHandle {
-    fn id(&self) -> SessionId {
-        self.id
+impl From<ReadToken> for String {
+    fn from(token: ReadToken) -> Self {
+        token.0.to_string()
     }
+}
 
-    fn tokens(&self) -> (ReadToken, WriteToken) {
-        (self.read_token.clone(), self.write_token.clone())
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Copy)]
+pub(crate) struct WriteToken (Uuid);
+
+impl WriteToken {
+    pub fn to_string(&self) -> String {
+        self.0.to_string()
     }
+}
 
-    async fn enqueue(&self, t: &WriteToken, msg: Vec<UserContent>) -> Result<(), SessionError> {
-        todo!()
+impl From<WriteToken> for String {
+    fn from(token: WriteToken) -> Self {
+        token.0.to_string()
     }
-
-    async fn approve(&self, t: &WriteToken, tool_call_id: String, approved: bool) -> Result<(), SessionError> {
-        todo!()
-    }
-
-    fn subscribe(&self, t: &ReadToken) -> Result<broadcast::Receiver<AgentEvent>, SessionError> {
-        todo!()
-    }
-
-    // async fn snapshot(&self, t: &ReadToken) -> Result<ConversationSnapshot, SessionError> {
-    //     todo!()
-    // }
 }
 
 #[derive(Debug)]

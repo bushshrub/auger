@@ -35,8 +35,9 @@ pub enum StreamEvent {
 
 #[derive(Debug, Clone)]
 pub struct LlmResponse {
-    // TODO: include thinking
     pub content: String,
+    /// Optional reasoning output, if the model supports reasoning.
+    pub reasoning: Option<String>,
     pub tool_calls: Option<Vec<ToolCall>>,
     /// Token usage details after this response is complete.
     /// May be None if the provider doesn't expose token usage details

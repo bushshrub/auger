@@ -6,7 +6,13 @@ pub use clanker::ClankerTurn;
 
 
 /// The system prompt
-pub struct SystemMessage(Vec<String>);
+pub(crate) struct SystemMessage(Vec<String>);
+
+impl From<String> for SystemMessage {
+    fn from(value: String) -> Self {
+        SystemMessage(vec![value])
+    }
+}
 
 
 pub enum Turn {

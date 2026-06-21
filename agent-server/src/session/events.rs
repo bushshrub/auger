@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::conversation::UserContent;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) enum Cmd {
     SendMessage(Vec<UserContent>),
     ApproveToolCall { tool_call_id: String },
@@ -10,7 +10,7 @@ pub(crate) enum Cmd {
     // Snapshot, // TODO: Conversation snapshot
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) enum AgentEvent {
     UserMessage { content: Vec<UserContent> },
     Reasoning { delta: String },
