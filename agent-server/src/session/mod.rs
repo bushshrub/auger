@@ -56,7 +56,7 @@ impl Session {
     /// Runs the session. The user will send commands via `rx`.
     async fn run(self, mut rx: mpsc::Receiver<Cmd>) {
         use futures::stream::StreamExt;
-        info!("Starting session: {}", self.id);
+        info!(session_id = %self.id, "Starting session");
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 Cmd::SendMessage(content) => {
@@ -110,6 +110,7 @@ impl Session {
                 }
             }
         }
+        info!(session_id = %self.id, "Session has been closed");
     }
 }
 
