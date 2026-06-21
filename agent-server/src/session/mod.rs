@@ -1,3 +1,4 @@
+use agent_tools::{Dummy, Tool};
 use crate::conversation::{Conversation, UserContent};
 use crate::system_prompt::SystemPrompt;
 use provider::LlmProvider;
@@ -71,10 +72,17 @@ impl Session {
                         .collect::<Vec<_>>()
                         .join("\n");
 
+                    let dummy = Dummy;
+                    let dummy_details = dummy.details();
+                    let dummy_params = dummy.parameters();
                     let request = provider::LlmRequest {
                         model: self.model.clone(),
                         messages: vec![provider::Message::User(user_text)],
-                        tools: vec![],
+                        tools: vec![provider::ToolDefinition {
+                            name: dummy_details.name.to_string(),
+                            description: Some(dummy_details.description.to_string()),
+                            parameters: dummy_params.0,
+                        }],
                     };
                     if let Ok(mut stream) = self.provider.stream(request).await {
                         while let Some(event_result) = stream.next().await {
