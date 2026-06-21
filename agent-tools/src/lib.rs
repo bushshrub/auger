@@ -1,9 +1,11 @@
+pub mod dummy;
 pub mod read;
 pub mod web_fetch;
 
 use async_trait::async_trait;
 use thiserror::Error;
 
+pub use dummy::Dummy;
 pub use read::ReadFile;
 // pub use web_fetch::WebFetch;
 
@@ -25,7 +27,7 @@ pub struct ToolDetails {
     pub description: &'static str,
 }
 
-pub struct JsonSchema(serde_json::Value);
+pub struct JsonSchema(pub serde_json::Value);
 
 #[async_trait]
 pub trait Tool: Send + Sync {
