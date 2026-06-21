@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::conversation::UserContent;
 
+/// Commands that the user send to the harness.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) enum Cmd {
     SendMessage(Vec<UserContent>),
@@ -10,8 +11,10 @@ pub(crate) enum Cmd {
     // Snapshot, // TODO: Conversation snapshot
 }
 
+/// Events
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) enum AgentEvent {
+pub(crate) enum SessionEvent {
+    /// The user sent a message
     UserMessage { content: Vec<UserContent> },
     Reasoning { delta: String },
     Content { delta: String },
@@ -19,8 +22,8 @@ pub(crate) enum AgentEvent {
     Done
 }
 
-impl From<Vec<UserContent>> for AgentEvent {
+impl From<Vec<UserContent>> for SessionEvent {
     fn from(value: Vec<UserContent>) -> Self {
-        AgentEvent::UserMessage { content: value }
+        SessionEvent::UserMessage { content: value }
     }
 }

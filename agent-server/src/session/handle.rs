@@ -2,7 +2,7 @@ use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 use crate::conversation::UserContent;
 use crate::session::{ReadToken, SessionError, SessionId, WriteToken};
-use crate::session::events::{AgentEvent, Cmd};
+use crate::session::events::{SessionEvent, Cmd};
 
 #[derive(Clone)]
 pub(crate) struct SessionHandle {
@@ -12,12 +12,12 @@ pub(crate) struct SessionHandle {
     /// Sender for commands to the session task.
     pub(crate) cmds: mpsc::Sender<Cmd>,
     /// Sender for events from the session task.
-    pub(crate) events: broadcast::Sender<AgentEvent>,
+    pub(crate) events: broadcast::Sender<SessionEvent>,
 }
 
 impl SessionHandle {
 
-    pub fn new(id: SessionId, cmd_tx: mpsc::Sender<Cmd>, event_tx: broadcast::Sender<AgentEvent>) -> Self {
+    pub fn new(id: SessionId, cmd_tx: mpsc::Sender<Cmd>, event_tx: broadcast::Sender<SessionEvent>) -> Self {
         Self {
             id,
             read_token: ReadToken(Uuid::new_v4()),
@@ -33,7 +33,7 @@ impl SessionHandle {
     /// Enqueue a message for the clanker.
     pub(crate) async fn enqueue(&self,msg: Vec<UserContent>) -> Result<(), SessionError> {
         self.cmds.send(Cmd::SendMessage(msg.clone())).await.map_err(|_| SessionError::Closed)?;
-        self.events.send(AgentEvent::UserMessage { content: msg }).ok();
+        self.events.send(SessionEvent::UserMessage { content: msg }).ok();
         Ok(())
     }
 
@@ -46,7 +46,7 @@ impl SessionHandle {
         Ok(())
     }
 
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<SessionEvent> {
         self.events.subscribe()
     }
 

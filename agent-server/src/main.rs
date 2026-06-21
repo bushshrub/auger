@@ -15,6 +15,7 @@ use uuid::Uuid;
 use agent_tools::{ReadFile, Tool};
 use provider::LlmProvider;
 use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
+use provider_openai_responses::OpenAiResponsesProvider;
 use session::handle::SessionHandle;
 use crate::server_types::{ApproveRequest, CreateSessionRequest, UserInputRequest};
 use crate::session::Session;
@@ -32,7 +33,7 @@ const SYSTEM_PROMPT: &str = "You are a coding agent. Use tools to read, write, a
 #[derive(Clone)]
 struct AppState {
     // TODO: support multiple providers
-    provider: Arc<OpenAiChatCompletionsProvider>,
+    provider: Arc<OpenAiResponsesProvider>,
     sessions: Arc<RwLock<HashMap<Uuid, SessionHandle>>>,
     tools: Arc<Vec<Arc<dyn Tool>>>,
     default_model: String
@@ -49,7 +50,7 @@ async fn main() {
         .unwrap_or_else(|_| "http://server-slop:8080/v1".to_string());
     let api_key = std::env::var("PROVIDER_API_KEY").unwrap_or_default();
 
-    let provider = Arc::new(OpenAiChatCompletionsProvider::new(api_key, base_url));
+    let provider = Arc::new(OpenAiResponsesProvider::new(api_key, base_url));
 
     let state = AppState {
         provider: Arc::clone(&provider),
@@ -92,6 +93,7 @@ async fn create_session(
 }
 
 /// Submit input to the clanker
+#[tracing::instrument(skip(state, headers, req))]
 async fn send_input(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -100,9 +102,11 @@ async fn send_input(
 ) -> impl IntoResponse {
     let session_handle = {
         let sessions = state.sessions.read().await;
-        debug!("Looking up session {id}");
         match sessions.get(&id) {
-            Some(handle) => handle.clone(),
+            Some(handle) => {
+                debug!("Session found");
+                handle.clone()
+            },
             None => return Err((StatusCode::NOT_FOUND, "Session not found").into_response())
         }
     };
@@ -113,7 +117,7 @@ async fn send_input(
     if write_token != session_handle.write_token.to_string() {
         return Err((StatusCode::UNAUTHORIZED, "Invalid write token").into_response());
     }
-    debug!(session_id = %id, "Enqueued message: {}", req.input);
+    debug!("Enqueued message: '{}'", req.input);
     session_handle.enqueue(vec![req.input.into()]).await.expect("closed");
 
     // TODO: bad return type
@@ -149,6 +153,7 @@ async fn response_to_tool_call(
 }
 
 /// Get a stream of events for a session, including LLM responses and user events.
+#[tracing::instrument(skip(state, headers))]
 async fn event_stream(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,

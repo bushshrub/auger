@@ -4,13 +4,13 @@ use provider::LlmProvider;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, info, trace};
+use tracing::{debug, error, info, trace};
 use uuid::Uuid;
 
 mod events;
 pub(crate) mod handle;
 
-use events::{AgentEvent, Cmd};
+use events::{SessionEvent, Cmd};
 use handle::SessionHandle;
 
 /// The status of a session
@@ -30,7 +30,7 @@ pub(crate) struct Session {
     conversation: Conversation,
     status: SessionStatus,
     provider: Arc<dyn LlmProvider>,
-    events: broadcast::Sender<AgentEvent>,
+    events: broadcast::Sender<SessionEvent>,
 }
 
 impl Session {
@@ -60,9 +60,9 @@ impl Session {
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 Cmd::SendMessage(content) => {
-                    debug!(session_id = %self.id, "Received user message: {:#?}", content);
                     let _ = self.events.send(content.clone().into());
 
+                    // TODO: these can just be sent off as a vec anyway...
                     let user_text = content.iter()
                         .filter_map(|c| match c {
                             UserContent::Text(t) => Some(t.clone()),
@@ -80,22 +80,24 @@ impl Session {
                         while let Some(event_result) = stream.next().await {
                             match event_result {
                                 Ok(provider::StreamEvent::Text(text)) => {
-                                    trace!("Received text from provider: {}", text);
-                                    let _ = self.events.send(AgentEvent::Content { delta: text });
+                                    trace!("text delta: {}", text);
+                                    let _ = self.events.send(SessionEvent::Content { delta: text });
                                 }
                                 Ok(provider::StreamEvent::Reasoning(text)) => {
-                                    trace!("Received reasoning from provider: {}", text);
-                                    let _ = self.events.send(AgentEvent::Reasoning { delta: text });
+                                    trace!("reasoning delta: {}", text);
+                                    let _ = self.events.send(SessionEvent::Reasoning { delta: text });
                                 }
                                 Ok(provider::StreamEvent::ToolCall { .. }) => {
                                     // TODO: handle tool calls
                                 }
                                 Ok(provider::StreamEvent::Done { .. }) => {
                                     debug!("Response has finished generating");
-                                    let _ = self.events.send(AgentEvent::Done);
+                                    let _ = self.events.send(SessionEvent::Done);
                                 },
                                 // TODO: Handle errors while streaming e.g. rate limit, connection drops.
-                                Err(_) => break,
+                                Err(e) => {
+                                    error!("Error while streaming response from provider: {:?}", e);
+                                },
                             }
                         }
                     }

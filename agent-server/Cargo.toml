@@ -8,7 +8,8 @@ agent-tools = { path = "../agent-tools" }
 axum = { version = "0.8.9", features = ["macros"] }
 futures.workspace = true
 provider = { path = "../provider" }
-provider-openai-chatcompletions = { version = "0.1.0", path = "../provider-openai-chatcompletions" }
+provider-openai-chatcompletions = { path = "../provider-openai-chatcompletions" }
+provider-openai-responses = { path = "../provider-openai-responses" }
 reqwest.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
