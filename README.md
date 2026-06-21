@@ -23,4 +23,5 @@ Design goals:
 ## Clanker usage
 
 Clankers are allowed for prototyping and scaffolding.
+Do not use them on the main agent harness.
 Don't use clankers to write documentation.
