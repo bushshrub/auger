@@ -18,7 +18,7 @@ use agent_tools::{ReadFile, Tool};
 use provider_openai_responses::OpenAiResponsesProvider;
 use session::handle::SessionHandle;
 use crate::server_types::{ApproveRequest, CreateSessionRequest, UserInputRequest};
-use crate::session::Session;
+use crate::session::session_loop::Session;
 use crate::system_prompt::SystemPrompt;
 
 mod session;
@@ -110,7 +110,7 @@ async fn main() {
 fn router(state: AppState) -> Router {
     let write_routes = Router::new()
         .route("/sessions/{id}/input", post(send_input))
-        .route("/sessions/{id}/tool", post(response_to_tool_call))
+        .route("/sessions/{id}/tool", post(respond_to_tool_call))
         .route_layer(middleware::from_fn_with_state(state.clone(), write_auth));
 
     let read_routes = Router::new()
@@ -171,12 +171,16 @@ async fn send_input(
     Json(json!({ "status": "ok" }))
 }
 
-/// Response to a tool call
-async fn response_to_tool_call(
+/// Respond to a tool call
+#[tracing::instrument(skip(session_handle, req), fields(session_id, call_id))]
+async fn respond_to_tool_call(
     Extension(session_handle): Extension<SessionHandle>,
     Json(req): Json<ApproveRequest>,
 ) -> impl IntoResponse {
-    debug!(session_id = %session_handle.id, call_id = %req.tool_call_id, "Approving tool");
+    let span = tracing::Span::current();
+    span.record("session_id", tracing::field::display(&session_handle.id));
+    span.record("call_id", tracing::field::display(&req.tool_call_id));
+    debug!("Tool call approved: {}", req.approved);
     session_handle.respond_to_tool_call(req.tool_call_id, req.approved).await.expect("closed");
     // TODO: garbage return type
     Json(json!({ "status": "ok" }))
