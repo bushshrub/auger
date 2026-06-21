@@ -199,6 +199,13 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
                         }
 
                         if choice["finish_reason"].is_string() {
+                            for acc in accums.iter().flatten() {
+                                yield Ok(StreamEvent::ToolCallComplete {
+                                    id: acc.id.clone(),
+                                    name: acc.name.clone(),
+                                    arguments: acc.arguments.clone(),
+                                });
+                            }
                             let stop_reason = choice["finish_reason"].as_str().map(str::to_string);
                             let usage = extract_usage(&chunk);
                             yield Ok(StreamEvent::Done { usage, stop_reason });

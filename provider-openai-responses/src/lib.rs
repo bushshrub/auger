@@ -164,7 +164,9 @@ struct SseEvent {
     delta: Option<String>,
     // llama.cpp sends thinking here on the same delta event (mirrors chat completions behavior)
     reasoning_content: Option<String>,
-    output_index: Option<usize>,
+    // item_id links delta events back to the item added in response.output_item.added.
+    // llama.cpp omits output_index and uses item_id exclusively for function call events.
+    item_id: Option<String>,
     item: Option<Value>,
     response: Option<CompletedResponse>,
 }
@@ -391,7 +393,10 @@ impl LlmProvider for OpenAiResponsesProvider {
         let s = stream! {
             let mut bytes = resp.bytes_stream();
             let mut buf = String::new();
-            let mut fc_accums: std::collections::HashMap<usize, FcAccum> =
+            // Keyed by item_id (= call_id on llama.cpp, = item.id on OpenAI).
+            // output_index is absent from llama.cpp's function call events so we
+            // cannot use it as the key here.
+            let mut fc_accums: std::collections::HashMap<String, FcAccum> =
                 std::collections::HashMap::new();
 
             while let Some(chunk) = bytes.next().await {
@@ -438,32 +443,56 @@ impl LlmProvider for OpenAiResponsesProvider {
                                     }
                                 }
                                 "response.output_item.added" => {
-                                    if let (Some(idx), Some(item)) =
-                                        (event.output_index, &event.item)
-                                    {
+                                    if let Some(item) = &event.item {
                                         if item["type"] == "function_call" {
                                             let call_id =
                                                 item["call_id"].as_str().unwrap_or("").to_string();
                                             let name =
                                                 item["name"].as_str().unwrap_or("").to_string();
-                                            fc_accums.insert(
-                                                idx,
-                                                FcAccum { call_id, name, arguments: String::new() },
-                                            );
+                                            // OpenAI uses item.id as the item_id in delta events;
+                                            // llama.cpp omits item.id and uses call_id as item_id.
+                                            let key = item["id"]
+                                                .as_str()
+                                                .or_else(|| item["call_id"].as_str())
+                                                .unwrap_or("")
+                                                .to_string();
+                                            if !key.is_empty() {
+                                                fc_accums.insert(
+                                                    key,
+                                                    FcAccum { call_id, name, arguments: String::new() },
+                                                );
+                                            }
                                         }
                                     }
                                 }
                                 "response.function_call_arguments.delta" => {
-                                    if let (Some(idx), Some(delta)) =
-                                        (event.output_index, event.delta)
+                                    if let (Some(item_id), Some(delta)) =
+                                        (&event.item_id, event.delta)
                                     {
-                                        if let Some(acc) = fc_accums.get_mut(&idx) {
+                                        if let Some(acc) = fc_accums.get_mut(item_id) {
                                             acc.arguments.push_str(&delta);
                                             yield Ok(StreamEvent::ToolCall {
                                                 id: acc.call_id.clone(),
                                                 name: acc.name.clone(),
                                                 arguments: acc.arguments.clone(),
                                             });
+                                        }
+                                    }
+                                }
+                                "response.output_item.done" => {
+                                    if let Some(item) = &event.item {
+                                        if item["type"] == "function_call" {
+                                            if let (Some(call_id), Some(name), Some(arguments)) = (
+                                                item["call_id"].as_str(),
+                                                item["name"].as_str(),
+                                                item["arguments"].as_str(),
+                                            ) {
+                                                yield Ok(StreamEvent::ToolCallComplete {
+                                                    id: call_id.to_string(),
+                                                    name: name.to_string(),
+                                                    arguments: arguments.to_string(),
+                                                });
+                                            }
                                         }
                                     }
                                 }

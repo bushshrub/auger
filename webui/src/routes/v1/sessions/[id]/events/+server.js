@@ -16,6 +16,11 @@ function transformEvent(ev) {
 	if (ev === 'Done') return { type: 'turn_complete', data: {} };
 	if (ev.Content) return { type: 'content', data: { text: ev.Content.delta } };
 	if (ev.Reasoning) return { type: 'reasoning', data: { text: ev.Reasoning.delta } };
+	if (ev.ToolCall) {
+		let args = ev.ToolCall.arguments;
+		try { args = JSON.parse(args); } catch { /* keep as string */ }
+		return { type: 'tool_call', data: { id: ev.ToolCall.id, name: ev.ToolCall.name, arguments: args } };
+	}
 	// UserMessage is tracked locally by the UI; drop it.
 	return null;
 }

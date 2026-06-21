@@ -1,10 +1,20 @@
 <script>
 	import { tick } from 'svelte';
 	import 'katex/dist/katex.min.css';
-	import { createSession, sendInput, approveTool, subscribeEvents } from '$lib/api.js';
+	import { listSessions, createSession, sendInput, approveTool, subscribeEvents } from '$lib/api.js';
 	import { renderMarkdown } from '$lib/markdown.js';
 
-	// --- state ---
+	// --- view state ---
+	/** @type {'browser' | 'chat'} */
+	let view = $state('browser');
+
+	// --- browser state ---
+	/** @type {import('$lib/api.js').SessionInfo[]} */
+	let sessionList = $state([]);
+	let browserLoading = $state(false);
+	let browserError = $state(/** @type {string|null} */ (null));
+
+	// --- chat state ---
 	let session = $state(/** @type {import('$lib/api.js').SessionCreds | null} */ (null));
 	let status = $state('disconnected'); // disconnected | connecting | idle | running | error
 	let model = $state('');
@@ -19,15 +29,65 @@
 	let items = $state(/** @type {ChatItem[]} */ ([]));
 	let pending = $state(/** @type {{ toolId: string, name: string, args: any } | null} */ (null));
 
-	// context usage (latest known)
 	let ctxUsed = $state(0);
 	let ctxWindow = $state(0);
 
-	let assistantIdx = -1; // index of the assistant bubble currently being streamed
-	let reasoningIdx = -1; // index of the reasoning bubble currently being streamed
+	let assistantIdx = -1;
+	let reasoningIdx = -1;
 	/** @type {AbortController | null} */
 	let sub = null;
 	let log = $state(/** @type {HTMLDivElement | undefined} */ (undefined));
+
+	// load sessions on mount
+	$effect(() => {
+		if (view === 'browser') loadSessions();
+	});
+
+	async function loadSessions() {
+		browserLoading = true;
+		browserError = null;
+		try {
+			const result = await listSessions();
+			sessionList = result.sessions.slice().sort((a, b) => b.created_at - a.created_at);
+		} catch (err) {
+			browserError = String(err);
+		} finally {
+			browserLoading = false;
+		}
+	}
+
+	/** @param {import('$lib/api.js').SessionInfo} info */
+	function openSession(info) {
+		session = {
+			session_id: info.session_id,
+			owner_token: info.owner_token,
+			viewer_token: info.viewer_token,
+			context_window: info.context_window
+		};
+		ctxWindow = info.context_window;
+		ctxUsed = 0;
+		items = [];
+		pending = null;
+		assistantIdx = -1;
+		reasoningIdx = -1;
+		sub = subscribeEvents(info.session_id, info.owner_token, onEvent, (err) => {
+			items.push({ kind: 'error', text: `stream: ${err.message}` });
+			status = 'error';
+		});
+		status = 'idle';
+		view = 'chat';
+	}
+
+	function backToBrowser() {
+		sub?.abort();
+		sub = null;
+		session = null;
+		items = [];
+		pending = null;
+		status = 'disconnected';
+		view = 'browser';
+		loadSessions();
+	}
 
 	async function scroll() {
 		await tick();
@@ -39,11 +99,17 @@
 		try {
 			session = await createSession(model.trim() || undefined);
 			ctxWindow = session.context_window;
+			ctxUsed = 0;
+			items = [];
+			pending = null;
+			assistantIdx = -1;
+			reasoningIdx = -1;
 			sub = subscribeEvents(session.session_id, session.owner_token, onEvent, (err) => {
 				items.push({ kind: 'error', text: `stream: ${err.message}` });
 				status = 'error';
 			});
 			status = 'idle';
+			view = 'chat';
 		} catch (err) {
 			items.push({ kind: 'error', text: String(err) });
 			status = 'error';
@@ -62,13 +128,13 @@
 				break;
 			}
 			case 'content': {
-				reasoningIdx = -1; // reasoning phase done
+				reasoningIdx = -1;
 				if (assistantIdx === -1) {
 					items.push({ kind: 'assistant', text: '' });
 					assistantIdx = items.length - 1;
 				}
 				items[assistantIdx].text = (items[assistantIdx].text ?? '') + ev.data.text;
-				ctxUsed += approxTokens(ev.data.text); // live estimate; corrected by metrics
+				ctxUsed += approxTokens(ev.data.text);
 				break;
 			}
 			case 'tool_call':
@@ -92,7 +158,6 @@
 			case 'metrics': {
 				const m = ev.data;
 				if (m.context_window) ctxWindow = m.context_window;
-				// snap live estimate to the server's authoritative count
 				if (m.total_tokens != null) ctxUsed = m.total_tokens;
 				else if (m.prompt_tokens != null && m.completion_tokens != null)
 					ctxUsed = m.prompt_tokens + m.completion_tokens;
@@ -126,7 +191,7 @@
 		if (!text || !session || status !== 'idle') return;
 		draft = '';
 		items.push({ kind: 'user', text });
-		ctxUsed += approxTokens(text); // live estimate; corrected by metrics
+		ctxUsed += approxTokens(text);
 		assistantIdx = -1;
 		status = 'running';
 		scroll();
@@ -167,7 +232,6 @@
 	/** @param {number} n */
 	const fmtInt = (n) => n.toLocaleString('en-US');
 
-	/** Rough client-side token estimate (~4 chars/token) for live bar fill. */
 	const approxTokens = (/** @type {string} */ s) => Math.ceil(s.length / 4);
 
 	let ctxPct = $derived(ctxWindow > 0 ? Math.min(100, (ctxUsed / ctxWindow) * 100) : 0);
@@ -180,24 +244,70 @@
 		if (m.ttftMs != null) parts.push(`TTFT ${fmtInt(Math.round(m.ttftMs))} ms`);
 		return parts.join(' · ');
 	}
+
+	/** @param {number} ts unix seconds */
+	function relTime(ts) {
+		const diff = Math.floor(Date.now() / 1000) - ts;
+		if (diff < 60) return `${diff}s ago`;
+		if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+		if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+		return `${Math.floor(diff / 86400)}d ago`;
+	}
 </script>
 
 <div class="app">
 	<header>
 		<strong>auger</strong>
-		<span class="status status-{status}">{status}</span>
-		{#if session}
-			<span class="sid">{session.session_id.slice(0, 8)}</span>
+		{#if view === 'chat'}
+			<button class="back" onclick={backToBrowser}>← Sessions</button>
+			<span class="status status-{status}">{status}</span>
+			{#if session}
+				<span class="sid">{session.session_id.slice(0, 8)}</span>
+			{/if}
 		{/if}
 	</header>
 
-	{#if !session}
-		<div class="connect">
-			<h1>Connect to agent</h1>
-			<input placeholder="model (optional)" bind:value={model} onkeydown={(e) => e.key === 'Enter' && connect()} />
-			<button onclick={connect} disabled={status === 'connecting'}>
-				{status === 'connecting' ? 'connecting…' : 'New session'}
-			</button>
+	{#if view === 'browser'}
+		<div class="browser">
+			<div class="browser-header">
+				<span class="browser-title">Sessions</span>
+				<div class="new-session-form">
+					<input
+						class="model-input"
+						placeholder="model (optional)"
+						bind:value={model}
+						onkeydown={(e) => e.key === 'Enter' && connect()}
+					/>
+					<button onclick={connect} disabled={status === 'connecting'}>
+						{status === 'connecting' ? 'connecting…' : '+ New'}
+					</button>
+				</div>
+			</div>
+
+			{#if browserLoading}
+				<div class="browser-empty">Loading…</div>
+			{:else if browserError}
+				<div class="browser-empty error-text">⚠ {browserError}</div>
+			{:else if sessionList.length === 0}
+				<div class="browser-empty">No active sessions. Create one above.</div>
+			{:else}
+				<ul class="session-list">
+					{#each sessionList as info}
+						<li class="session-row">
+							<div class="session-model">{info.model}</div>
+							<div class="session-meta">
+								<span class="session-id">{info.session_id.slice(0, 8)}</span>
+								<span class="session-age">{relTime(info.created_at)}</span>
+							</div>
+							<button class="open-btn" onclick={() => openSession(info)}>Open →</button>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+
+			<div class="browser-refresh">
+				<button class="ghost" onclick={loadSessions} disabled={browserLoading}>Refresh</button>
+			</div>
 		</div>
 	{:else}
 		<div class="ctx" title="{fmtInt(ctxUsed)} / {ctxWindow ? fmtInt(ctxWindow) : '?'} context tokens">
@@ -282,6 +392,16 @@
 		padding: 0.7rem 1rem;
 		border-bottom: 1px solid var(--border);
 	}
+	.back {
+		font-size: 0.82rem;
+		padding: 0.2rem 0.6rem;
+		background: none;
+		border-color: var(--border);
+		color: var(--muted);
+	}
+	.back:hover {
+		color: var(--text);
+	}
 	.status {
 		font-size: 0.78rem;
 		padding: 0.1rem 0.5rem;
@@ -308,6 +428,111 @@
 		font-family: ui-monospace, monospace;
 		font-size: 0.78rem;
 	}
+
+	/* --- browser --- */
+	.browser {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+	}
+	.browser-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 0.9rem 1rem 0.6rem;
+		border-bottom: 1px solid var(--border);
+	}
+	.browser-title {
+		font-size: 0.88rem;
+		font-weight: 600;
+		color: var(--muted);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+	}
+	.new-session-form {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+	}
+	.model-input {
+		width: 180px;
+		font-size: 0.84rem;
+	}
+	.browser-empty {
+		padding: 2rem 1rem;
+		color: var(--muted);
+		font-size: 0.88rem;
+		text-align: center;
+	}
+	.error-text {
+		color: var(--error);
+	}
+	.session-list {
+		list-style: none;
+		margin: 0;
+		padding: 0.5rem 0;
+		overflow-y: auto;
+		flex: 1;
+	}
+	.session-row {
+		display: flex;
+		align-items: center;
+		gap: 0.8rem;
+		padding: 0.7rem 1rem;
+		border-bottom: 1px solid var(--border);
+		cursor: pointer;
+		transition: background 0.1s;
+	}
+	.session-row:hover {
+		background: var(--panel);
+	}
+	.session-model {
+		font-family: ui-monospace, monospace;
+		font-size: 0.84rem;
+		flex: 1;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.session-meta {
+		display: flex;
+		gap: 0.8rem;
+		color: var(--muted);
+		font-size: 0.78rem;
+		font-family: ui-monospace, monospace;
+		white-space: nowrap;
+	}
+	.session-id {
+		color: var(--muted);
+	}
+	.session-age {
+		color: var(--muted);
+	}
+	.open-btn {
+		font-size: 0.78rem;
+		padding: 0.2rem 0.6rem;
+		border-color: var(--border);
+		color: var(--muted);
+		background: none;
+		white-space: nowrap;
+	}
+	.open-btn:hover {
+		color: var(--accent);
+		border-color: var(--accent);
+	}
+	.browser-refresh {
+		padding: 0.5rem 1rem;
+		border-top: 1px solid var(--border);
+	}
+	.ghost {
+		background: none;
+		font-size: 0.8rem;
+		color: var(--muted);
+		border-color: var(--border);
+	}
+
+	/* --- ctx bar --- */
 	.ctx {
 		display: flex;
 		align-items: center;
@@ -345,17 +570,8 @@
 		font-size: 0.72rem;
 		font-family: ui-monospace, monospace;
 	}
-	.connect {
-		margin: auto;
-		display: flex;
-		flex-direction: column;
-		gap: 0.7rem;
-		width: 280px;
-	}
-	.connect h1 {
-		font-size: 1.1rem;
-		margin: 0 0 0.3rem;
-	}
+
+	/* --- chat --- */
 	.log {
 		flex: 1;
 		overflow-y: auto;
@@ -388,7 +604,6 @@
 		background: var(--user);
 		border-color: #2c447f;
 	}
-	/* rendered markdown */
 	.bubble.md {
 		white-space: normal;
 	}

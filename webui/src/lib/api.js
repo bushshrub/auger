@@ -20,6 +20,25 @@ const BASE = '/v1';
  */
 
 /**
+ * @typedef {Object} SessionInfo
+ * @property {string} session_id
+ * @property {string} model
+ * @property {number} created_at
+ * @property {number} context_window
+ * @property {string} owner_token
+ * @property {string} viewer_token
+ */
+
+/**
+ * @returns {Promise<{ sessions: SessionInfo[] }>}
+ */
+export async function listSessions() {
+	const res = await fetch(`${BASE}/sessions`);
+	if (!res.ok) throw new Error(`listSessions failed: ${res.status}`);
+	return res.json();
+}
+
+/**
  * @param {string|undefined} model
  * @returns {Promise<SessionCreds>}
  */
