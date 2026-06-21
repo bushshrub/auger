@@ -1,0 +1,469 @@
+use async_stream::stream;
+use futures::StreamExt;
+use provider::{
+    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage, ToolCall,
+};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Reasoning effort level for models that support it (o3, o4-mini, etc.).
+/// When set, requests reasoning summaries via `reasoning.summary = "auto"`.
+#[derive(Debug, Clone, Copy)]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    fn as_str(self) -> &'static str {
+        match self {
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            ReasoningEffort::High => "high",
+        }
+    }
+}
+
+pub struct OpenAiResponsesProvider {
+    client: Client,
+    api_key: String,
+    base_url: String,
+    reasoning_effort: Option<ReasoningEffort>,
+}
+
+impl OpenAiResponsesProvider {
+    pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self {
+            client: Client::new(),
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+            reasoning_effort: None,
+        }
+    }
+
+    pub fn with_reasoning(mut self, effort: ReasoningEffort) -> Self {
+        self.reasoning_effort = Some(effort);
+        self
+    }
+
+    fn url(&self) -> String {
+        format!("{}/responses", self.base_url.trim_end_matches('/'))
+    }
+
+    fn auth_header(&self) -> Option<String> {
+        if self.api_key.is_empty() {
+            None
+        } else {
+            Some(format!("Bearer {}", self.api_key))
+        }
+    }
+}
+
+// --- Request types ---
+
+#[derive(Serialize)]
+struct ReasoningParam {
+    effort: &'static str,
+    summary: &'static str,
+}
+
+#[derive(Serialize)]
+struct ResponsesRequest {
+    model: String,
+    input: Vec<Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<ToolSpec>,
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<ReasoningParam>,
+}
+
+#[derive(Serialize)]
+struct ToolSpec {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    parameters: Value,
+}
+
+// --- Response types ---
+
+#[derive(Deserialize)]
+struct ResponsesResponse {
+    status: Option<String>,
+    output: Vec<OutputItem>,
+    usage: Option<ResponseUsage>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum OutputItem {
+    #[serde(rename = "message")]
+    Message { content: Vec<ContentPart> },
+    #[serde(rename = "function_call")]
+    FunctionCall { call_id: String, name: String, arguments: String },
+    #[serde(rename = "reasoning")]
+    Reasoning { summary: Vec<SummaryPart> },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum ContentPart {
+    #[serde(rename = "output_text")]
+    OutputText { text: String },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum SummaryPart {
+    #[serde(rename = "summary_text")]
+    SummaryText { text: String },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Deserialize)]
+struct ResponseUsage {
+    input_tokens: i32,
+    output_tokens: i32,
+    total_tokens: i32,
+    input_tokens_details: Option<InputTokenDetails>,
+}
+
+#[derive(Deserialize)]
+struct InputTokenDetails {
+    cached_tokens: Option<i32>,
+}
+
+// --- SSE event types ---
+
+#[derive(Deserialize)]
+struct SseEvent {
+    #[serde(rename = "type")]
+    kind: String,
+    delta: Option<String>,
+    output_index: Option<usize>,
+    item: Option<Value>,
+    response: Option<CompletedResponse>,
+}
+
+#[derive(Deserialize)]
+struct CompletedResponse {
+    status: Option<String>,
+    usage: Option<ResponseUsage>,
+}
+
+// --- Helpers ---
+
+fn messages_to_input(messages: Vec<provider::Message>) -> Vec<Value> {
+    let mut items = Vec::new();
+    for msg in messages {
+        match msg {
+            provider::Message::System(content) => {
+                items.push(serde_json::json!({"role": "system", "content": content}));
+            }
+            provider::Message::User(content) => {
+                items.push(serde_json::json!({"role": "user", "content": content}));
+            }
+            provider::Message::Assistant { content, tool_calls } => {
+                if !content.is_empty() {
+                    items.push(serde_json::json!({"role": "assistant", "content": content}));
+                }
+                for tc in tool_calls {
+                    items.push(serde_json::json!({
+                        "type": "function_call",
+                        "call_id": tc.id,
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                    }));
+                }
+            }
+            provider::Message::Tool { tool_call_id, content } => {
+                items.push(serde_json::json!({
+                    "type": "function_call_output",
+                    "call_id": tool_call_id,
+                    "output": content,
+                }));
+            }
+        }
+    }
+    items
+}
+
+fn tools_to_spec(tools: Vec<provider::ToolDefinition>) -> Vec<ToolSpec> {
+    tools
+        .into_iter()
+        .map(|t| ToolSpec {
+            kind: "function",
+            name: t.name,
+            description: t.description,
+            parameters: t.parameters,
+        })
+        .collect()
+}
+
+fn map_usage(u: ResponseUsage) -> TokenUsage {
+    TokenUsage {
+        prompt_tokens: Some(u.input_tokens),
+        completion_tokens: Some(u.output_tokens),
+        total_tokens: Some(u.total_tokens),
+        cached_tokens: u.input_tokens_details.and_then(|d| d.cached_tokens),
+        cache_creation_tokens: None,
+    }
+}
+
+fn extract_text(output: &[OutputItem]) -> String {
+    output
+        .iter()
+        .flat_map(|item| match item {
+            OutputItem::Message { content } => content
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::OutputText { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => vec![],
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn extract_reasoning(output: &[OutputItem]) -> Option<String> {
+    let text: String = output
+        .iter()
+        .flat_map(|item| match item {
+            OutputItem::Reasoning { summary } => summary
+                .iter()
+                .filter_map(|p| match p {
+                    SummaryPart::SummaryText { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => vec![],
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    if text.is_empty() { None } else { Some(text) }
+}
+
+fn extract_tool_calls(output: &[OutputItem]) -> Option<Vec<ToolCall>> {
+    let calls: Vec<ToolCall> = output
+        .iter()
+        .filter_map(|item| match item {
+            OutputItem::FunctionCall { call_id, name, arguments } => Some(ToolCall {
+                id: call_id.clone(),
+                name: name.clone(),
+                arguments: arguments.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
+    if calls.is_empty() { None } else { Some(calls) }
+}
+
+fn stop_reason(status: Option<&str>, has_tool_calls: bool) -> Option<String> {
+    if has_tool_calls {
+        Some("tool_calls".into())
+    } else {
+        status.map(str::to_string)
+    }
+}
+
+// --- Provider impl ---
+
+#[async_trait::async_trait]
+impl LlmProvider for OpenAiResponsesProvider {
+    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
+        let body = ResponsesRequest {
+            model: request.model,
+            input: messages_to_input(request.messages),
+            tools: tools_to_spec(request.tools),
+            stream: false,
+            reasoning: self.reasoning_effort.map(|e| ReasoningParam {
+                effort: e.as_str(),
+                summary: "auto",
+            }),
+        };
+
+        let mut req = self
+            .client
+            .post(self.url())
+            .header("Content-Type", "application/json");
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+
+        let resp = req
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LlmError { message: e.to_string() })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(LlmError { message: format!("HTTP {}: {}", status, text) });
+        }
+
+        let data: ResponsesResponse = resp
+            .json()
+            .await
+            .map_err(|e| LlmError { message: format!("parse error: {}", e) })?;
+
+        let tool_calls = extract_tool_calls(&data.output);
+        let has_tool_calls = tool_calls.is_some();
+
+        Ok(LlmResponse {
+            content: extract_text(&data.output),
+            reasoning: extract_reasoning(&data.output),
+            tool_calls,
+            usage: data.usage.map(map_usage),
+            stop_reason: stop_reason(data.status.as_deref(), has_tool_calls),
+        })
+    }
+
+    async fn stream(&self, request: LlmRequest) -> Result<LlmStream, LlmError> {
+        let body = ResponsesRequest {
+            model: request.model,
+            input: messages_to_input(request.messages),
+            tools: tools_to_spec(request.tools),
+            stream: true,
+            reasoning: self.reasoning_effort.map(|e| ReasoningParam {
+                effort: e.as_str(),
+                summary: "auto",
+            }),
+        };
+
+        let mut req = self
+            .client
+            .post(self.url())
+            .header("Content-Type", "application/json");
+        if let Some(auth) = self.auth_header() {
+            req = req.header("Authorization", auth);
+        }
+
+        let resp = req
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LlmError { message: e.to_string() })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(LlmError { message: format!("HTTP {}: {}", status, text) });
+        }
+
+        struct FcAccum {
+            call_id: String,
+            name: String,
+            arguments: String,
+        }
+
+        let s = stream! {
+            let mut bytes = resp.bytes_stream();
+            let mut buf = String::new();
+            let mut fc_accums: std::collections::HashMap<usize, FcAccum> =
+                std::collections::HashMap::new();
+
+            while let Some(chunk) = bytes.next().await {
+                match chunk {
+                    Err(e) => {
+                        yield Err(LlmError { message: e.to_string() });
+                        return;
+                    }
+                    Ok(raw) => {
+                        buf.push_str(&String::from_utf8_lossy(&raw));
+                        loop {
+                            let Some(nl) = buf.find('\n') else { break };
+                            let line = buf[..nl].trim_end_matches('\r').to_string();
+                            buf = buf[nl + 1..].to_string();
+
+                            let Some(data) = line.strip_prefix("data: ") else { continue };
+                            if data == "[DONE]" {
+                                return;
+                            }
+
+                            let event: SseEvent = match serde_json::from_str(data) {
+                                Ok(e) => e,
+                                Err(_) => continue,
+                            };
+
+                            match event.kind.as_str() {
+                                "response.output_text.delta" => {
+                                    if let Some(delta) = event.delta {
+                                        if !delta.is_empty() {
+                                            yield Ok(StreamEvent::Text(delta));
+                                        }
+                                    }
+                                }
+                                "response.reasoning_summary_text.delta" => {
+                                    if let Some(delta) = event.delta {
+                                        if !delta.is_empty() {
+                                            yield Ok(StreamEvent::Reasoning(delta));
+                                        }
+                                    }
+                                }
+                                "response.output_item.added" => {
+                                    if let (Some(idx), Some(item)) =
+                                        (event.output_index, &event.item)
+                                    {
+                                        if item["type"] == "function_call" {
+                                            let call_id =
+                                                item["call_id"].as_str().unwrap_or("").to_string();
+                                            let name =
+                                                item["name"].as_str().unwrap_or("").to_string();
+                                            fc_accums.insert(
+                                                idx,
+                                                FcAccum { call_id, name, arguments: String::new() },
+                                            );
+                                        }
+                                    }
+                                }
+                                "response.function_call_arguments.delta" => {
+                                    if let (Some(idx), Some(delta)) =
+                                        (event.output_index, event.delta)
+                                    {
+                                        if let Some(acc) = fc_accums.get_mut(&idx) {
+                                            acc.arguments.push_str(&delta);
+                                            yield Ok(StreamEvent::ToolCall {
+                                                id: acc.call_id.clone(),
+                                                name: acc.name.clone(),
+                                                arguments: acc.arguments.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                                "response.completed" => {
+                                    let (usage, sr) = match event.response {
+                                        Some(r) => {
+                                            let has_tc = !fc_accums.is_empty();
+                                            let sr = stop_reason(r.status.as_deref(), has_tc);
+                                            (r.usage.map(map_usage), sr)
+                                        }
+                                        None => (None, None),
+                                    };
+                                    yield Ok(StreamEvent::Done { usage, stop_reason: sr });
+                                    return;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .boxed();
+
+        Ok(s)
+    }
+}
