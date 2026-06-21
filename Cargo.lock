@@ -3,9 +3,24 @@
 version = 4
 
 [[package]]
+name = "agent-core"
+version = "0.1.0"
+dependencies = [
+ "agent-tools",
+ "futures",
+ "provider",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "agent-server"
 version = "0.1.0"
 dependencies = [
+ "agent-core",
  "agent-tools",
  "axum",
  "futures",

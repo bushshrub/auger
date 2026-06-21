@@ -15,19 +15,19 @@ impl From<String> for SystemMessage {
 }
 
 
-pub enum Turn {
+pub(crate) enum Turn {
     User(UserTurn),
     ClankerTurn(ClankerTurn),
 }
 
 /// A conversation between the user and the clanker.
-pub struct Conversation {
+pub(crate) struct Conversation {
     system: SystemMessage,
     turns: Vec<Turn>,
 }
 
 impl Conversation {
-    pub fn new(system: SystemMessage) -> Self {
+    pub(crate) fn new(system: SystemMessage) -> Self {
         Self {
             system,
             turns: Vec::new(),

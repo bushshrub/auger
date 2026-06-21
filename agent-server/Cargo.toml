@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+agent-core = { version = "0.1.0", path = "../agent-core" }
 agent-tools = { path = "../agent-tools" }
 axum = { version = "0.8.9", features = ["macros"] }
 futures.workspace = true

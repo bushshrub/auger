@@ -13,7 +13,7 @@ pub(crate) enum Cmd {
 
 /// Events
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) enum SessionEvent {
+pub enum SessionEvent {
     /// The user sent a message
     UserMessage { content: Vec<UserContent> },
     // todo: split clanker events off into separate enum

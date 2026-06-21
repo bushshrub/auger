@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::mpsc;
 use provider::{LlmProvider, ToolCall};
-use tokio::sync::{broadcast, mpsc};
+use tokio::runtime::Handle;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 use crate::conversation::Conversation;
 use crate::session::events::{Cmd, SessionEvent};
@@ -14,7 +16,7 @@ use agent_tools::{Dummy, Tool};
 use crate::conversation::UserContent;
 
 /// Represents a conversation between the user and a clanker.
-pub(crate) struct Session {
+pub struct Session {
     id: SessionId,
     model: String,
     conversation: Conversation,
@@ -26,7 +28,7 @@ pub(crate) struct Session {
 impl Session {
     // TODO: no need to share LlmProvider. session should take care of spawning it.
     pub fn spawn(prompt: SystemPrompt, provider: &Arc<impl LlmProvider + 'static>, model: String) -> SessionHandle {
-        let (cmds_tx, cmds_rx) = mpsc::channel(32);
+        let (cmds_tx, cmds_rx) = mpsc::channel();
         let (events_tx, _) = broadcast::channel(32);
 
         let id = Uuid::new_v4();
@@ -40,17 +42,24 @@ impl Session {
             events: events_tx.clone(),
         };
 
-        tokio::spawn(session.run(cmds_rx));
+        // Session owns an OS thread, not a tokio task. The tokio runtime is still
+        // reachable via the captured `Handle` to drive async provider IO (and fan
+        // out IO work) via `block_on`, but the session's lifetime is the thread's.
+        let handle = Handle::current();
+        std::thread::Builder::new()
+            .name(format!("session-{id}"))
+            .spawn(move || session.run(cmds_rx, handle))
+            .expect("failed to spawn session thread");
         SessionHandle::new(id, model, cmds_tx, events_tx)
     }
 
     /// Runs the session. The user will send commands via `rx`.
-    async fn run(self, mut rx: mpsc::Receiver<Cmd>) {
+    fn run(self, rx: mpsc::Receiver<Cmd>, handle: Handle) {
 
         let mut tool_calls: HashMap<String, (String, String)> = HashMap::new();
 
         info!(session_id = %self.id, "Starting session");
-        while let Some(cmd) = rx.recv().await {
+        while let Ok(cmd) = rx.recv() {
             match cmd {
                 Cmd::SendMessage(content) => {
                     let _ = self.events.send(content.clone().into());
@@ -76,17 +85,31 @@ impl Session {
                             parameters: dummy_params.0,
                         }],
                     };
-                    if let Ok(mut stream) = self.provider.stream(request).await {
+
+                    // Drive the async provider stream on the tokio runtime. block_on
+                    // parks this session thread until the turn completes; references
+                    // to session state are borrowed for the duration only.
+                    let events = &self.events;
+                    let provider = &self.provider;
+                    let tool_calls = &mut tool_calls;
+                    handle.block_on(async move {
+                        let mut stream = match provider.stream(request).await {
+                            Ok(stream) => stream,
+                            Err(e) => {
+                                error!("Error opening provider stream: {:?}", e);
+                                return;
+                            }
+                        };
 
                         while let Some(event_result) = stream.next().await {
                             match event_result {
                                 Ok(provider::StreamEvent::TextDelta(text)) => {
                                     trace!("text delta: {}", text);
-                                    let _ = self.events.send(SessionEvent::Content { delta: text });
+                                    let _ = events.send(SessionEvent::Content { delta: text });
                                 }
                                 Ok(provider::StreamEvent::ReasoningDelta(text)) => {
                                     trace!("reasoning delta: {}", text);
-                                    let _ = self.events.send(SessionEvent::Reasoning { delta: text });
+                                    let _ = events.send(SessionEvent::Reasoning { delta: text });
                                 }
                                 Ok(provider::StreamEvent::ToolCall { id, name, arguments }) => {
                                     trace!(tool_call_id = %id, tool = %name, "tool call delta: {}", arguments)
@@ -96,12 +119,12 @@ impl Session {
                                 Ok(provider::StreamEvent::ToolCallComplete {id, name, arguments}) => {
                                     debug!(tool_call_id = %id, tool = %name, "tool call complete: {}", arguments);
                                     tool_calls.insert(id.clone(), (name.clone(), arguments.clone()));
-                                    let _ = self.events.send(SessionEvent::ToolCallRequest { id, name, arguments });
+                                    let _ = events.send(SessionEvent::ToolCallRequest { id, name, arguments });
 
                                 }
                                 Ok(provider::StreamEvent::Done { usage, stop_reason }) => {
                                     debug!("Response has finished generating. Usage: {:?}, stop reason: {:?}", usage, stop_reason);
-                                    let _ = self.events.send(SessionEvent::Done);
+                                    let _ = events.send(SessionEvent::Done);
                                 },
                                 // TODO: Handle errors while streaming e.g. rate limit, connection drops.
                                 Err(e) => {
@@ -109,7 +132,7 @@ impl Session {
                                 },
                             }
                         }
-                    }
+                    });
                 }
                 Cmd::ApproveToolCall { tool_call_id } => {
                     let (tool_name, tool_args) = match tool_calls.get(&tool_call_id) {

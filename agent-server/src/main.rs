@@ -16,14 +16,9 @@ use tracing::{debug, info};
 use uuid::Uuid;
 use agent_tools::{ReadFile, Tool};
 use provider_openai_responses::OpenAiResponsesProvider;
-use session::handle::SessionHandle;
+use agent_core::{Session, SessionHandle, SystemPrompt};
 use crate::server_types::{ApproveRequest, CreateSessionRequest, UserInputRequest};
-use crate::session::session_loop::Session;
-use crate::system_prompt::SystemPrompt;
 
-mod session;
-mod conversation;
-mod system_prompt;
 mod server_types;
 
 const DEFAULT_MODEL: &str = "qwen3.6-27b";
@@ -165,7 +160,7 @@ async fn send_input(
     Json(req): Json<UserInputRequest>,
 ) -> impl IntoResponse {
     debug!("Enqueued message: '{}'", req.input);
-    session_handle.enqueue(vec![req.input.into()]).await.expect("closed");
+    session_handle.enqueue(vec![req.input.into()]).expect("closed");
 
     // TODO: bad return type
     Json(json!({ "status": "ok" }))
@@ -181,7 +176,7 @@ async fn respond_to_tool_call(
     span.record("session_id", tracing::field::display(&session_handle.id));
     span.record("call_id", tracing::field::display(&req.tool_call_id));
     debug!("Tool call approved: {}", req.approved);
-    session_handle.respond_to_tool_call(req.tool_call_id, req.approved).await.expect("closed");
+    session_handle.respond_to_tool_call(req.tool_call_id, req.approved).expect("closed");
     // TODO: garbage return type
     Json(json!({ "status": "ok" }))
 }

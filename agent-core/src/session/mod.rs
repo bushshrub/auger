@@ -4,7 +4,7 @@ use provider::LlmProvider;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-mod events;
+pub(crate) mod events;
 pub(crate) mod handle;
 
 pub(crate) mod session_loop;
@@ -17,11 +17,11 @@ pub enum SessionStatus {
     AwaitingApproval,
 }
 
-pub(crate) type SessionId = Uuid;
+pub type SessionId = Uuid;
 
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Copy)]
-pub(crate) struct ReadToken (Uuid);
+pub struct ReadToken (Uuid);
 
 impl Display for ReadToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -36,7 +36,7 @@ impl From<ReadToken> for String {
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Copy)]
-pub(crate) struct WriteToken (Uuid);
+pub struct WriteToken (Uuid);
 
 impl Display for WriteToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
