@@ -103,11 +103,21 @@ struct ResponsesResponse {
 #[serde(tag = "type")]
 enum OutputItem {
     #[serde(rename = "message")]
-    Message { content: Vec<ContentPart> },
+    Message {
+        content: Vec<ContentPart>,
+        // llama.cpp puts thinking here instead of a separate reasoning output item
+        reasoning_content: Option<String>,
+    },
     #[serde(rename = "function_call")]
     FunctionCall { call_id: String, name: String, arguments: String },
     #[serde(rename = "reasoning")]
-    Reasoning { summary: Vec<SummaryPart> },
+    Reasoning {
+        // OpenAI spec uses `summary`, llama.cpp uses `content`
+        #[serde(default)]
+        summary: Vec<ReasoningPart>,
+        #[serde(default)]
+        content: Vec<ReasoningPart>,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -123,9 +133,11 @@ enum ContentPart {
 
 #[derive(Deserialize)]
 #[serde(tag = "type")]
-enum SummaryPart {
+enum ReasoningPart {
     #[serde(rename = "summary_text")]
     SummaryText { text: String },
+    #[serde(rename = "reasoning_text")]
+    ReasoningText { text: String },
     #[serde(other)]
     Unknown,
 }
@@ -150,6 +162,8 @@ struct SseEvent {
     #[serde(rename = "type")]
     kind: String,
     delta: Option<String>,
+    // llama.cpp sends thinking here on the same delta event (mirrors chat completions behavior)
+    reasoning_content: Option<String>,
     output_index: Option<usize>,
     item: Option<Value>,
     response: Option<CompletedResponse>,
@@ -224,7 +238,7 @@ fn extract_text(output: &[OutputItem]) -> String {
     output
         .iter()
         .flat_map(|item| match item {
-            OutputItem::Message { content } => content
+            OutputItem::Message { content, .. } => content
                 .iter()
                 .filter_map(|p| match p {
                     ContentPart::OutputText { text } => Some(text.as_str()),
@@ -238,21 +252,26 @@ fn extract_text(output: &[OutputItem]) -> String {
 }
 
 fn extract_reasoning(output: &[OutputItem]) -> Option<String> {
-    let text: String = output
-        .iter()
-        .flat_map(|item| match item {
-            OutputItem::Reasoning { summary } => summary
-                .iter()
-                .filter_map(|p| match p {
-                    SummaryPart::SummaryText { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
-            _ => vec![],
-        })
-        .collect::<Vec<_>>()
-        .join("");
-    if text.is_empty() { None } else { Some(text) }
+    let mut parts: Vec<&str> = Vec::new();
+    for item in output {
+        match item {
+            OutputItem::Reasoning { summary, content } => {
+                for p in summary.iter().chain(content.iter()) {
+                    let text = match p {
+                        ReasoningPart::SummaryText { text } => Some(text.as_str()),
+                        ReasoningPart::ReasoningText { text } => Some(text.as_str()),
+                        ReasoningPart::Unknown => None,
+                    };
+                    if let Some(t) = text { parts.push(t); }
+                }
+            }
+            OutputItem::Message { reasoning_content: Some(rc), .. } if !rc.is_empty() => {
+                parts.push(rc.as_str());
+            }
+            _ => {}
+        }
+    }
+    if parts.is_empty() { None } else { Some(parts.join("")) }
 }
 
 fn extract_tool_calls(output: &[OutputItem]) -> Option<Vec<ToolCall>> {
@@ -400,16 +419,21 @@ impl LlmProvider for OpenAiResponsesProvider {
 
                             match event.kind.as_str() {
                                 "response.output_text.delta" => {
+                                    if let Some(rc) = event.reasoning_content {
+                                        if !rc.is_empty() {
+                                            yield Ok(StreamEvent::ReasoningDelta(rc));
+                                        }
+                                    }
                                     if let Some(delta) = event.delta {
                                         if !delta.is_empty() {
-                                            yield Ok(StreamEvent::Text(delta));
+                                            yield Ok(StreamEvent::TextDelta(delta));
                                         }
                                     }
                                 }
-                                "response.reasoning_summary_text.delta" => {
+                                "response.reasoning_text.delta" => {
                                     if let Some(delta) = event.delta {
                                         if !delta.is_empty() {
-                                            yield Ok(StreamEvent::Reasoning(delta));
+                                            yield Ok(StreamEvent::ReasoningDelta(delta));
                                         }
                                     }
                                 }

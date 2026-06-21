@@ -15,8 +15,7 @@ const enc = new TextEncoder();
 function transformEvent(ev) {
 	if (ev === 'Done') return { type: 'turn_complete', data: {} };
 	if (ev.Content) return { type: 'content', data: { text: ev.Content.delta } };
-	// Reasoning is not yet rendered in the UI; map it to content so text isn't lost.
-	if (ev.Reasoning) return { type: 'content', data: { text: ev.Reasoning.delta } };
+	if (ev.Reasoning) return { type: 'reasoning', data: { text: ev.Reasoning.delta } };
 	// UserMessage is tracked locally by the UI; drop it.
 	return null;
 }

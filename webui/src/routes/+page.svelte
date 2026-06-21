@@ -12,7 +12,7 @@
 
 	/**
 	 * @typedef {{ tokens?: number|null, ttftMs?: number|null, tps?: number|null }} MsgMeta
-	 * @typedef {{ kind: 'user'|'assistant'|'tool'|'error', text?: string,
+	 * @typedef {{ kind: 'user'|'assistant'|'reasoning'|'tool'|'error', text?: string,
 	 *   toolName?: string, toolId?: string, args?: any, result?: any,
 	 *   decided?: 'approved'|'denied', meta?: MsgMeta }} ChatItem
 	 */
@@ -24,6 +24,7 @@
 	let ctxWindow = $state(0);
 
 	let assistantIdx = -1; // index of the assistant bubble currently being streamed
+	let reasoningIdx = -1; // index of the reasoning bubble currently being streamed
 	/** @type {AbortController | null} */
 	let sub = null;
 	let log = $state(/** @type {HTMLDivElement | undefined} */ (undefined));
@@ -52,7 +53,16 @@
 	/** @param {any} ev */
 	function onEvent(ev) {
 		switch (ev.type) {
+			case 'reasoning': {
+				if (reasoningIdx === -1) {
+					items.push({ kind: 'reasoning', text: '' });
+					reasoningIdx = items.length - 1;
+				}
+				items[reasoningIdx].text = (items[reasoningIdx].text ?? '') + ev.data.text;
+				break;
+			}
 			case 'content': {
+				reasoningIdx = -1; // reasoning phase done
 				if (assistantIdx === -1) {
 					items.push({ kind: 'assistant', text: '' });
 					assistantIdx = items.length - 1;
@@ -63,6 +73,7 @@
 			}
 			case 'tool_call':
 				assistantIdx = -1;
+				reasoningIdx = -1;
 				items.push({
 					kind: 'tool',
 					toolId: ev.data.id,
@@ -96,11 +107,13 @@
 			}
 			case 'turn_complete':
 				assistantIdx = -1;
+				reasoningIdx = -1;
 				status = 'idle';
 				break;
 			case 'error':
 				items.push({ kind: 'error', text: ev.data.message });
 				assistantIdx = -1;
+				reasoningIdx = -1;
 				pending = null;
 				status = 'idle';
 				break;
@@ -204,6 +217,14 @@
 						<!-- eslint-disable-next-line svelte/no-at-html-tags -->
 						<div class="bubble md">{@html renderMarkdown(item.text)}</div>
 						{#if item.meta}<div class="meta">{metaLine(item.meta)}</div>{/if}
+					</div>
+				{:else if item.kind === 'reasoning'}
+					<div class="msg reasoning">
+						<details>
+							<summary>Thinking</summary>
+							<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+							<div class="bubble md reasoning-body">{@html renderMarkdown(item.text)}</div>
+						</details>
 					</div>
 				{:else if item.kind === 'error'}
 					<div class="msg error"><div class="bubble">⚠ {item.text}</div></div>
@@ -444,6 +465,33 @@
 		margin: 0.7rem 0;
 		overflow-x: auto;
 		overflow-y: hidden;
+	}
+	.msg.reasoning {
+		align-items: flex-start;
+		width: 100%;
+	}
+	.msg.reasoning details {
+		width: 100%;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		padding: 0.4rem 0.7rem;
+		background: var(--panel);
+	}
+	.msg.reasoning summary {
+		cursor: pointer;
+		color: var(--muted);
+		font-size: 0.78rem;
+		font-style: italic;
+		user-select: none;
+	}
+	.reasoning-body {
+		margin-top: 0.5rem;
+		color: var(--muted);
+		font-size: 0.82rem;
+		background: none;
+		border: none;
+		padding: 0;
+		max-width: 100%;
 	}
 	.error .bubble {
 		border-color: #5a2f2f;

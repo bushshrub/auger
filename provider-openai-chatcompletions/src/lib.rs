@@ -1,16 +1,10 @@
 use async_openai::config::OpenAIConfig;
-use async_openai::types::chat::{
-    ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
-    ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
-    ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestToolMessage,
-    ChatCompletionRequestUserMessageArgs, ChatCompletionTool, ChatCompletionTools,
-    CompletionUsage, CreateChatCompletionRequestArgs, FinishReason, FunctionCall, FunctionObject,
-};
 use async_openai::Client;
 use futures::StreamExt;
 use provider::{
     LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage, ToolCall,
 };
+use serde_json::{json, Value};
 
 pub struct OpenAiChatCompletionsProvider {
     client: Client<OpenAIConfig>,
@@ -27,211 +21,190 @@ impl OpenAiChatCompletionsProvider {
     }
 }
 
-fn to_openai_messages(messages: Vec<provider::Message>) -> Vec<ChatCompletionRequestMessage> {
+fn messages_to_json(messages: Vec<provider::Message>) -> Vec<Value> {
     messages
         .into_iter()
         .map(|m| match m {
-            provider::Message::System(content) => ChatCompletionRequestMessage::System(
-                ChatCompletionRequestSystemMessageArgs::default()
-                    .content(content)
-                    .build()
-                    .unwrap(),
-            ),
-            provider::Message::User(content) => ChatCompletionRequestMessage::User(
-                ChatCompletionRequestUserMessageArgs::default()
-                    .content(content)
-                    .build()
-                    .unwrap(),
-            ),
+            provider::Message::System(content) => json!({"role": "system", "content": content}),
+            provider::Message::User(content) => json!({"role": "user", "content": content}),
             provider::Message::Assistant { content, tool_calls } => {
-                let mut builder = ChatCompletionRequestAssistantMessageArgs::default();
+                let mut msg = json!({"role": "assistant"});
                 if !content.is_empty() {
-                    builder.content(content);
+                    msg["content"] = json!(content);
                 }
                 if !tool_calls.is_empty() {
-                    let oai_tool_calls: Vec<ChatCompletionMessageToolCalls> = tool_calls
+                    msg["tool_calls"] = json!(tool_calls
                         .into_iter()
-                        .map(|tc| {
-                            ChatCompletionMessageToolCalls::Function(ChatCompletionMessageToolCall {
-                                id: tc.id,
-                                function: FunctionCall {
-                                    name: tc.name,
-                                    arguments: tc.arguments,
-                                },
-                            })
-                        })
-                        .collect();
-                    builder.tool_calls(oai_tool_calls);
+                        .map(|tc| json!({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {"name": tc.name, "arguments": tc.arguments}
+                        }))
+                        .collect::<Vec<_>>());
                 }
-                ChatCompletionRequestMessage::Assistant(builder.build().unwrap())
+                msg
             }
             provider::Message::Tool { tool_call_id, content } => {
-                ChatCompletionRequestMessage::Tool(ChatCompletionRequestToolMessage {
-                    content: content.into(),
-                    tool_call_id,
-                })
+                json!({"role": "tool", "tool_call_id": tool_call_id, "content": content})
             }
         })
         .collect()
 }
 
-fn to_openai_tools(tools: Vec<provider::ToolDefinition>) -> Vec<ChatCompletionTools> {
+fn tools_to_json(tools: Vec<provider::ToolDefinition>) -> Vec<Value> {
     tools
         .into_iter()
         .map(|t| {
-            ChatCompletionTools::Function(ChatCompletionTool {
-                function: FunctionObject {
-                    name: t.name,
-                    description: t.description,
-                    parameters: Some(t.parameters),
-                    strict: None,
-                },
+            json!({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                }
             })
         })
         .collect()
 }
 
-fn map_usage(usage: CompletionUsage) -> TokenUsage {
-    TokenUsage {
-        prompt_tokens: Some(usage.prompt_tokens as i32),
-        completion_tokens: Some(usage.completion_tokens as i32),
-        total_tokens: Some(usage.total_tokens as i32),
-        cached_tokens: None,
+fn extract_usage(v: &Value) -> Option<TokenUsage> {
+    let u = v.get("usage")?;
+    Some(TokenUsage {
+        prompt_tokens: u["prompt_tokens"].as_i64().map(|n| n as i32),
+        completion_tokens: u["completion_tokens"].as_i64().map(|n| n as i32),
+        total_tokens: u["total_tokens"].as_i64().map(|n| n as i32),
+        cached_tokens: u["prompt_tokens_details"]["cached_tokens"].as_i64().map(|n| n as i32),
         cache_creation_tokens: None,
-    }
+    })
 }
 
-fn finish_reason_string(fr: &FinishReason) -> String {
-    match fr {
-        FinishReason::Stop => "stop".into(),
-        FinishReason::Length => "length".into(),
-        FinishReason::ToolCalls => "tool_calls".into(),
-        FinishReason::ContentFilter => "content_filter".into(),
-        FinishReason::FunctionCall => "function_call".into(),
-    }
+fn extract_tool_calls(v: &Value) -> Option<Vec<ToolCall>> {
+    let tcs = v.as_array()?;
+    let calls: Vec<ToolCall> = tcs
+        .iter()
+        .filter_map(|tc| {
+            Some(ToolCall {
+                id: tc["id"].as_str()?.to_string(),
+                name: tc["function"]["name"].as_str()?.to_string(),
+                arguments: tc["function"]["arguments"].as_str()?.to_string(),
+            })
+        })
+        .collect();
+    if calls.is_empty() { None } else { Some(calls) }
 }
 
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiChatCompletionsProvider {
     async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
-        let req = CreateChatCompletionRequestArgs::default()
-            .model(request.model)
-            .messages(to_openai_messages(request.messages))
-            .tools(to_openai_tools(request.tools))
-            .build()
-            .map_err(|e| LlmError { message: e.to_string() })?;
+        let body = json!({
+            "model": request.model,
+            "messages": messages_to_json(request.messages),
+            "tools": tools_to_json(request.tools),
+        });
 
-        let response = self
+        let resp: Value = self
             .client
             .chat()
-            .create(req)
+            .create_byot(body)
             .await
             .map_err(|e| LlmError { message: e.to_string() })?;
 
-        let choice = response.choices.first().ok_or_else(|| LlmError {
-            message: "No choices in response".into(),
-        })?;
-
-        let tool_calls = choice.message.tool_calls.as_ref().and_then(|tcs| {
-            let mapped: Vec<ToolCall> = tcs
-                .iter()
-                .filter_map(|tc| match tc {
-                    ChatCompletionMessageToolCalls::Function(fc) => Some(ToolCall {
-                        id: fc.id.clone(),
-                        name: fc.function.name.clone(),
-                        arguments: fc.function.arguments.clone(),
-                    }),
-                    _ => None,
-                })
-                .collect();
-            if mapped.is_empty() { None } else { Some(mapped) }
-        });
+        let msg = &resp["choices"][0]["message"];
+        let tool_calls = extract_tool_calls(&msg["tool_calls"]);
+        let finish_reason = resp["choices"][0]["finish_reason"].as_str().map(str::to_string);
 
         Ok(LlmResponse {
-            content: choice.message.content.clone().unwrap_or_default(),
-            reasoning: None,
+            content: msg["content"].as_str().unwrap_or("").to_string(),
+            reasoning: msg["reasoning_content"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
             tool_calls,
-            usage: response.usage.map(map_usage),
-            stop_reason: choice.finish_reason.as_ref().map(finish_reason_string),
+            usage: extract_usage(&resp),
+            stop_reason: finish_reason,
         })
     }
 
     async fn stream(&self, request: LlmRequest) -> Result<LlmStream, LlmError> {
-        let req = CreateChatCompletionRequestArgs::default()
-            .model(request.model)
-            .messages(to_openai_messages(request.messages))
-            .tools(to_openai_tools(request.tools))
-            .build()
-            .map_err(|e| LlmError { message: e.to_string() })?;
+        let body = json!({
+            "model": request.model,
+            "messages": messages_to_json(request.messages),
+            "tools": tools_to_json(request.tools),
+            "stream": true,
+            "stream_options": {"include_usage": true},
+        });
 
         let sse_stream = self
             .client
             .chat()
-            .create_stream(req)
+            .create_stream_byot::<Value, Value>(body)
             .await
             .map_err(|e| LlmError { message: e.to_string() })?;
 
-        struct Accumulator {
+        struct TcAccum {
             id: String,
             name: String,
             arguments: String,
         }
 
-        let mut accums: Vec<Option<Accumulator>> = Vec::new();
+        let mut accums: Vec<Option<TcAccum>> = Vec::new();
 
         let stream = async_stream::stream! {
             let mut stream = sse_stream;
             while let Some(result) = stream.next().await {
                 match result {
-                    Ok(response) => {
-                        for choice in &response.choices {
-                            if let Some(ref content) = choice.delta.content {
-                                if !content.is_empty() {
-                                    yield Ok(StreamEvent::Text(content.clone()));
-                                }
+                    Err(e) => {
+                        yield Err(LlmError { message: e.to_string() });
+                        return;
+                    }
+                    Ok(chunk) => {
+                        let choice = &chunk["choices"][0];
+                        let delta = &choice["delta"];
+
+                        if let Some(rc) = delta["reasoning_content"].as_str() {
+                            if !rc.is_empty() {
+                                yield Ok(StreamEvent::ReasoningDelta(rc.to_string()));
                             }
+                        }
 
-                            if let Some(ref tool_calls) = choice.delta.tool_calls {
-                                for tc in tool_calls {
-                                    let idx = tc.index as usize;
-                                    while accums.len() <= idx {
-                                        accums.push(None);
-                                    }
-                                    let acc = accums[idx].get_or_insert_with(|| Accumulator {
-                                        id: String::new(),
-                                        name: String::new(),
-                                        arguments: String::new(),
-                                    });
-
-                                    if let Some(ref id) = tc.id {
-                                        acc.id.clone_from(id);
-                                    }
-                                    if let Some(ref func) = tc.function {
-                                        if let Some(ref name) = func.name {
-                                            acc.name.clone_from(name);
-                                        }
-                                        if let Some(ref args) = func.arguments {
-                                            acc.arguments.clone_from(args);
-                                        }
-                                    }
-
-                                    yield Ok(StreamEvent::ToolCall {
-                                        id: acc.id.clone(),
-                                        name: acc.name.clone(),
-                                        arguments: acc.arguments.clone(),
-                                    });
-                                }
+                        if let Some(content) = delta["content"].as_str() {
+                            if !content.is_empty() {
+                                yield Ok(StreamEvent::TextDelta(content.to_string()));
                             }
+                        }
 
-                            if choice.finish_reason.is_some() {
-                                yield Ok(StreamEvent::Done {
-                                    usage: response.usage.clone().map(map_usage),
-                                    stop_reason: choice.finish_reason.as_ref().map(finish_reason_string),
+                        if let Some(tcs) = delta["tool_calls"].as_array() {
+                            for tc in tcs {
+                                let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                                while accums.len() <= idx {
+                                    accums.push(None);
+                                }
+                                let acc = accums[idx].get_or_insert_with(|| TcAccum {
+                                    id: String::new(),
+                                    name: String::new(),
+                                    arguments: String::new(),
+                                });
+                                if let Some(id) = tc["id"].as_str() {
+                                    acc.id = id.to_string();
+                                }
+                                if let Some(name) = tc["function"]["name"].as_str() {
+                                    acc.name = name.to_string();
+                                }
+                                if let Some(args) = tc["function"]["arguments"].as_str() {
+                                    acc.arguments.push_str(args);
+                                }
+                                yield Ok(StreamEvent::ToolCall {
+                                    id: acc.id.clone(),
+                                    name: acc.name.clone(),
+                                    arguments: acc.arguments.clone(),
                                 });
                             }
                         }
+
+                        if choice["finish_reason"].is_string() {
+                            let stop_reason = choice["finish_reason"].as_str().map(str::to_string);
+                            let usage = extract_usage(&chunk);
+                            yield Ok(StreamEvent::Done { usage, stop_reason });
+                            return;
+                        }
                     }
-                    Err(e) => yield Err(LlmError { message: e.to_string() }),
                 }
             }
         }
