@@ -55,62 +55,12 @@ impl Session {
         SessionHandle::new(id, model, cmds_tx, events_tx)
     }
 
-    fn stream_llm_turn(&mut self, request: LlmRequest, handle: Handle) -> Vec<ToolCall> {
-        let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
-        let events = &self.events;
-        let provider = &self.provider;
-        handle.block_on(async {
-            let mut stream = match provider.stream(request).await {
-                Ok(stream) => stream,
-                Err(e) => {
-                    error!("Error opening provider stream: {:?}", e);
-                    return;
-                }
-            };
-
-            while let Some(event_result) = stream.next().await {
-                match event_result {
-                    Ok(provider::StreamEvent::TextDelta(text)) => {
-                        trace!("text delta: {}", text);
-                        let _ = events.send(SessionEvent::Content { delta: text });
-                    }
-                    Ok(provider::StreamEvent::ReasoningDelta(text)) => {
-                        trace!("reasoning delta: {}", text);
-                        let _ = events.send(SessionEvent::Reasoning { delta: text });
-                    }
-                    Ok(provider::StreamEvent::ToolCall { id, name, arguments }) => {
-                        trace!(tool_call_id = %id, tool = %name, "tool call delta: {}", arguments)
-                        // TODO: handle tool call deltas
-                    }
-                    // clanker has finished generating tool call request
-                    Ok(provider::StreamEvent::ToolCallComplete {id, name, arguments}) => {
-                        debug!(tool_call_id = %id, tool = %name, "tool call complete: {}", arguments);
-                        let tc = ToolCall { id: id.clone(), name: name.clone(), arguments: arguments.clone() };
-                        pending_tool_calls.push(tc);
-                        let _ = events.send(SessionEvent::ToolCallRequest { id, name, arguments });
-
-                    }
-                    Ok(provider::StreamEvent::Done { usage, stop_reason }) => {
-                        debug!("Response has finished generating. Usage: {:?}, stop reason: {:?}", usage, stop_reason);
-                        self.status = SessionStatus::Idle;
-                        let _ = events.send(SessionEvent::Done);
-                    },
-                    // TODO: Handle errors while streaming e.g. rate limit, connection drops.
-                    Err(e) => {
-                        error!("Error while streaming response from provider: {:?}", e);
-
-                    },
-                }
-            }
-        });
-        pending_tool_calls
-    }
 
     /// Runs the session. The user will send commands via `rx`.
     fn run(mut self, rx: mpsc::Receiver<UserCmd>, handle: Handle) {
         self.tools.register(Box::new(Dummy {}));
+        self.tools.register(Box::new(agent_tools::ReadFile {}));
 
-        // todo: refactor this garbage collection of state into a single struct
         let mut pending_calls = ToolCallBatch::new();
 
         info!(session_id = %self.id, "Starting session");
@@ -191,4 +141,56 @@ impl Session {
         }
         info!(session_id = %self.id, "Session has been closed");
     }
+
+    fn stream_llm_turn(&mut self, request: LlmRequest, handle: Handle) -> Vec<ToolCall> {
+        let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
+        let events = &self.events;
+        let provider = &self.provider;
+        handle.block_on(async {
+            let mut stream = match provider.stream(request).await {
+                Ok(stream) => stream,
+                Err(e) => {
+                    error!("Error opening provider stream: {:?}", e);
+                    return;
+                }
+            };
+
+            while let Some(event_result) = stream.next().await {
+                match event_result {
+                    Ok(provider::StreamEvent::TextDelta(text)) => {
+                        trace!("text delta: {}", text);
+                        let _ = events.send(SessionEvent::Content { delta: text });
+                    }
+                    Ok(provider::StreamEvent::ReasoningDelta(text)) => {
+                        trace!("reasoning delta: {}", text);
+                        let _ = events.send(SessionEvent::Reasoning { delta: text });
+                    }
+                    Ok(provider::StreamEvent::ToolCall { id, name, arguments }) => {
+                        trace!(tool_call_id = %id, tool = %name, "tool call delta: {}", arguments)
+                        // TODO: handle tool call deltas
+                    }
+                    // clanker has finished generating tool call request
+                    Ok(provider::StreamEvent::ToolCallComplete {id, name, arguments}) => {
+                        debug!(tool_call_id = %id, tool = %name, "tool call complete: {}", arguments);
+                        let tc = ToolCall { id: id.clone(), name: name.clone(), arguments: arguments.clone() };
+                        pending_tool_calls.push(tc);
+                        let _ = events.send(SessionEvent::ToolCallRequest { id, name, arguments });
+
+                    }
+                    Ok(provider::StreamEvent::Done { usage, stop_reason }) => {
+                        debug!("Response has finished generating. Usage: {:?}, stop reason: {:?}", usage, stop_reason);
+                        self.status = SessionStatus::Idle;
+                        let _ = events.send(SessionEvent::Done);
+                    },
+                    // TODO: Handle errors while streaming e.g. rate limit, connection drops.
+                    Err(e) => {
+                        error!("Error while streaming response from provider: {:?}", e);
+
+                    },
+                }
+            }
+        });
+        pending_tool_calls
+    }
+
 }
