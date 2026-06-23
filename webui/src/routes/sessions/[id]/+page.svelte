@@ -3,7 +3,7 @@
 	import 'katex/dist/katex.min.css';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { listSessions, sendInput, approveTool, subscribeEvents } from '$lib/api.js';
+	import { listSessions, sendInput, approveTool, subscribeEvents, getSnapshot } from '$lib/api.js';
 	import { renderMarkdown } from '$lib/markdown.js';
 
 	const sessionId = $derived(page.params.id);
@@ -34,7 +34,7 @@
 
 	$effect(() => {
 		const id = sessionId;
-		listSessions().then(({ sessions }) => {
+		listSessions().then(async ({ sessions }) => {
 			const info = sessions.find((s) => s.session_id === id);
 			if (!info) {
 				loadError = `Session ${id} not found`;
@@ -48,11 +48,22 @@
 				context_window: info.context_window
 			};
 			ctxWindow = info.context_window;
+
+			try {
+				const snap = await getSnapshot(info.session_id, info.owner_token);
+				const { items: snapItems, pending } = snapshotToItems(snap.messages);
+				items = snapItems;
+				pendingToolIds = pending;
+				await scroll();
+			} catch {
+				// non-fatal: show empty history and continue
+			}
+
 			sub = subscribeEvents(info.session_id, info.owner_token, onEvent, (err) => {
 				items.push({ kind: 'error', text: `stream: ${err.message}` });
 				status = 'error';
 			});
-			status = 'idle';
+			status = pendingToolIds.size > 0 ? 'running' : 'idle';
 		}).catch((err) => {
 			loadError = String(err);
 			status = 'error';
@@ -67,6 +78,49 @@
 	async function scroll() {
 		await tick();
 		log?.scrollTo({ top: log.scrollHeight });
+	}
+
+	/**
+	 * @param {any[]} messages  SnapshotMessage array from server
+	 * @returns {{ items: ChatItem[], pending: Set<string> }}
+	 */
+	function snapshotToItems(messages) {
+		/** @type {ChatItem[]} */
+		const result = [];
+		/** @type {Record<string, number>} */
+		const toolIdxMap = {};
+		// Tool IDs from the most recent assistant block; reset whenever any message follows.
+		let lastBlockIds = /** @type {string[]} */ ([]);
+
+		for (const msg of messages) {
+			if (msg.type === 'user') {
+				lastBlockIds = [];
+				result.push({ kind: 'user', text: msg.text });
+			} else if (msg.type === 'assistant') {
+				lastBlockIds = [];
+				if (msg.reasoning) result.push({ kind: 'reasoning', text: msg.reasoning });
+				if (msg.content) result.push({ kind: 'assistant', text: msg.content });
+				for (const tc of msg.tool_calls ?? []) {
+					let args = tc.arguments;
+					try { args = JSON.parse(args); } catch { /* keep as string */ }
+					toolIdxMap[tc.id] = result.length;
+					lastBlockIds.push(tc.id);
+					result.push({ kind: 'tool', toolId: tc.id, toolName: tc.name, args });
+				}
+			} else if (msg.type === 'tool') {
+				const idx = toolIdxMap[msg.tool_call_id];
+				if (idx !== undefined) result[idx].result = msg.content;
+			}
+		}
+
+		// Tool calls followed by more messages were processed — mark done.
+		// Tool calls still in lastBlockIds had no follow-up — still pending.
+		const pending = new Set(lastBlockIds);
+		for (const [id, idx] of Object.entries(toolIdxMap)) {
+			if (!pending.has(id)) result[idx].decided = 'approved';
+		}
+
+		return { items: result, pending };
 	}
 
 	/** @param {any} ev */

@@ -17,7 +17,7 @@ use uuid::Uuid;
 use agent_tools::{ReadFile, Tool};
 use provider_openai_responses::OpenAiResponsesProvider;
 use agent_core::{Session, SessionHandle, SystemPrompt};
-use crate::server_types::{ApproveRequest, CreateSessionRequest, UserInputRequest};
+use crate::server_types::{ApproveRequest, CreateSessionRequest, SnapshotMessage, UserInputRequest};
 
 mod server_types;
 
@@ -120,6 +120,7 @@ fn router(state: AppState) -> Router {
 
     let read_routes = Router::new()
         .route("/sessions/{id}/events", get(event_stream))
+        .route("/sessions/{id}/snapshot", get(snapshot))
         .route_layer(middleware::from_fn_with_state(state.clone(), read_auth));
 
     Router::new()
@@ -189,6 +190,22 @@ async fn respond_to_tool_call(
     session_handle.respond_to_tool_call(req.tool_call_id, req.approved).expect("closed");
     // TODO: garbage return type
     Json(json!({ "status": "ok" }))
+}
+
+/// Get a point-in-time snapshot of the session's conversation history.
+async fn snapshot(
+    Extension(session_handle): Extension<SessionHandle>,
+) -> impl IntoResponse {
+    match tokio::task::spawn_blocking(move || session_handle.snapshot()).await {
+        Ok(Ok(messages)) => {
+            let snapshot: Vec<SnapshotMessage> = messages
+                .into_iter()
+                .filter_map(SnapshotMessage::from_provider)
+                .collect();
+            Json(json!({ "messages": snapshot })).into_response()
+        }
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot failed").into_response(),
+    }
 }
 
 /// Get a stream of events for a session, including LLM responses and user events.

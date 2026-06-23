@@ -88,6 +88,19 @@ export async function approveTool(id, ownerToken, toolCallId, approved) {
 }
 
 /**
+ * @param {string} id
+ * @param {string} token  owner or viewer token
+ * @returns {Promise<{ messages: any[] }>}
+ */
+export async function getSnapshot(id, token) {
+	const res = await fetch(`${BASE}/sessions/${id}/snapshot`, {
+		headers: { authorization: `Bearer ${token}` }
+	});
+	if (!res.ok) throw new Error(`getSnapshot failed: ${res.status}`);
+	return res.json();
+}
+
+/**
  * Subscribe to a session's SSE event stream.
  * Returns an AbortController; call `.abort()` to disconnect.
  *
