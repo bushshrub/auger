@@ -1,0 +1,9 @@
+[package]
+name = "tool-call-healer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+provider = { version = "0.1.0", path = "../provider" }
+serde_json.workspace = true
+uuid = { version = "1.23.3", features = ["v4"] }

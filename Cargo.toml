@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["agent-core","agent-server","agent-tools","provider", "provider-anthropic","provider-openai-chatcompletions", "provider-openai-responses"]
+members = ["agent-core","agent-server","agent-tools","provider", "provider-anthropic","provider-openai-chatcompletions", "provider-openai-responses", "tool-call-healer"]
 
 [workspace.dependencies]
 async-trait = "0.1.89"

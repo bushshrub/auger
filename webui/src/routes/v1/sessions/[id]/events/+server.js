@@ -5,24 +5,43 @@ const AGENT_URL = process.env.AGENT_SERVER_URL;
 const enc = new TextEncoder();
 
 /**
- * Map a server AgentEvent (externally-tagged Rust enum) to the UI event shape.
- * Server: { "Content": { "delta": "..." } } | { "Reasoning": { "delta": "..." } } | { "UserMessage": { ... } }
+ * Map a server AgentEvent (externally-tagged Rust enum) to UI event shape(s).
+ * Server: { "Content": { "delta": "..." } } | { "Reasoning": { "delta": "..." } } | ...
  * UI: { type: string, data: any }
  *
+ * Returns an array (may be empty or multiple events, e.g. Done emits metrics + turn_complete).
+ *
  * @param {any} ev
- * @returns {any|null}
+ * @returns {any[]}
  */
 function transformEvent(ev) {
-	if (ev === 'Done') return { type: 'turn_complete', data: {} };
-	if (ev.Content) return { type: 'content', data: { text: ev.Content.delta } };
-	if (ev.Reasoning) return { type: 'reasoning', data: { text: ev.Reasoning.delta } };
+	if (ev.Content) return [{ type: 'content', data: { text: ev.Content.delta } }];
+	if (ev.Reasoning) return [{ type: 'reasoning', data: { text: ev.Reasoning.delta } }];
 	if (ev.ToolCallRequest) {
 		let args = ev.ToolCallRequest.arguments;
 		try { args = JSON.parse(args); } catch { /* keep as string */ }
-		return { type: 'tool_call', data: { id: ev.ToolCallRequest.id, name: ev.ToolCallRequest.name, arguments: args } };
+		return [{ type: 'tool_call', data: { id: ev.ToolCallRequest.id, name: ev.ToolCallRequest.name, arguments: args } }];
 	}
-	// UserMessage is tracked locally by the UI; drop it.
-	return null;
+	if (ev.ToolCallResult) {
+		return [{ type: 'tool_result', data: { id: ev.ToolCallResult.id, content: ev.ToolCallResult.result } }];
+	}
+	if (ev.ToolCallDenied) {
+		return [{ type: 'tool_result', data: { id: ev.ToolCallDenied.id, content: `denied: ${ev.ToolCallDenied.reason}` } }];
+	}
+	if (ev.Done) {
+		const out = [];
+		if (ev.Done.usage) {
+			out.push({ type: 'metrics', data: {
+				prompt_tokens: ev.Done.usage.prompt_tokens,
+				completion_tokens: ev.Done.usage.completion_tokens,
+				total_tokens: ev.Done.usage.total_tokens,
+			}});
+		}
+		out.push({ type: 'turn_complete', data: {} });
+		return out;
+	}
+	// UserMessage tracked locally by the UI; everything else dropped.
+	return [];
 }
 
 /** @param {{ params: { id: string }, request: Request }} ctx */
@@ -66,8 +85,7 @@ export async function GET({ params, request }) {
 
 							try {
 								const serverEvent = JSON.parse(raw);
-								const uiEvent = transformEvent(serverEvent);
-								if (uiEvent) {
+								for (const uiEvent of transformEvent(serverEvent)) {
 									controller.enqueue(enc.encode(`data: ${JSON.stringify(uiEvent)}\n\n`));
 								}
 							} catch {
