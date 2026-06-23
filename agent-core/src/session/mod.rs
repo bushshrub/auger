@@ -1,6 +1,5 @@
 use std::fmt::Display;
 use agent_tools::Tool;
-use provider::LlmProvider;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -8,6 +7,7 @@ pub(crate) mod events;
 pub(crate) mod handle;
 
 pub(crate) mod session_loop;
+mod tool_registry;
 
 /// The status of a session
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

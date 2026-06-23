@@ -1,0 +1,1 @@
+Review AGENTS.md in full and adhere to it.

@@ -2,9 +2,8 @@ use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use uuid::Uuid;
-use crate::conversation::UserContent;
 use crate::session::{ReadToken, SessionError, SessionId, WriteToken};
-use crate::session::events::{SessionEvent, Cmd};
+use crate::session::events::{SessionEvent, UserCmd, UserMessage};
 
 #[derive(Clone)]
 pub struct SessionHandle {
@@ -14,14 +13,14 @@ pub struct SessionHandle {
     pub read_token: ReadToken,
     pub write_token: WriteToken,
     /// Sender for commands to the session thread.
-    cmds: mpsc::Sender<Cmd>,
+    cmds: mpsc::Sender<UserCmd>,
     /// Sender for events from the session thread.
     events: broadcast::Sender<SessionEvent>,
 }
 
 impl SessionHandle {
 
-    pub(crate) fn new(id: SessionId, model: String, cmd_tx: mpsc::Sender<Cmd>, event_tx: broadcast::Sender<SessionEvent>) -> Self {
+    pub(crate) fn new(id: SessionId, model: String, cmd_tx: mpsc::Sender<UserCmd>, event_tx: broadcast::Sender<SessionEvent>) -> Self {
         let created_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -41,16 +40,16 @@ impl SessionHandle {
     }
 
     /// Enqueue a message for the clanker.
-    pub fn enqueue(&self, msg: Vec<UserContent>) -> Result<(), SessionError> {
-        self.cmds.send(Cmd::SendMessage(msg.clone())).map_err(|_| SessionError::Closed)?;
+    pub fn enqueue(&self, msg: UserMessage) -> Result<(), SessionError> {
+        self.cmds.send(UserCmd::SendMessage(msg.clone())).map_err(|_| SessionError::Closed)?;
         self.events.send(SessionEvent::UserMessage { content: msg }).ok();
         Ok(())
     }
 
     pub fn respond_to_tool_call(&self, tool_call_id: String, approved: bool) -> Result<(), SessionError> {
         let event = match approved {
-            true => Cmd::ApproveToolCall { tool_call_id: tool_call_id.clone() },
-            false => Cmd::DenyToolCall { tool_call_id: tool_call_id.clone() }
+            true => UserCmd::ApproveToolCall { tool_call_id: tool_call_id.clone() },
+            false => UserCmd::DenyToolCall { tool_call_id: tool_call_id.clone() }
         };
         self.cmds.send(event).map_err(|_| SessionError::Closed)?;
         Ok(())

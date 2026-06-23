@@ -1,0 +1,7 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Run webUI + server" type="CompoundRunConfigurationType">
+    <toRun name="Run agent-server" targetId="RsBuildProfile:dev" type="CargoCommandRunConfiguration" />
+    <toRun name="dev" type="js.build_tools.npm" />
+    <method v="2" />
+  </configuration>
+</component>

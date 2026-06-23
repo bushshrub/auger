@@ -1,5 +1,6 @@
 //! Request and response types for the agent server API
 use serde::Deserialize;
+use agent_core::UserMessage;
 
 #[derive(Deserialize, Debug)]
 pub(crate) struct CreateSessionRequest {
@@ -10,6 +11,12 @@ pub(crate) struct CreateSessionRequest {
 #[derive(Deserialize, Debug)]
 pub(crate) struct UserInputRequest {
     pub(crate) input: String
+}
+
+impl From<UserInputRequest> for UserMessage {
+    fn from(req: UserInputRequest) -> Self {
+        UserMessage::new(req.input)
+    }
 }
 
 /// Whether the user approves or denies the tool use

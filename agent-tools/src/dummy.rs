@@ -27,11 +27,11 @@ impl Tool for Dummy {
         }))
     }
 
-    async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
         let message = args["message"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: message".into()))?;
 
-        Ok(json!({ "echo": message }))
+        Ok(json!({ "echo": message }).to_string())
     }
 }

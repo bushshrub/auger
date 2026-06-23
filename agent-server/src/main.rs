@@ -160,7 +160,7 @@ async fn send_input(
     Json(req): Json<UserInputRequest>,
 ) -> impl IntoResponse {
     debug!("Enqueued message: '{}'", req.input);
-    session_handle.enqueue(vec![req.input.into()]).expect("closed");
+    session_handle.enqueue(req.into()).expect("closed");
 
     // TODO: bad return type
     Json(json!({ "status": "ok" }))

@@ -1,4 +1,3 @@
-use crate::conversation::SystemMessage;
 
 pub struct SystemPrompt {
     base: String
@@ -24,8 +23,3 @@ impl From<String> for SystemPrompt {
     }
 }
 
-impl From<SystemPrompt> for SystemMessage {
-    fn from(prompt: SystemPrompt) -> Self {
-        SystemMessage::from(prompt.base)
-    }
-}

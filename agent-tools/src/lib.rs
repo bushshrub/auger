@@ -31,8 +31,12 @@ pub struct JsonSchema(pub serde_json::Value);
 
 #[async_trait]
 pub trait Tool: Send + Sync {
+    /// High level description of the tool for the clanker.
     fn details(&self) -> ToolDetails;
     /// JSON Schema describing the tool's arguments.
     fn parameters(&self) -> JsonSchema;
-    async fn call(&self, args: serde_json::Value) -> Result<serde_json::Value, ToolError>;
+    /// Invoke the tool with the given arguments.
+    ///
+    /// Implementors should try to heal the tool call as much as possible.
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError>;
 }
