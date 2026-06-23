@@ -127,6 +127,9 @@ impl Session {
                         pending_calls.extend(new_tool_calls);
                     }
                 }
+                UserCmd::Snapshot { reply } => {
+                    let _ = reply.send(self.history.messages().to_vec());
+                }
             }
         }
         info!(session_id = %self.id, "Session has been closed");

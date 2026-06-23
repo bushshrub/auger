@@ -48,4 +48,8 @@ impl SessionHistory {
         }
     }
 
+    pub fn messages(&self) -> &[provider::Message] {
+        &self.messages
+    }
+
 }

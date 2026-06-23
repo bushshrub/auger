@@ -59,7 +59,9 @@ impl SessionHandle {
         self.events.subscribe()
     }
 
-    // async fn snapshot(&self, t: &ReadToken) -> Result<ConversationSnapshot, SessionError> {
-    //     todo!()
-    // }
+    pub fn snapshot(&self) -> Result<Vec<provider::Message>, SessionError> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.cmds.send(UserCmd::Snapshot { reply: tx }).map_err(|_| SessionError::Closed)?;
+        rx.recv().map_err(|_| SessionError::Closed)
+    }
 }

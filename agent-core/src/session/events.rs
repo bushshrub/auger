@@ -1,3 +1,4 @@
+use std::sync::mpsc::SyncSender;
 use serde::{Deserialize, Serialize};
 use provider::TokenUsage;
 
@@ -21,12 +22,12 @@ impl UserMessage {
 
 
 /// Commands that the user send to the harness.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub(crate) enum UserCmd {
     SendMessage(UserMessage),
     ApproveToolCall { tool_call_id: String },
     DenyToolCall { tool_call_id: String },
-    // Snapshot, // TODO: Conversation snapshot
+    Snapshot { reply: SyncSender<Vec<provider::Message>> }
 }
 
 /// Events

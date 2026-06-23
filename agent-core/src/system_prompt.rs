@@ -31,8 +31,8 @@ impl From<String> for SystemPrompt {
     }
 }
 
-impl Into<String> for SystemPrompt {
-    fn into(self) -> String {
-        self.base
+impl From<SystemPrompt> for String {
+    fn from(value: SystemPrompt) -> Self {
+        value.base
     }
 }
