@@ -12,7 +12,7 @@ pub enum Message {
     },
     /// Result of a tool call. Use this to send the result of a tool call back to the model.
     Tool {
-        tool_call_id: String,
+        tool_call_id: String, // TODO: Crappy type. should be custom type.
         content: String,
     },
 }

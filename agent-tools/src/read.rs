@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::{JsonSchema, Tool, ToolDetails, ToolError};
+use crate::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 pub struct ReadFile;
 
@@ -37,7 +37,7 @@ impl Tool for ReadFile {
         }))
     }
 
-    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
+    async fn call(&self, args: serde_json::Value) -> Result<ToolCallResult, ToolError> {
         let path = args["path"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: path".into()))?;
@@ -68,6 +68,6 @@ impl Tool for ReadFile {
             out.push_str(&format!("{lineno}\t{line}\n"));
         }
 
-        Ok(json!({ "content": out, "total_lines": total }).to_string())
+        Ok(json!({ "content": out, "total_lines": total }).to_string().into())
     }
 }

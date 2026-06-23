@@ -10,8 +10,9 @@ use crate::session::handle::SessionHandle;
 use crate::session::{SessionId, SessionStatus};
 use crate::system_prompt::SystemPrompt;
 use futures::stream::StreamExt;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 use agent_tools::{Dummy, Tool};
+use crate::session::tool_call_batch::ToolCallBatch;
 use crate::session::tool_registry::ToolRegistry;
 
 /// The main loop for a session.
@@ -54,8 +55,8 @@ impl Session {
         SessionHandle::new(id, model, cmds_tx, events_tx)
     }
 
-    fn stream_llm_turn(&mut self, request: LlmRequest, handle: Handle) -> HashMap<String, ToolCall> {
-        let mut pending_tool_calls: HashMap<String, ToolCall> = HashMap::new();
+    fn stream_llm_turn(&mut self, request: LlmRequest, handle: Handle) -> Vec<ToolCall> {
+        let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
         let events = &self.events;
         let provider = &self.provider;
         handle.block_on(async {
@@ -85,7 +86,7 @@ impl Session {
                     Ok(provider::StreamEvent::ToolCallComplete {id, name, arguments}) => {
                         debug!(tool_call_id = %id, tool = %name, "tool call complete: {}", arguments);
                         let tc = ToolCall { id: id.clone(), name: name.clone(), arguments: arguments.clone() };
-                        pending_tool_calls.insert(id.clone(), tc);
+                        pending_tool_calls.push(tc);
                         let _ = events.send(SessionEvent::ToolCallRequest { id, name, arguments });
 
                     }
@@ -110,8 +111,7 @@ impl Session {
         self.tools.register(Box::new(Dummy {}));
 
         // todo: refactor this garbage collection of state into a single struct
-        let mut pending_tool_calls: HashMap<String, ToolCall> = HashMap::new();
-        let mut tool_call_results: HashMap<String, String> = HashMap::new();
+        let mut pending_calls = ToolCallBatch::new();
 
         info!(session_id = %self.id, "Starting session");
         while let Ok(cmd) = rx.recv() {
@@ -129,42 +129,28 @@ impl Session {
                     );
 
                     let new_tool_calls = self.stream_llm_turn(request, handle.clone());
-                    pending_tool_calls.extend(new_tool_calls);
+                    pending_calls.extend(new_tool_calls);
                 }
                 UserCmd::ApproveToolCall { tool_call_id } => {
-                    let tool_call = match pending_tool_calls.remove(&tool_call_id) {
-                        Some(tc) => tc,
-                        None => {
-                            error!(tool_call_id = %tool_call_id, "No tool call found with this ID");
-                            continue;
-                        }
-                    };
-                    debug!(tool_call_id = %tool_call_id, "Tool call approved by user");
                     let tool_result = handle.block_on(async {
-                        self.tools.call_tool(&tool_call.name, tool_call.arguments).await
+                        pending_calls.approve_and_run_tool_call(&tool_call_id, &self.tools).await
                     });
                     match tool_result {
                         Ok(result) => {
                             debug!(tool_call_id = %tool_call_id, "Tool executed successfully: {}", &result);
-                            tool_call_results.insert(tool_call_id.clone(), result.clone());
-                            let _ = self.events.send(SessionEvent::ToolCallResult { id: tool_call_id, result });
+                            let _ = self.events.send(SessionEvent::ToolCallResult { id: tool_call_id, result: result.to_string() });
 
                         }
                         Err(e) => {
                             error!(tool_call_id = %tool_call_id, "Error executing tool: {:?}", e);
-                            tool_call_results.insert(tool_call_id.clone(), format!("Error executing tool: {:?}", e));
                             let _ = self.events.send(SessionEvent::ToolCallError { id: tool_call_id, error: format!("{:?}", e) });
                         }
                     }
-                    if pending_tool_calls.is_empty() {
+                    if pending_calls.is_complete() {
                         debug!("All pending tool calls have been processed. Resuming LLM turn.");
                         // send back to LLM
-                        let tool_results: Vec<provider::ToolResult> = tool_call_results.iter().map(|(id, result)| {
-                            provider::ToolResult {
-                                tool_call_id: id.clone(),
-                                content: result.clone(),
-                            }
-                        }).collect();
+                        let tool_results: Vec<provider::ToolResult> = pending_calls.drain();
+
                         let request = LlmRequest::new_with_tool_results(
                             self.model.clone(),
                             Vec::new(), // TODO: this is where we will do steering
@@ -172,30 +158,25 @@ impl Session {
                             tool_results,
                         );
                         let new_tool_calls = self.stream_llm_turn(request, handle.clone());
-                        pending_tool_calls.extend(new_tool_calls);
+                        pending_calls.extend(new_tool_calls);
                     }
                 }
                 UserCmd::DenyToolCall { tool_call_id } => {
-                    let tool_call = match pending_tool_calls.remove(&tool_call_id) {
-                        Some(tc) => tc,
-                        None => {
-                            error!(tool_call_id = %tool_call_id, "No tool call found with this ID");
-                            continue;
+                    match pending_calls.deny_call(&tool_call_id) {
+                        Ok(_) => {
+                            debug!(tool_call_id = %tool_call_id, "Tool call denied by user.");
+                            // TODO: allow reason to be customized
+                            let _ = self.events.send(SessionEvent::ToolCallDenied { id: tool_call_id, reason: "User denied".to_string() });
                         }
-                    };
-                    debug!(tool_call_id = %tool_call_id, "Tool call denied by user");
-                    // TODO: bad error
-                    tool_call_results.insert(tool_call_id.clone(), format!("Tool call to {} denied by user", tool_call.name));
-                    let _ = self.events.send(SessionEvent::ToolCallError { id: tool_call_id, error: "Tool call denied by user".into() });
-                    if pending_tool_calls.is_empty() {
+                        Err(e) => {
+                            error!(tool_call_id = %tool_call_id, "Error denying tool call: {:?}", e);
+                            let _ = self.events.send(SessionEvent::ToolCallError { id: tool_call_id, error: format!("{:?}", e) });
+                        }
+                    }
+                    if pending_calls.is_complete() {
                         debug!("All pending tool calls have been processed. Resuming LLM turn.");
                         // send back to LLM
-                        let tool_results: Vec<provider::ToolResult> = tool_call_results.iter().map(|(id, result)| {
-                            provider::ToolResult {
-                                tool_call_id: id.clone(),
-                                content: result.clone(),
-                            }
-                        }).collect();
+                        let tool_results: Vec<provider::ToolResult> = pending_calls.drain();
                         let request = LlmRequest::new_with_tool_results(
                             self.model.clone(),
                             Vec::new(), // TODO: this is where we will do steering
@@ -203,7 +184,7 @@ impl Session {
                             tool_results,
                         );
                         let new_tool_calls = self.stream_llm_turn(request, handle.clone());
-                        pending_tool_calls.extend(new_tool_calls);
+                        pending_calls.extend(new_tool_calls);
                     }
                 }
             }

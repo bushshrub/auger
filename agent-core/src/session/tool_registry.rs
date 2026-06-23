@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use thiserror::Error;
-use agent_tools::{Tool, ToolError};
-use provider::ToolDefinition;
+use agent_tools::{Tool, ToolCallResult, ToolError};
+use provider::{ToolCall, ToolDefinition};
 
 #[derive(Debug, Error)]
 pub(crate) enum ToolInvokeIssue {
@@ -23,11 +23,15 @@ impl ToolRegistry {
         self.0.insert(tool.details().name.to_string(), tool);
     }
 
-    pub(crate) async fn call_tool(&self, tool_name: &str, args: String) -> Result<String, ToolInvokeIssue> {
+    pub(crate) async fn call_tool(&self, tool_name: &str, args: String) -> Result<ToolCallResult, ToolInvokeIssue> {
         let tool = self.0.get(tool_name).ok_or(ToolInvokeIssue::ToolNotFound(tool_name.into()))?;
         // TODO: try to fix json if it's malformed, and provide better error messages
         let args_json = serde_json::from_str(&args).map_err(|e| ToolInvokeIssue::ArgumentParseError(e.to_string()))?;
         tool.call(args_json).await.map_err(ToolInvokeIssue::ToolError)
+    }
+
+    pub(crate) async fn invoke(&self, tc: ToolCall) -> Result<ToolCallResult, ToolInvokeIssue> {
+        self.call_tool(&tc.name, tc.arguments).await
     }
 
     // TODO: add option to compress and expose a single tool search?

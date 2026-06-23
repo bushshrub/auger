@@ -48,6 +48,10 @@ pub enum SessionEvent {
         id: String,
         result: String,
     },
+    ToolCallDenied {
+        id: String,
+        reason: String,
+    },
     ToolCallError {
         id: String,
         // TODO: bad type

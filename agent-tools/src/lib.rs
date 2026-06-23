@@ -2,6 +2,7 @@ pub mod dummy;
 pub mod read;
 pub mod web_fetch;
 
+use std::fmt::Display;
 use async_trait::async_trait;
 use thiserror::Error;
 
@@ -27,6 +28,29 @@ pub struct ToolDetails {
     pub description: &'static str,
 }
 
+/// Result of a tool call which can be sent back to the model.
+#[derive(Debug, Clone)]
+pub struct ToolCallResult(String);
+
+impl ToolCallResult {
+    pub fn error(message: impl Display) -> Self {
+        ToolCallResult(format!("Error: {}", message))
+    }
+}
+
+impl Display for ToolCallResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ToolCallResult({})", self.0)
+    }
+}
+
+impl From<String> for ToolCallResult {
+    fn from(s: String) -> Self {
+        ToolCallResult(s)
+    }
+}
+
+
 pub struct JsonSchema(pub serde_json::Value);
 
 #[async_trait]
@@ -38,5 +62,5 @@ pub trait Tool: Send + Sync {
     /// Invoke the tool with the given arguments.
     ///
     /// Implementors should try to heal the tool call as much as possible.
-    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError>;
+    async fn call(&self, args: serde_json::Value) -> Result<ToolCallResult, ToolError>;
 }

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::{JsonSchema, Tool, ToolDetails, ToolError};
+use crate::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 pub struct Dummy;
 
@@ -27,11 +27,11 @@ impl Tool for Dummy {
         }))
     }
 
-    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
+    async fn call(&self, args: serde_json::Value) -> Result<ToolCallResult, ToolError> {
         let message = args["message"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: message".into()))?;
 
-        Ok(json!({ "echo": message }).to_string())
+        Ok(json!({ "echo": message }).to_string().into())
     }
 }
