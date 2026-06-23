@@ -1,4 +1,5 @@
 
+#[derive(Clone, Debug)]
 pub struct SystemPrompt {
     base: String
 }
@@ -12,6 +13,13 @@ impl SystemPrompt {
         Self { base }
     }
 
+    pub fn inject_cwd(self) -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let cwd_str = cwd.to_string_lossy();
+        let new_base = self.base + &format!("\nThe current working directory is: {}", cwd_str);
+        Self { base: new_base }
+    }
+
     pub fn add_skill(self, skill: Skill) -> Self {
         todo!()
     }
@@ -23,3 +31,8 @@ impl From<String> for SystemPrompt {
     }
 }
 
+impl Into<String> for SystemPrompt {
+    fn into(self) -> String {
+        self.base
+    }
+}

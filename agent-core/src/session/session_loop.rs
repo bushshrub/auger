@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc;
-use provider::{LlmProvider, LlmRequest, ToolCall};
+use provider::{LlmProvider, LlmRequest, LlmResponse, ToolCall};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -12,6 +12,7 @@ use crate::system_prompt::SystemPrompt;
 use futures::stream::StreamExt;
 use tracing::{debug, error, info, trace, warn};
 use agent_tools::{Dummy, Tool};
+use crate::session::session_history::SessionHistory;
 use crate::session::tool_call_batch::ToolCallBatch;
 use crate::session::tool_registry::ToolRegistry;
 
@@ -25,6 +26,7 @@ pub struct Session {
     status: SessionStatus,
     provider: Arc<dyn LlmProvider>,
     events: broadcast::Sender<SessionEvent>,
+    history: SessionHistory,
 }
 
 impl Session {
@@ -42,11 +44,9 @@ impl Session {
             status: SessionStatus::Idle,
             provider: provider.clone(),
             events: events_tx.clone(),
+            history: SessionHistory::new(id, prompt),
         };
-
-        // Session owns an OS thread, not a tokio task. The tokio runtime is still
-        // reachable via the captured `Handle` to drive async provider IO (and fan
-        // out IO work) via `block_on`, but the session's lifetime is the thread's.
+        
         let handle = Handle::current();
         std::thread::Builder::new()
             .name(format!("session-{id}"))
@@ -60,6 +60,7 @@ impl Session {
     fn run(mut self, rx: mpsc::Receiver<UserCmd>, handle: Handle) {
         self.tools.register(Box::new(Dummy {}));
         self.tools.register(Box::new(agent_tools::ReadFile {}));
+        self.tools.register(Box::new(agent_tools::ListFiles {}));
 
         let mut pending_calls = ToolCallBatch::new();
 
@@ -71,12 +72,7 @@ impl Session {
                     let _ = self.events.send(SessionEvent::UserMessage { content: content.clone() });
 
                     let user_text = content.msg;
-
-                    let request = LlmRequest::new(
-                        self.model.clone(),
-                        vec![provider::Message::User(user_text)],
-                        self.tools.list_for_clanker(),
-                    );
+                    let request = self.history.create_request(self.model.clone(), user_text, self.tools.list_for_clanker());
 
                     let new_tool_calls = self.stream_llm_turn(request, handle.clone());
                     pending_calls.extend(new_tool_calls);
@@ -101,12 +97,7 @@ impl Session {
                         // send back to LLM
                         let tool_results: Vec<provider::ToolResult> = pending_calls.drain();
 
-                        let request = LlmRequest::new_with_tool_results(
-                            self.model.clone(),
-                            Vec::new(), // TODO: this is where we will do steering
-                            self.tools.list_for_clanker(),
-                            tool_results,
-                        );
+                        let request = self.history.create_tool_call_response_msg(self.model.clone(), None, tool_results);
                         let new_tool_calls = self.stream_llm_turn(request, handle.clone());
                         pending_calls.extend(new_tool_calls);
                     }
@@ -127,10 +118,9 @@ impl Session {
                         debug!("All pending tool calls have been processed. Resuming LLM turn.");
                         // send back to LLM
                         let tool_results: Vec<provider::ToolResult> = pending_calls.drain();
-                        let request = LlmRequest::new_with_tool_results(
+                        let request = self.history.create_tool_call_response_msg(
                             self.model.clone(),
-                            Vec::new(), // TODO: this is where we will do steering
-                            self.tools.list_for_clanker(),
+                            None, // todo: steering msg
                             tool_results,
                         );
                         let new_tool_calls = self.stream_llm_turn(request, handle.clone());
@@ -155,15 +145,23 @@ impl Session {
                 }
             };
 
+            let mut full_response = Vec::new();
             while let Some(event_result) = stream.next().await {
+                let evt_clone = event_result.clone();
+                match evt_clone {
+                    Ok(evt) => full_response.push(evt),
+                    Err(e) => {}
+                }
                 match event_result {
                     Ok(provider::StreamEvent::TextDelta(text)) => {
                         trace!("text delta: {}", text);
-                        let _ = events.send(SessionEvent::Content { delta: text });
+                        let evt = SessionEvent::Content { delta: text };
+                        let _ = events.send(evt);
                     }
                     Ok(provider::StreamEvent::ReasoningDelta(text)) => {
                         trace!("reasoning delta: {}", text);
-                        let _ = events.send(SessionEvent::Reasoning { delta: text });
+                        let evt = SessionEvent::Reasoning { delta: text };
+                        let _ = events.send(evt);
                     }
                     Ok(provider::StreamEvent::ToolCall { id, name, arguments }) => {
                         trace!(tool_call_id = %id, tool = %name, "tool call delta: {}", arguments)
@@ -174,21 +172,24 @@ impl Session {
                         debug!(tool_call_id = %id, tool = %name, "tool call complete: {}", arguments);
                         let tc = ToolCall { id: id.clone(), name: name.clone(), arguments: arguments.clone() };
                         pending_tool_calls.push(tc);
-                        let _ = events.send(SessionEvent::ToolCallRequest { id, name, arguments });
+                        let evt = SessionEvent::ToolCallRequest { id, name, arguments };
+                        let _ = events.send(evt);
 
                     }
                     Ok(provider::StreamEvent::Done { usage, stop_reason }) => {
                         debug!("Response has finished generating. Usage: {:?}, stop reason: {:?}", usage, stop_reason);
                         self.status = SessionStatus::Idle;
-                        let _ = events.send(SessionEvent::Done);
+                        let evt = SessionEvent::Done { usage, stop_reason };
+                        let _ = events.send(evt);
                     },
                     // TODO: Handle errors while streaming e.g. rate limit, connection drops.
                     Err(e) => {
                         error!("Error while streaming response from provider: {:?}", e);
-
                     },
                 }
             }
+            let complete_response = LlmResponse::from(full_response);
+            self.history.push_llm_response(complete_response);
         });
         pending_tool_calls
     }

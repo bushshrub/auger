@@ -1,10 +1,11 @@
 use std::pin::Pin;
 use futures_core::Stream;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use crate::types::ToolCall;
 
 /// Token usage details
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TokenUsage {
     pub prompt_tokens: Option<i32>,
     pub completion_tokens: Option<i32>,
@@ -50,6 +51,43 @@ pub struct LlmResponse {
     /// May be None if the provider doesn't expose token usage details
     pub usage: Option<TokenUsage>,
     pub stop_reason: Option<String>,
+}
+
+impl From<Vec<StreamEvent>> for LlmResponse {
+    fn from(events: Vec<StreamEvent>) -> Self {
+        let mut content = String::new();
+        let mut reasoning = None;
+        let mut tool_calls = Vec::new();
+        let mut usage = None;
+        let mut stop_reason = None;
+
+        for event in events {
+            match event {
+                StreamEvent::TextDelta(delta) => content.push_str(&delta),
+                StreamEvent::ReasoningDelta(delta) => {
+                    reasoning.get_or_insert(String::new()).push_str(&delta)
+                }
+                // discard tool call deltas.
+                StreamEvent::ToolCall { id, name, arguments } => {
+                }
+                StreamEvent::ToolCallComplete { id, name, arguments } => {
+                    tool_calls.push(ToolCall { id, name, arguments })
+                }
+                StreamEvent::Done { usage: u, stop_reason: sr } => {
+                    usage = u;
+                    stop_reason = sr;
+                }
+            }
+        }
+
+        Self {
+            content,
+            reasoning,
+            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            usage,
+            stop_reason,
+        }
+    }
 }
 
 #[derive(Error, Debug, Clone)]

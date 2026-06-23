@@ -27,10 +27,13 @@ fn messages_to_json(messages: Vec<provider::Message>) -> Vec<Value> {
         .map(|m| match m {
             provider::Message::System(content) => json!({"role": "system", "content": content}),
             provider::Message::User(content) => json!({"role": "user", "content": content}),
-            provider::Message::Assistant { content, tool_calls } => {
+            provider::Message::Assistant { content, tool_calls, reasoning } => {
                 let mut msg = json!({"role": "assistant"});
                 if !content.is_empty() {
                     msg["content"] = json!(content);
+                }
+                if let Some(rc) = reasoning {
+                    msg["reasoning_content"] = json!(rc);
                 }
                 if !tool_calls.is_empty() {
                     msg["tool_calls"] = json!(tool_calls

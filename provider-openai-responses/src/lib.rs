@@ -189,7 +189,7 @@ fn messages_to_input(messages: Vec<provider::Message>) -> Vec<Value> {
             provider::Message::User(content) => {
                 items.push(serde_json::json!({"role": "user", "content": content}));
             }
-            provider::Message::Assistant { content, tool_calls } => {
+            provider::Message::Assistant { content, tool_calls, reasoning: _ } => {
                 if !content.is_empty() {
                     items.push(serde_json::json!({"role": "assistant", "content": content}));
                 }

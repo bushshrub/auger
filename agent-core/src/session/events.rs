@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-
+use provider::TokenUsage;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Image {
@@ -58,5 +58,8 @@ pub enum SessionEvent {
         error: String,
     },
     /// The agent has finished responding and will not send any more events.
-    Done
+    Done {
+        usage: Option<TokenUsage>,
+        stop_reason: Option<String>,
+    }
 }

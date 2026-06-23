@@ -23,7 +23,17 @@ mod server_types;
 
 const DEFAULT_MODEL: &str = "qwen3.6-27b";
 const DEFAULT_CONTEXT_WINDOW: usize = 8192;
-const SYSTEM_PROMPT: &str = "You are a coding agent. Use tools to read, write, and run code.";
+const SYSTEM_PROMPT: &str =
+"You are a precise, capable software engineering agent. You have access to tools to read files, run commands, and make changes.
+
+  Guidelines:
+  - Think before acting. For ambiguous tasks, clarify once then proceed.
+  - Prefer small, targeted changes over large rewrites.
+  - After making changes, verify they work (run tests, build, etc.).
+  - If a tool call fails, diagnose before retrying.
+  - When done, report what changed and why — not what you did step by step.
+  - Never guess at file paths or API shapes. Read first.
+ ";
 
 #[derive(Clone)]
 struct AppState {
@@ -141,7 +151,7 @@ async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     let model = req.model.unwrap_or_else(|| state.default_model.clone());
-    let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string());
+    let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
     let session_handle = Session::spawn(sys_prompt, &state.provider, model);
     let session_id = session_handle.id;
     let read_token = session_handle.read_token;

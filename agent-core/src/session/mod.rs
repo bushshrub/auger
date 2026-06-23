@@ -9,6 +9,7 @@ pub(crate) mod handle;
 pub(crate) mod session_loop;
 mod tool_registry;
 mod tool_call_batch;
+mod session_history;
 
 /// The status of a session
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

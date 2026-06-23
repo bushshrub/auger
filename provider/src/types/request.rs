@@ -1,3 +1,4 @@
+use crate::LlmResponse;
 use crate::types::{ToolCall, ToolDefinition};
 
 #[derive(Debug, Clone)]
@@ -7,6 +8,7 @@ pub enum Message {
     User(String), // TODO: in the future we will need to support images
     /// A message from the model.
     Assistant {
+        reasoning: Option<String>,
         content: String,
         tool_calls: Vec<ToolCall>,
     },
@@ -56,3 +58,23 @@ impl LlmRequest {
     }
 }
 
+
+impl From<LlmResponse> for Message {
+    fn from(response: LlmResponse) -> Self {
+        let tool_calls = response.tool_calls.unwrap_or_default();
+        Message::Assistant {
+            reasoning: response.reasoning,
+            content: response.content,
+            tool_calls,
+        }
+    }
+}
+
+impl From<ToolResult> for Message {
+    fn from(tool_result: ToolResult) -> Self {
+        Message::Tool {
+            tool_call_id: tool_result.tool_call_id,
+            content: tool_result.content,
+        }
+    }
+}
