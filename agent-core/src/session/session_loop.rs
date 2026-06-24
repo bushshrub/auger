@@ -38,6 +38,8 @@ impl Session {
 
         let id = Uuid::new_v4();
 
+        let auto_approved_defaults = vec!["read_file", "list_files", "grep", "glob"];
+
         let session = Session {
             id,
             tools: ToolRegistry::new(),
@@ -45,7 +47,7 @@ impl Session {
             provider: provider.clone(),
             events: events_tx.clone(),
             history: SessionHistory::new(id, prompt),
-            auto_approve: AutoApprovalPolicy::new(["read_file".to_string()]),
+            auto_approve: AutoApprovalPolicy::new(auto_approved_defaults.iter().map(|s| s.to_string())),
         };
 
         let handle = Handle::current();
@@ -60,6 +62,10 @@ impl Session {
         self.tools.register(Box::new(Dummy {}));
         self.tools.register(Box::new(agent_tools::ReadFile {}));
         self.tools.register(Box::new(agent_tools::ListFiles {}));
+        self.tools.register(Box::new(agent_tools::Grep {}));
+        self.tools.register(Box::new(agent_tools::Glob {}));
+        self.tools.register(Box::new(agent_tools::WriteFile {}));
+        self.tools.register(Box::new(agent_tools::EditFile {}));
 
         let mut run_state = RunState::Idle;
 
@@ -209,6 +215,7 @@ impl Session {
         let events = &self.events;
         let provider = &self.provider;
         handle.block_on(async {
+            trace!("Making request to provider: {:?}", request);
             let mut stream = match provider.stream(request).await {
                 Ok(stream) => stream,
                 Err(e) => {
