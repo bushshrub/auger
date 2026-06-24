@@ -38,7 +38,7 @@ impl Session {
 
         let id = Uuid::new_v4();
 
-        let auto_approved_defaults = vec!["read_file", "list_files", "grep", "glob", "todo_list"];
+        let auto_approved_defaults = vec!["read_file", "list_files", "grep", "glob", "todo_list", "web_search"];
 
         let session = Session {
             id,
@@ -67,7 +67,10 @@ impl Session {
         self.tools.register(Box::new(agent_tools::WriteFile {}));
         self.tools.register(Box::new(agent_tools::EditFile {}));
         self.tools.register(Box::new(agent_tools::Shell{}));
+        self.tools.register(Box::new(agent_tools::WebSearch::new()));
+        self.tools.register(Box::new(agent_tools::FetchContent::new()));
         self.tools.register(Box::new(agent_tools::WebFetch::new()));
+        self.tools.register(Box::new(agent_tools::WebFetchText::new()));
         self.tools.register(Box::new(agent_tools::TodoList::new()));
 
         let mut run_state = RunState::Idle;
@@ -219,10 +222,11 @@ impl Session {
         let provider = &self.provider;
         handle.block_on(async {
             trace!("Making request to provider: {:?}", request);
-            let mut stream = match provider.stream(request).await {
+            let mut stream = match provider.stream(request.clone()).await {
                 Ok(stream) => stream,
                 Err(e) => {
                     error!("Error opening provider stream: {:?}", e);
+                    debug!("Request: {:?}", request);
                     return;
                 }
             };
