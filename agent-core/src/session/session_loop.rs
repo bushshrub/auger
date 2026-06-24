@@ -67,6 +67,7 @@ impl Session {
         self.tools.register(Box::new(agent_tools::WriteFile {}));
         self.tools.register(Box::new(agent_tools::EditFile {}));
         self.tools.register(Box::new(agent_tools::Shell{}));
+        self.tools.register(Box::new(agent_tools::WebFetch::new()));
         self.tools.register(Box::new(agent_tools::TodoList::new()));
 
         let mut run_state = RunState::Idle;
