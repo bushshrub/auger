@@ -1,5 +1,27 @@
+use std::marker::PhantomData;
 use provider::{LlmRequest, ToolDefinition};
 use crate::{SessionId, SystemPrompt};
+
+mod private {
+    pub trait Sealed {}
+}
+
+pub(crate) trait TurnState: private::Sealed {}
+
+pub(crate) struct NeedsInput;
+pub(crate) struct ReadyToSend;
+
+impl private::Sealed for NeedsInput {}
+impl private::Sealed for ReadyToSend {}
+impl TurnState for NeedsInput {}
+impl TurnState for ReadyToSend {}
+
+pub(crate) struct TurnBuilder<'h, S: TurnState> {
+    history: &'h mut SessionHistory,
+    model: String,
+    tools: Vec<ToolDefinition>,
+    _state: PhantomData<S>,
+}
 
 pub struct SessionHistory {
     id: SessionId,
@@ -22,34 +44,42 @@ impl SessionHistory {
         self.push_message(resp.into());
     }
 
-    /// Create a new request and push the user message into history.
-    pub(crate) fn create_request(&mut self, model: String, user_msg: String, tools: Vec<ToolDefinition>) -> LlmRequest {
-        self.push_message(provider::Message::User(user_msg.clone()));
-        let messages = self.messages.clone();
-        LlmRequest {
-            model,
-            messages,
-            tools,
-        }
+    pub(crate) fn begin_user_turn(&mut self, model: String, tools: Vec<ToolDefinition>) -> TurnBuilder<'_, NeedsInput> {
+        TurnBuilder { history: self, model, tools, _state: PhantomData }
     }
 
-    pub(crate) fn create_tool_call_response_msg(&mut self, model: String, steering_prompt: Option<String>, results: Vec<provider::ToolResult>) -> LlmRequest {
-        let mut messages = self.messages.clone();
-        if let Some(prompt) = steering_prompt {
-            messages.push(provider::Message::User(prompt));
-        }
-        for result in results {
-            messages.push(result.into());
-        }
-        LlmRequest {
-            model,
-            messages,
-            tools: Vec::new(),
-        }
+    pub(crate) fn begin_tool_turn(&mut self, model: String, tools: Vec<ToolDefinition>) -> TurnBuilder<'_, NeedsInput> {
+        TurnBuilder { history: self, model, tools, _state: PhantomData }
     }
 
     pub fn messages(&self) -> &[provider::Message] {
         &self.messages
     }
+}
 
+impl<'h> TurnBuilder<'h, NeedsInput> {
+    pub(crate) fn with_user_message(self, msg: String) -> TurnBuilder<'h, ReadyToSend> {
+        self.history.push_message(provider::Message::User(msg));
+        TurnBuilder { history: self.history, model: self.model, tools: self.tools, _state: PhantomData }
+    }
+
+    pub(crate) fn with_tool_results(self, steering: Option<String>, results: Vec<provider::ToolResult>) -> TurnBuilder<'h, ReadyToSend> {
+        if let Some(prompt) = steering {
+            self.history.push_message(provider::Message::User(prompt));
+        }
+        for result in results {
+            self.history.push_message(result.into());
+        }
+        TurnBuilder { history: self.history, model: self.model, tools: self.tools, _state: PhantomData }
+    }
+}
+
+impl<'h> TurnBuilder<'h, ReadyToSend> {
+    pub(crate) fn build(self) -> LlmRequest {
+        LlmRequest {
+            model: self.model,
+            messages: self.history.messages.clone(),
+            tools: self.tools,
+        }
+    }
 }
