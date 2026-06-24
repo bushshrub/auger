@@ -17,6 +17,9 @@ Currently, there are 3 provides:
 
 ## Code conventions
 - Do NOT change code in agent-core. Instead, suggest to the user what changes should be made.
+- This project prefers clean abstraction boundaries and small modules.
+  - Abstractions and interfaces should be well-thought-out
+  - Accompanying APIs should be easy to use and documented well.
 - Avoid large modules:
   - Prefer adding new modules instead of growing existing ones.
   - Target Rust modules under 500 LoC, excluding tests.

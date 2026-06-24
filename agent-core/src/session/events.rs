@@ -58,6 +58,7 @@ pub enum SessionEvent {
         // TODO: bad type
         error: String,
     },
+    ToolCallAutoApproved { id: String, name: String, arguments: String },
     /// The agent has finished responding and will not send any more events.
     Done {
         usage: Option<TokenUsage>,

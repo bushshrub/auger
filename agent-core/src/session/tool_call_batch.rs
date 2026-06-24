@@ -51,6 +51,25 @@ impl ToolCallBatch<Resolving> {
         }
     }
 
+    pub(crate) fn new_batch_with_results(
+        tool_calls: Vec<ToolCall>,
+        pre_resolved: Vec<provider::ToolResult>,
+    ) -> Self {
+        let pending_calls = tool_calls
+            .into_iter()
+            .map(|tc| (tc.id.clone(), tc))
+            .collect();
+        let results = pre_resolved
+            .into_iter()
+            .map(|r| (r.tool_call_id, ToolCallResult::from(r.content)))
+            .collect();
+        Self {
+            pending_calls,
+            results,
+            _state: PhantomData,
+        }
+    }
+
     pub(crate) async fn approve_and_run(&mut self, id: &ToolCallId, registry: &ToolRegistry) -> Result<ToolCallResult, RunToolCallError> {
         let tool_call = self.pending_calls.remove(id).ok_or_else(|| RunToolCallError::NotFound(id.clone()))?;
         debug!(tool_call_id = %id, "Tool call approved and being executed");

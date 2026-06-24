@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::mpsc;
-use provider::{LlmProvider, LlmRequest, LlmResponse, ToolCall};
+use provider::{LlmProvider, LlmRequest, LlmResponse, ToolCall, ToolResult};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -11,6 +11,7 @@ use crate::system_prompt::SystemPrompt;
 use futures::stream::StreamExt;
 use tracing::{debug, error, info, trace, warn};
 use agent_tools::Dummy;
+use crate::session::auto_approval::AutoApprovalPolicy;
 use crate::session::session_history::SessionHistory;
 use crate::session::tool_call_batch::{Resolving, ToolCallBatch};
 use crate::session::tool_registry::ToolRegistry;
@@ -27,6 +28,7 @@ pub struct Session {
     provider: Arc<dyn LlmProvider>,
     events: broadcast::Sender<SessionEvent>,
     history: SessionHistory,
+    auto_approve: AutoApprovalPolicy
 }
 
 impl Session {
@@ -43,6 +45,7 @@ impl Session {
             provider: provider.clone(),
             events: events_tx.clone(),
             history: SessionHistory::new(id, prompt),
+            auto_approve: AutoApprovalPolicy::new(["read_file".to_string()]),
         };
 
         let handle = Handle::current();
@@ -74,11 +77,7 @@ impl Session {
                         .with_user_message(content.msg)
                         .build();
                     let tool_calls = self.stream_llm_turn(request, handle.clone());
-                    run_state = if tool_calls.is_empty() {
-                        RunState::Idle
-                    } else {
-                        RunState::AwaitingApproval(ToolCallBatch::new_batch(tool_calls))
-                    };
+                    run_state = self.resolve_tool_calls(tool_calls, handle.clone());
                 }
                 UserCmd::ApproveToolCall { tool_call_id } => {
                     let RunState::AwaitingApproval(mut batch) = run_state else {
@@ -108,11 +107,7 @@ impl Session {
                                 .with_tool_results(None, tool_results)
                                 .build();
                             let tool_calls = self.stream_llm_turn(request, handle.clone());
-                            run_state = if tool_calls.is_empty() {
-                                RunState::Idle
-                            } else {
-                                RunState::AwaitingApproval(ToolCallBatch::new_batch(tool_calls))
-                            };
+                            run_state = self.resolve_tool_calls(tool_calls, handle.clone());
                         }
                         Err(batch) => {
                             run_state = RunState::AwaitingApproval(batch);
@@ -144,11 +139,7 @@ impl Session {
                                 .with_tool_results(None, tool_results)
                                 .build();
                             let tool_calls = self.stream_llm_turn(request, handle.clone());
-                            run_state = if tool_calls.is_empty() {
-                                RunState::Idle
-                            } else {
-                                RunState::AwaitingApproval(ToolCallBatch::new_batch(tool_calls))
-                            };
+                            run_state = self.resolve_tool_calls(tool_calls, handle.clone());
                         }
                         Err(batch) => {
                             run_state = RunState::AwaitingApproval(batch);
@@ -161,6 +152,56 @@ impl Session {
             }
         }
         info!(session_id = %self.id, "Session has been closed");
+    }
+
+    fn run_auto_approved(&self, tool_calls: Vec<ToolCall>, handle: Handle) -> (Vec<ToolCall>, Vec<ToolResult>) {
+        let (approved, deferred): (Vec<_>, Vec<_>) = tool_calls
+            .into_iter()
+            .partition(|tc| self.auto_approve.is_approved(&tc.name));
+
+        let results = handle.block_on(async { futures::future::join_all(
+            approved.iter().map(|tc| self.tools.invoke(tc.clone()))
+        ).await});
+
+        let auto_results = approved.into_iter().zip(results).map(|(tc, result)| {
+            let _ = self.events.send(SessionEvent::ToolCallAutoApproved {
+                id: tc.id.clone(),
+                name: tc.name.clone(),
+                arguments: tc.arguments.clone(),
+            });
+            let content = match result {
+                Ok(r) => {
+                    let _ = self.events.send(SessionEvent::ToolCallResult { id: tc.id.clone(), result: r.to_string() });
+                    r.to_string()
+                }
+                Err(e) => {
+                    let _ = self.events.send(SessionEvent::ToolCallError { id: tc.id.clone(), error: e.to_string() });
+                    format!("error: {e}")
+                }
+            };
+            ToolResult { tool_call_id: tc.id, content }
+        }).collect();
+
+        (deferred, auto_results)
+    }
+
+    fn resolve_tool_calls(&mut self, mut tool_calls: Vec<ToolCall>, handle: Handle) -> RunState {
+        loop {
+
+            let (deferred, auto_results) = self.run_auto_approved(tool_calls, handle.clone());
+            if deferred.is_empty() {
+                if auto_results.is_empty() {
+                    return RunState::Idle;
+                }
+                let request = self.history
+                    .begin_tool_turn(self.model.clone(), self.tools.list_for_clanker())
+                    .with_tool_results(None, auto_results)
+                    .build();
+                tool_calls = self.stream_llm_turn(request, handle.clone());
+            } else {
+                return RunState::AwaitingApproval(ToolCallBatch::new_batch_with_results(deferred, auto_results));
+            }
+        }
     }
 
     fn stream_llm_turn(&mut self, request: LlmRequest, handle: Handle) -> Vec<ToolCall> {

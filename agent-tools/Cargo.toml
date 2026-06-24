@@ -5,9 +5,11 @@ edition = "2024"
 
 [dependencies]
 async-trait.workspace = true
+grep = "0.4.1"
 json-schema-derive = "0.0.2"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+walkdir = "2.5.0"
