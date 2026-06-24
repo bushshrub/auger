@@ -7,7 +7,7 @@ pub struct WebFetch {
     client: reqwest::Client,
 }
 
-const MAX_BODY: usize = 50_000;
+const MAX_INLINE: usize = 20_000;
 
 impl WebFetch {
     pub fn new() -> Self {
@@ -33,7 +33,9 @@ impl Tool for WebFetch {
             name: "web_fetch",
             description: "Fetch a URL and return its content as text. \
                 Useful for reading documentation, APIs, or web pages. \
-                HTML is returned as-is; prefer URLs that serve plain text or JSON when possible.",
+                HTML is returned as-is; prefer URLs that serve plain text or JSON when possible. \
+                If the response body exceeds the inline limit the full content is saved to a \
+                temporary file and the path is returned instead.",
         }
     }
 
@@ -71,22 +73,42 @@ impl Tool for WebFetch {
             .unwrap_or("unknown")
             .to_owned();
 
-        let mut body = response
+        let body = response
             .text()
             .await
             .map_err(|e| ToolError::Execution(format!("failed to read body: {e}")))?;
 
-        let truncated = body.len() > MAX_BODY;
-        if truncated {
-            body.truncate(MAX_BODY);
-            body.push_str("\n[truncated]");
+        if body.len() <= MAX_INLINE {
+            return Ok(json!({
+                "status": status,
+                "content_type": content_type,
+                "body": body,
+            })
+            .to_string()
+            .into());
         }
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        let path = std::env::temp_dir().join(format!("web_fetch_{nanos}.txt"));
+        tokio::fs::write(&path, body.as_bytes())
+            .await
+            .map_err(|e| ToolError::Execution(format!("failed to write temp file: {e}")))?;
 
         Ok(json!({
             "status": status,
             "content_type": content_type,
-            "body": body,
-            "truncated": truncated
+            "body_size_bytes": body.len(),
+            "full_response_path": path.to_string_lossy(),
+            "note": format!(
+                "Response body ({} bytes) exceeds inline limit ({} bytes). \
+                Full content saved to: {}",
+                body.len(),
+                MAX_INLINE,
+                path.display()
+            ),
         })
         .to_string()
         .into())

@@ -17,6 +17,7 @@ use uuid::Uuid;
 use agent_tools::{ReadFile, Tool, WebFetch};
 use provider_openai_responses::OpenAiResponsesProvider;
 use agent_core::{Session, SessionHandle, SystemPrompt};
+use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
 use crate::server_types::{ApproveRequest, CreateSessionRequest, SnapshotMessage, UserInputRequest};
 
 mod server_types;
@@ -24,7 +25,12 @@ mod server_types;
 const DEFAULT_MODEL: &str = "qwen3.6-27b";
 const DEFAULT_CONTEXT_WINDOW: usize = 113072;
 const SYSTEM_PROMPT: &str =
-"You are a precise, capable software engineering agent. You have access to tools to read files, run commands, and make changes.
+"You are a precise, capable software engineering agent. You have access to tools to read files, run commands, make changes, and search the web.
+
+  Research first:
+  - Before designing or implementing anything non-trivial, use web_search to look up relevant documentation, libraries, APIs, and prior art.
+  - Use fetch_content to read the full text of any search result that looks relevant.
+  - Only proceed to implementation after you understand the landscape.
 
   Guidelines:
   - Think before acting. For ambiguous tasks, clarify once then proceed.
@@ -38,7 +44,7 @@ const SYSTEM_PROMPT: &str =
 #[derive(Clone)]
 struct AppState {
     // TODO: support multiple providers
-    provider: Arc<OpenAiResponsesProvider>,
+    provider: Arc<OpenAiChatCompletionsProvider>,
     sessions: Arc<RwLock<HashMap<Uuid, SessionHandle>>>,
     default_model: String
 }
@@ -96,7 +102,7 @@ async fn main() {
         .unwrap_or_else(|_| "http://server-slop:8080/v1".to_string());
     let api_key = std::env::var("PROVIDER_API_KEY").unwrap_or_default();
 
-    let provider = Arc::new(OpenAiResponsesProvider::new(api_key, base_url));
+    let provider = Arc::new(OpenAiChatCompletionsProvider::new(api_key, base_url));
 
     let state = AppState {
         provider: Arc::clone(&provider),

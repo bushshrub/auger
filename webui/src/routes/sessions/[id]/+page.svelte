@@ -142,7 +142,6 @@
 					assistantIdx = items.length - 1;
 				}
 				items[assistantIdx].text = (items[assistantIdx].text ?? '') + ev.data.text;
-				ctxUsed += approxTokens(ev.data.text);
 				break;
 			}
 			case 'tool_call':
@@ -218,7 +217,6 @@
 		if (!text || !session || status !== 'idle') return;
 		draft = '';
 		items.push({ kind: 'user', text });
-		ctxUsed += approxTokens(text);
 		assistantIdx = -1;
 		status = 'running';
 		scroll();
@@ -442,8 +440,6 @@
 	/** @param {number} n */
 	const fmtInt = (n) => n.toLocaleString('en-US');
 
-	const approxTokens = (/** @type {string} */ s) => Math.ceil(s.length / 4);
-
 	let ctxPct = $derived(ctxWindow > 0 ? Math.min(100, (ctxUsed / ctxWindow) * 100) : 0);
 
 	/** @param {MsgMeta} m */
@@ -468,11 +464,11 @@
 		<div class="load-error">⚠ {loadError} — <a href="/">back to sessions</a></div>
 	{:else}
 		<div class="ctx" title="{fmtInt(ctxUsed)} / {ctxWindow ? fmtInt(ctxWindow) : '?'} context tokens">
-			<div class="ctx-meter" class:warn={ctxPct >= 75} class:full={ctxPct >= 90}>
+			<div class="ctx-meter" class:warn={ctxPct >= 75} class:full={ctxPct >= 90} class:generating={status === 'running'}>
 				<div class="ctx-fill" style="width: {ctxPct}%"></div>
 			</div>
 			<span class="ctx-label">
-				{fmtInt(ctxUsed)} / {ctxWindow ? fmtInt(ctxWindow) : '—'} tok ({Math.round(ctxPct)}%)
+				{fmtInt(ctxUsed)} / {ctxWindow ? fmtInt(ctxWindow) : '—'} tok ({Math.round(ctxPct)}%){#if status === 'running'}<span class="ctx-tick" aria-hidden="true"></span>{/if}
 			</span>
 		</div>
 		<div class="log" bind:this={log}>
@@ -694,11 +690,39 @@
 	.ctx-meter.full .ctx-fill {
 		background: var(--error);
 	}
+	.ctx-meter.generating .ctx-fill {
+		background-image: linear-gradient(90deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 60%, white) 50%, var(--accent) 100%);
+		background-size: 200% 100%;
+		animation: ctx-shimmer 1.4s linear infinite;
+	}
+	.ctx-meter.generating.warn .ctx-fill {
+		background-image: linear-gradient(90deg, #e0b341 0%, color-mix(in srgb, #e0b341 60%, white) 50%, #e0b341 100%);
+		background-size: 200% 100%;
+	}
+	.ctx-meter.generating.full .ctx-fill {
+		background-image: linear-gradient(90deg, var(--error) 0%, color-mix(in srgb, var(--error) 60%, white) 50%, var(--error) 100%);
+		background-size: 200% 100%;
+	}
+	@keyframes ctx-shimmer {
+		0% { background-position: 200% 0; }
+		100% { background-position: -200% 0; }
+	}
 	.ctx-label {
 		color: var(--muted);
 		font-size: 0.74rem;
 		font-family: ui-monospace, monospace;
 		white-space: nowrap;
+	}
+	.ctx-tick::after {
+		content: ' ·';
+		animation: ctx-dots 1.2s steps(3, end) infinite;
+		letter-spacing: 0.15em;
+	}
+	@keyframes ctx-dots {
+		0%   { content: ' ·'; }
+		33%  { content: ' ··'; }
+		66%  { content: ' ···'; }
+		100% { content: ' ·'; }
 	}
 	.meta {
 		margin-top: 0.25rem;

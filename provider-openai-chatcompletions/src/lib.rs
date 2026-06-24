@@ -151,6 +151,10 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
 
         let stream = async_stream::stream! {
             let mut stream = sse_stream;
+            let mut stop_reason: Option<String> = None;
+            let mut final_usage: Option<TokenUsage> = None;
+            let mut tool_calls_completed = false;
+
             while let Some(result) = stream.next().await {
                 match result {
                     Err(e) => {
@@ -158,6 +162,12 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
                         return;
                     }
                     Ok(chunk) => {
+                        // Usage may arrive in the finish_reason chunk or in a trailing
+                        // chunk with empty choices (OpenAI stream_options include_usage).
+                        if let Some(u) = extract_usage(&chunk) {
+                            final_usage = Some(u);
+                        }
+
                         let choice = &chunk["choices"][0];
                         let delta = &choice["delta"];
 
@@ -201,7 +211,8 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
                             }
                         }
 
-                        if choice["finish_reason"].is_string() {
+                        if choice["finish_reason"].is_string() && !tool_calls_completed {
+                            tool_calls_completed = true;
                             for acc in accums.iter().flatten() {
                                 yield Ok(StreamEvent::ToolCallComplete {
                                     id: acc.id.clone(),
@@ -209,14 +220,13 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
                                     arguments: acc.arguments.clone(),
                                 });
                             }
-                            let stop_reason = choice["finish_reason"].as_str().map(str::to_string);
-                            let usage = extract_usage(&chunk);
-                            yield Ok(StreamEvent::Done { usage, stop_reason });
-                            return;
+                            stop_reason = choice["finish_reason"].as_str().map(str::to_string);
                         }
                     }
                 }
             }
+
+            yield Ok(StreamEvent::Done { usage: final_usage, stop_reason });
         }
         .boxed();
 
