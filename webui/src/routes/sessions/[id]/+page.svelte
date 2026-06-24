@@ -5,6 +5,7 @@
 	import { goto } from '$app/navigation';
 	import { listSessions, sendInput, approveTool, subscribeEvents, getSnapshot } from '$lib/api.js';
 	import { renderMarkdown } from '$lib/markdown.js';
+	import DiffViewer from '$lib/DiffViewer.svelte';
 
 	const sessionId = $derived(page.params.id);
 
@@ -16,7 +17,7 @@
 	 * @typedef {{ tokens?: number|null, ttftMs?: number|null, tps?: number|null }} MsgMeta
 	 * @typedef {{ kind: 'user'|'assistant'|'reasoning'|'tool'|'error', text?: string,
 	 *   toolName?: string, toolId?: string, args?: any, result?: any,
-	 *   decided?: 'approved'|'denied', meta?: MsgMeta }} ChatItem
+	 *   decided?: 'approved'|'denied'|'auto', meta?: MsgMeta }} ChatItem
 	 */
 	let items = $state(/** @type {ChatItem[]} */ ([]));
 	/** @type {Set<string>} */
@@ -156,6 +157,25 @@
 				pendingToolIds = new Set([...pendingToolIds, ev.data.id]);
 				status = 'running';
 				break;
+			case 'tool_call_auto_approved': {
+				assistantIdx = -1;
+				reasoningIdx = -1;
+				const existing = items.find((i) => i.kind === 'tool' && i.toolId === ev.data.id);
+				if (existing) {
+					existing.decided = 'auto';
+					pendingToolIds = new Set([...pendingToolIds].filter((id) => id !== ev.data.id));
+				} else {
+					items.push({
+						kind: 'tool',
+						toolId: ev.data.id,
+						toolName: ev.data.name,
+						args: ev.data.arguments,
+						decided: 'auto'
+					});
+				}
+				status = 'running';
+				break;
+			}
 			case 'tool_result': {
 				const t = items.find((i) => i.kind === 'tool' && i.toolId === ev.data.id);
 				if (t) t.result = ev.data.content;
@@ -237,6 +257,188 @@
 	/** @param {any} v */
 	const pretty = (v) => (typeof v === 'string' ? v : JSON.stringify(v, null, 2));
 
+	/** @param {string} name */
+	const isEditTool = (name) => name === 'edit_file';
+	/** @param {string} name */
+	const isWriteTool = (name) => name === 'write_file';
+	/** @param {string} name */
+	const isTodoTool = (name) => name === 'todo_list';
+	/** @param {string} name */
+	const isReadTool = (name) => name === 'read_file';
+	/** @param {string} name */
+	const isListTool = (name) => name === 'list_files';
+	/** @param {string} name */
+	const isGlobTool = (name) => name === 'glob';
+	/** @param {string} name */
+	const isGrepTool = (name) => name === 'grep';
+	/** @param {string} name */
+	const isShellTool = (name) => name === 'shell';
+
+	/**
+	 * Tokenize a shell command string into highlighted HTML spans.
+	 * @param {string} cmd
+	 * @returns {string}
+	 */
+	function highlightShell(cmd) {
+		const esc = (/** @type {string} */ s) =>
+			s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+		/** @type {{ cls: string, text: string }[]} */
+		const tokens = [];
+		let i = 0;
+		let firstToken = true;
+
+		while (i < cmd.length) {
+			// comment
+			if (cmd[i] === '#') {
+				const end = cmd.indexOf('\n', i);
+				const text = end === -1 ? cmd.slice(i) : cmd.slice(i, end + 1);
+				tokens.push({ cls: 'sh-comment', text });
+				i += text.length;
+				continue;
+			}
+			// double-quoted string
+			if (cmd[i] === '"') {
+				let j = i + 1;
+				while (j < cmd.length && cmd[j] !== '"') {
+					if (cmd[j] === '\\') j++;
+					j++;
+				}
+				tokens.push({ cls: 'sh-str', text: cmd.slice(i, j + 1) });
+				i = j + 1;
+				continue;
+			}
+			// single-quoted string
+			if (cmd[i] === "'") {
+				const end = cmd.indexOf("'", i + 1);
+				const text = end === -1 ? cmd.slice(i) : cmd.slice(i, end + 1);
+				tokens.push({ cls: 'sh-str', text });
+				i += text.length;
+				continue;
+			}
+			// variable: $(...), ${...}, $WORD
+			if (cmd[i] === '$') {
+				if (cmd[i + 1] === '(') {
+					let depth = 1, j = i + 2;
+					while (j < cmd.length && depth > 0) {
+						if (cmd[j] === '(') depth++;
+						else if (cmd[j] === ')') depth--;
+						j++;
+					}
+					tokens.push({ cls: 'sh-var', text: cmd.slice(i, j) });
+					i = j;
+				} else if (cmd[i + 1] === '{') {
+					const end = cmd.indexOf('}', i + 2);
+					const text = end === -1 ? cmd.slice(i) : cmd.slice(i, end + 1);
+					tokens.push({ cls: 'sh-var', text });
+					i += text.length;
+				} else {
+					let j = i + 1;
+					while (j < cmd.length && /\w/.test(cmd[j])) j++;
+					tokens.push({ cls: 'sh-var', text: cmd.slice(i, j) });
+					i = j;
+				}
+				continue;
+			}
+			// backtick subshell
+			if (cmd[i] === '`') {
+				const end = cmd.indexOf('`', i + 1);
+				const text = end === -1 ? cmd.slice(i) : cmd.slice(i, end + 1);
+				tokens.push({ cls: 'sh-var', text });
+				i += text.length;
+				continue;
+			}
+			// two-char operators
+			const op2 = cmd.slice(i, i + 2);
+			if (op2 === '&&' || op2 === '||' || op2 === '>>' || op2 === '>&' || op2 === ';;') {
+				tokens.push({ cls: 'sh-op', text: op2 });
+				i += 2;
+				firstToken = true;
+				continue;
+			}
+			// single-char operators
+			if ('|;><&'.includes(cmd[i])) {
+				tokens.push({ cls: 'sh-op', text: cmd[i] });
+				i++;
+				firstToken = true;
+				continue;
+			}
+			// whitespace — reset firstToken after newline
+			if (/\s/.test(cmd[i])) {
+				let j = i;
+				while (j < cmd.length && /\s/.test(cmd[j])) j++;
+				const ws = cmd.slice(i, j);
+				tokens.push({ cls: '', text: ws });
+				if (ws.includes('\n')) firstToken = true;
+				i = j;
+				continue;
+			}
+			// word: command name, flag, or plain argument
+			let j = i;
+			while (j < cmd.length && !/[\s"'$`|;&><#]/.test(cmd[j])) j++;
+			const word = cmd.slice(i, j);
+			let cls = '';
+			if (firstToken) {
+				cls = 'sh-cmd';
+				firstToken = false;
+			} else if (/^-/.test(word)) {
+				cls = 'sh-flag';
+			}
+			tokens.push({ cls, text: word });
+			i = j;
+		}
+
+		return tokens
+			.map((t) => (t.cls ? `<span class="${t.cls}">${esc(t.text)}</span>` : esc(t.text)))
+			.join('');
+	}
+
+	/**
+	 * @param {any} result
+	 * @returns {{ stdout: string, stderr: string, exit_code: number } | null}
+	 */
+	function parseShellResult(result) {
+		try {
+			const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+			if (parsed && typeof parsed.exit_code === 'number') return parsed;
+		} catch { /* ignore */ }
+		return null;
+	}
+
+	/**
+	 * @param {any} result
+	 * @returns {{ id: number, title: string, status: string }[]}
+	 */
+	function parseTodoResult(result) {
+		try {
+			const parsed = typeof result === 'string' ? JSON.parse(result) : result;
+			return Array.isArray(parsed?.items) ? parsed.items : [];
+		} catch {
+			return [];
+		}
+	}
+
+	/** @param {string} status */
+	function todoIcon(status) {
+		if (status === 'done') return '●';
+		if (status === 'in_progress') return '◑';
+		return '○';
+	}
+
+	/** @param {any} args */
+	function todoActionLabel(args) {
+		const action = args?.action ?? '?';
+		if (action === 'add') return `add: "${args?.title ?? ''}"`;
+		if (action === 'update') {
+			const parts = [];
+			if (args?.title) parts.push(`title → "${args.title}"`);
+			if (args?.status) parts.push(`status → ${args.status}`);
+			return `update #${args?.id}: ${parts.join(', ')}`;
+		}
+		if (action === 'remove') return `remove #${args?.id}`;
+		return action;
+	}
+
 	/** @param {number} n */
 	const fmtInt = (n) => n.toLocaleString('en-US');
 
@@ -293,6 +495,29 @@
 					</div>
 				{:else if item.kind === 'error'}
 					<div class="msg error"><div class="bubble">⚠ {item.text}</div></div>
+				{:else if item.kind === 'tool' && item.toolName && (isReadTool(item.toolName) || isListTool(item.toolName) || isGlobTool(item.toolName) || isGrepTool(item.toolName))}
+					<div class="msg tool-fs">
+						<div class="tool-fs-row">
+							{#if isReadTool(item.toolName)}
+								<span class="tool-fs-verb">Reading</span>
+								<span class="tool-fs-path">{item.args?.path ?? ''}</span>
+							{:else if isListTool(item.toolName)}
+								<span class="tool-fs-verb">Listing</span>
+								<span class="tool-fs-path">{item.args?.path ?? ''}</span>
+							{:else if isGlobTool(item.toolName)}
+								<span class="tool-fs-verb">Glob</span>
+								<span class="tool-fs-path">{item.args?.pattern ?? ''}</span>
+							{:else if isGrepTool(item.toolName)}
+								<span class="tool-fs-verb">Grep</span><span class="tool-fs-paren">(</span><span class="tool-fs-path">{item.args?.pattern ?? ''}</span><span class="tool-fs-paren">)</span>
+							{/if}
+							{#if item.decided}
+								<span class="tag {item.decided}">{item.decided}</span>
+							{:else if pendingToolIds.has(item.toolId)}
+								<button class="ok inline-btn" onclick={() => decide(item.toolId, true)}>Approve</button>
+								<button class="no inline-btn" onclick={() => decide(item.toolId, false)}>Deny</button>
+							{/if}
+						</div>
+					</div>
 				{:else if item.kind === 'tool'}
 					<div class="msg tool">
 						<div class="bubble">
@@ -305,10 +530,66 @@
 									<button class="no inline-btn" onclick={() => decide(item.toolId, false)}>Deny</button>
 								{/if}
 							</div>
-							<pre class="args">{pretty(item.args)}</pre>
+							{#if item.toolName && isEditTool(item.toolName) && item.args?.path}
+								<div class="tool-path">{item.args.path}</div>
+								<DiffViewer
+									oldContent={item.args.old_string ?? ''}
+									newContent={item.args.new_string ?? ''}
+									fileName={item.args.path}
+								/>
+							{:else if item.toolName && isWriteTool(item.toolName) && item.args?.path}
+								<div class="tool-path">{item.args.path}</div>
+								<DiffViewer
+									oldContent=""
+									newContent={item.args.content ?? ''}
+									fileName={item.args.path}
+								/>
+							{:else if item.toolName && isShellTool(item.toolName)}
+								<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+								<pre class="shell-cmd">$ {@html highlightShell(item.args?.command ?? '')}</pre>
+							{:else if item.toolName && isTodoTool(item.toolName)}
+								<div class="todo-action">{todoActionLabel(item.args)}</div>
+							{:else}
+								<pre class="args">{pretty(item.args)}</pre>
+							{/if}
 							{#if item.result !== undefined}
-								<div class="tool-sub">result</div>
-								<pre class="result">{pretty(item.result)}</pre>
+								{#if item.toolName && isShellTool(item.toolName)}
+									{@const sr = parseShellResult(item.result)}
+									{#if sr}
+										<div class="shell-result">
+											<span class="shell-exit" class:exit-ok={sr.exit_code === 0} class:exit-err={sr.exit_code !== 0}>
+												exit {sr.exit_code}
+											</span>
+										</div>
+										{#if sr.stdout}
+											<pre class="shell-out">{sr.stdout}</pre>
+										{/if}
+										{#if sr.stderr}
+											<div class="tool-sub">stderr</div>
+											<pre class="shell-err">{sr.stderr}</pre>
+										{/if}
+									{:else}
+										<pre class="result">{pretty(item.result)}</pre>
+									{/if}
+								{:else if item.toolName && isTodoTool(item.toolName)}
+									{@const todos = parseTodoResult(item.result)}
+									{#if todos.length === 0}
+										<div class="todo-empty">no items</div>
+									{:else}
+										<ul class="todo-items">
+											{#each todos as todo}
+												<li class="todo-item todo-{todo.status}">
+													<span class="todo-icon">{todoIcon(todo.status)}</span>
+													<span class="todo-title">{todo.title}</span>
+													<span class="todo-id">#{todo.id}</span>
+												</li>
+											{/each}
+										</ul>
+									{/if}
+								{:else}
+									<div class="tool-sub">result</div>
+									<pre class="result">{pretty(item.result)}</pre>
+								{/if}
 							{/if}
 						</div>
 					</div>
@@ -564,6 +845,7 @@
 	}
 	.tag.approved { background: #1f3a28; color: #6fd08c; }
 	.tag.denied { background: #3a1f1f; color: var(--error); }
+	.tag.auto { background: var(--panel); color: var(--muted); border: 1px solid var(--border); }
 	.inline-btn {
 		font-size: 0.72rem;
 		padding: 0.1rem 0.5rem;
@@ -580,4 +862,126 @@
 		flex: 1;
 		resize: none;
 	}
+	.tool-path {
+		margin: 0.3rem 0 0.2rem;
+		font-family: ui-monospace, monospace;
+		font-size: 0.78rem;
+		color: var(--muted);
+	}
+	.todo-action {
+		margin: 0.3rem 0 0;
+		font-family: ui-monospace, monospace;
+		font-size: 0.82rem;
+		color: var(--muted);
+	}
+	.todo-items {
+		list-style: none;
+		margin: 0.4rem 0 0;
+		padding: 0.5rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+	}
+	.todo-item {
+		display: flex;
+		align-items: baseline;
+		gap: 0.5rem;
+		font-size: 0.84rem;
+		padding: 0.15rem 0;
+	}
+	.todo-icon {
+		font-size: 0.9rem;
+		flex-shrink: 0;
+	}
+	.todo-title {
+		flex: 1;
+	}
+	.todo-id {
+		font-family: ui-monospace, monospace;
+		font-size: 0.72rem;
+		color: var(--muted);
+		flex-shrink: 0;
+	}
+	.todo-done .todo-title {
+		text-decoration: line-through;
+		color: var(--muted);
+	}
+	.todo-done .todo-icon {
+		color: #6fd08c;
+	}
+	.todo-in_progress .todo-icon {
+		color: var(--accent);
+	}
+	.todo-empty {
+		margin: 0.3rem 0 0;
+		font-size: 0.82rem;
+		color: var(--muted);
+		font-style: italic;
+	}
+	.msg.tool-fs {
+		align-items: center;
+	}
+	.tool-fs-row {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		font-family: ui-monospace, monospace;
+		font-size: 0.8rem;
+		color: var(--muted);
+		padding: 0.1rem 0;
+	}
+	.tool-fs-verb {
+		color: var(--text);
+		font-style: italic;
+		flex-shrink: 0;
+	}
+	.tool-fs-path {
+		color: var(--accent);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.tool-fs-paren {
+		color: var(--muted);
+	}
+	.shell-cmd {
+		margin: 0.3rem 0 0;
+	}
+	.shell-result {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin-top: 0.4rem;
+	}
+	.shell-exit {
+		font-family: ui-monospace, monospace;
+		font-size: 0.72rem;
+		padding: 0.05rem 0.4rem;
+		border-radius: 999px;
+	}
+	.exit-ok {
+		background: #1f3a28;
+		color: #6fd08c;
+	}
+	.exit-err {
+		background: #3a1f1f;
+		color: var(--error);
+	}
+	.shell-out {
+		margin: 0.3rem 0 0;
+	}
+	.shell-err {
+		margin: 0.2rem 0 0;
+		color: #f28b82;
+	}
+	/* shell syntax highlighting */
+	:global(.sh-cmd)     { color: #82cfff; }
+	:global(.sh-flag)    { color: #be95ff; }
+	:global(.sh-str)     { color: #42be65; }
+	:global(.sh-var)     { color: #ff832b; }
+	:global(.sh-op)      { color: #ee5396; }
+	:global(.sh-comment) { color: var(--muted); font-style: italic; }
 </style>

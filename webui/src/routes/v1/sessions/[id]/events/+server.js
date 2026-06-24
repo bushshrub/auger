@@ -25,6 +25,11 @@ function transformEvent(ev) {
 	if (ev.ToolCallResult) {
 		return [{ type: 'tool_result', data: { id: ev.ToolCallResult.id, content: ev.ToolCallResult.result } }];
 	}
+	if (ev.ToolCallAutoApproved) {
+		let args = ev.ToolCallAutoApproved.arguments;
+		try { args = JSON.parse(args); } catch { /* keep as string */ }
+		return [{ type: 'tool_call_auto_approved', data: { id: ev.ToolCallAutoApproved.id, name: ev.ToolCallAutoApproved.name, arguments: args } }];
+	}
 	if (ev.ToolCallDenied) {
 		return [{ type: 'tool_result', data: { id: ev.ToolCallDenied.id, content: `denied: ${ev.ToolCallDenied.reason}` } }];
 	}

@@ -4,6 +4,8 @@ pub mod glob;
 pub mod grep;
 pub mod list_files;
 pub mod read;
+pub mod shell;
+pub mod todo;
 pub mod web_fetch;
 pub mod write;
 
@@ -17,6 +19,8 @@ pub use glob::Glob;
 pub use grep::Grep;
 pub use list_files::ListFiles;
 pub use read::ReadFile;
+pub use shell::Shell;
+pub use todo::TodoList;
 pub use write::WriteFile;
 // pub use web_fetch::WebFetch;
 

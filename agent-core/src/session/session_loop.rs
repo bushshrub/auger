@@ -38,7 +38,7 @@ impl Session {
 
         let id = Uuid::new_v4();
 
-        let auto_approved_defaults = vec!["read_file", "list_files", "grep", "glob"];
+        let auto_approved_defaults = vec!["read_file", "list_files", "grep", "glob", "todo_list"];
 
         let session = Session {
             id,
@@ -66,6 +66,8 @@ impl Session {
         self.tools.register(Box::new(agent_tools::Glob {}));
         self.tools.register(Box::new(agent_tools::WriteFile {}));
         self.tools.register(Box::new(agent_tools::EditFile {}));
+        self.tools.register(Box::new(agent_tools::Shell{}));
+        self.tools.register(Box::new(agent_tools::TodoList::new()));
 
         let mut run_state = RunState::Idle;
 
