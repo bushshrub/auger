@@ -1,0 +1,139 @@
+name: Build and Package
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_VERSION: 20
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            rustflags: ''
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            rustflags: ''
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            rustflags: ''
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Rust ──────────────────────────────────────────────────────
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-${{ matrix.target }}-
+
+      - name: Build agent-server
+        run: |
+          cargo build --release --package agent-server --target ${{ matrix.target }} \
+            ${{ matrix.rustflags != '' && format('--rustflags {0}', matrix.rustflags) || '' }}
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+
+      # ── Node / WebUI ─────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('webui/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install webui dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: webui
+
+      - name: Build webui
+        run: pnpm build
+        working-directory: webui
+
+      # ── Package ──────────────────────────────────────────────────
+      - name: Create package directory
+        run: |
+          PKG_DIR="auger-${{ github.sha }}-${{ matrix.target }}"
+          mkdir -p "$PKG_DIR"
+
+          # Copy rust binary
+          TARGET_BIN="target/${{ matrix.target }}/release/agent-server"
+          cp "$TARGET_BIN" "$PKG_DIR/"
+
+          # Copy webui build output
+          cp -r webui/build "$PKG_DIR/webui-build"
+
+          echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
+
+      - name: Tar package
+        run: |
+          tar -czf "${{ env.PKG_DIR }}.tar.gz" "${{ env.PKG_DIR }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: auger-${{ matrix.target }}
+          path: ${{ env.PKG_DIR }}.tar.gz
+          retention-days: 14
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
