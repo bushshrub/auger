@@ -1,4 +1,5 @@
 pub mod dummy;
+pub mod grep;
 pub mod list_files;
 pub mod read;
 pub mod web_fetch;
@@ -8,6 +9,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 pub use dummy::Dummy;
+pub use grep::Grep;
 pub use list_files::ListFiles;
 pub use read::ReadFile;
 // pub use web_fetch::WebFetch;
