@@ -190,16 +190,19 @@ fn messages_to_input(messages: Vec<provider::Message>) -> Vec<Value> {
                 items.push(serde_json::json!({"role": "user", "content": content}));
             }
             provider::Message::Assistant { content, tool_calls, reasoning: _ } => {
-                if !content.is_empty() {
-                    items.push(serde_json::json!({"role": "assistant", "content": content}));
-                }
-                for tc in tool_calls {
-                    items.push(serde_json::json!({
-                        "type": "function_call",
-                        "call_id": tc.id,
-                        "name": tc.name,
-                        "arguments": tc.arguments,
-                    }));
+                if tool_calls.is_empty() {
+                    if !content.is_empty() {
+                        items.push(serde_json::json!({"role": "assistant", "content": content}));
+                    }
+                } else {
+                    for tc in tool_calls {
+                        items.push(serde_json::json!({
+                            "type": "function_call",
+                            "call_id": tc.id,
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                        }));
+                    }
                 }
             }
             provider::Message::Tool { tool_call_id, content } => {
