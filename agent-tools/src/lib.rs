@@ -22,7 +22,7 @@ pub use read::ReadFile;
 pub use shell::Shell;
 pub use todo::TodoList;
 pub use write::WriteFile;
-// pub use web_fetch::WebFetch;
+pub use web_fetch::WebFetch;
 
 #[derive(Debug, Error)]
 pub enum ToolError {

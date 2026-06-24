@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 use uuid::Uuid;
-use agent_tools::{ReadFile, Tool};
+use agent_tools::{ReadFile, Tool, WebFetch};
 use provider_openai_responses::OpenAiResponsesProvider;
 use agent_core::{Session, SessionHandle, SystemPrompt};
 use crate::server_types::{ApproveRequest, CreateSessionRequest, SnapshotMessage, UserInputRequest};
@@ -22,7 +22,7 @@ use crate::server_types::{ApproveRequest, CreateSessionRequest, SnapshotMessage,
 mod server_types;
 
 const DEFAULT_MODEL: &str = "qwen3.6-27b";
-const DEFAULT_CONTEXT_WINDOW: usize = 8192;
+const DEFAULT_CONTEXT_WINDOW: usize = 113072;
 const SYSTEM_PROMPT: &str =
 "You are a precise, capable software engineering agent. You have access to tools to read files, run commands, and make changes.
 
@@ -40,7 +40,6 @@ struct AppState {
     // TODO: support multiple providers
     provider: Arc<OpenAiResponsesProvider>,
     sessions: Arc<RwLock<HashMap<Uuid, SessionHandle>>>,
-    tools: Arc<Vec<Arc<dyn Tool>>>,
     default_model: String
 }
 
@@ -102,7 +101,6 @@ async fn main() {
     let state = AppState {
         provider: Arc::clone(&provider),
         sessions: Arc::new(RwLock::new(HashMap::new())),
-        tools: Arc::new(vec![Arc::new(ReadFile)]),
         default_model: std::env::var("MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
     };
 
