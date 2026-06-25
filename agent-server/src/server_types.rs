@@ -1,6 +1,15 @@
 //! Request and response types for the agent server API
 use serde::{Deserialize, Serialize};
-use agent_core::UserMessage;
+use uuid::Uuid;
+use agent_core::{SessionHandle, UserMessage};
+
+/// A session entry holds the handle plus its access tokens, which are owned by the server.
+#[derive(Clone)]
+pub(crate) struct SessionEntry {
+    pub(crate) handle: SessionHandle,
+    pub(crate) read_token: Uuid,
+    pub(crate) write_token: Uuid,
+}
 
 #[derive(Deserialize, Debug)]
 pub(crate) struct CreateSessionRequest {

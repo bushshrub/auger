@@ -18,7 +18,7 @@ use agent_tools::{ReadFile, Tool, WebFetch};
 use provider_openai_responses::OpenAiResponsesProvider;
 use agent_core::{Session, SessionHandle, SystemPrompt};
 use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
-use crate::server_types::{ApproveRequest, CreateSessionRequest, SnapshotMessage, UserInputRequest};
+use crate::server_types::{ApproveRequest, CreateSessionRequest, SessionEntry, SnapshotMessage, UserInputRequest};
 
 mod server_types;
 
@@ -45,7 +45,7 @@ const SYSTEM_PROMPT: &str =
 struct AppState {
     // TODO: support multiple providers
     provider: Arc<OpenAiChatCompletionsProvider>,
-    sessions: Arc<RwLock<HashMap<Uuid, SessionHandle>>>,
+    sessions: Arc<RwLock<HashMap<Uuid, SessionEntry>>>,
     default_model: String
 }
 
@@ -59,14 +59,14 @@ async fn write_auth(
         Some(v) => v.to_str().unwrap_or_default().strip_prefix("Bearer ").unwrap_or_default().to_owned(),
         None => return (StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response(),
     };
-    let handle = match state.sessions.read().await.get(&id).cloned() {
-        Some(h) => h,
+    let entry = match state.sessions.read().await.get(&id).cloned() {
+        Some(e) => e,
         None => return (StatusCode::NOT_FOUND, "Session not found").into_response(),
     };
-    if token != handle.write_token.to_string() {
+    if token != entry.write_token.to_string() {
         return (StatusCode::UNAUTHORIZED, "Invalid write token").into_response();
     }
-    request.extensions_mut().insert(handle);
+    request.extensions_mut().insert(entry.handle);
     next.run(request).await
 }
 
@@ -80,14 +80,14 @@ async fn read_auth(
         Some(v) => v.to_str().unwrap_or_default().strip_prefix("Bearer ").unwrap_or_default().to_owned(),
         None => return (StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response(),
     };
-    let handle = match state.sessions.read().await.get(&id).cloned() {
-        Some(h) => h,
+    let entry = match state.sessions.read().await.get(&id).cloned() {
+        Some(e) => e,
         None => return (StatusCode::NOT_FOUND, "Session not found").into_response(),
     };
-    if token != handle.read_token.to_string() && token != handle.write_token.to_string() {
+    if token != entry.read_token.to_string() && token != entry.write_token.to_string() {
         return (StatusCode::UNAUTHORIZED, "Invalid read token").into_response();
     }
-    request.extensions_mut().insert(handle);
+    request.extensions_mut().insert(entry.handle);
     next.run(request).await
 }
 
@@ -137,14 +137,14 @@ fn router(state: AppState) -> Router {
 /// List all active sessions
 async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
     let sessions = state.sessions.read().await;
-    let list: Vec<_> = sessions.values().map(|h| json!({
-        "session_id": h.id,
-        "model": h.model,
-        "created_at": h.created_at,
+    let list: Vec<_> = sessions.values().map(|e| json!({
+        "session_id": e.handle.id,
+        "model": e.handle.model,
+        "created_at": e.handle.created_at,
         "context_window": DEFAULT_CONTEXT_WINDOW,
         "tokens": {
-            "read": h.read_token.to_string(),
-            "write": h.write_token.to_string(),
+            "read": e.read_token.to_string(),
+            "write": e.write_token.to_string(),
         }
     })).collect();
     Json(json!({ "sessions": list }))
@@ -157,11 +157,11 @@ async fn create_session(
 ) -> impl IntoResponse {
     let model = req.model.unwrap_or_else(|| state.default_model.clone());
     let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
-    let session_handle = Session::spawn(sys_prompt, &state.provider, model);
-    let session_id = session_handle.id;
-    let read_token = session_handle.read_token;
-    let write_token = session_handle.write_token;
-    state.sessions.write().await.insert(session_id, session_handle);
+    let handle = Session::spawn(sys_prompt, &state.provider, model);
+    let session_id = handle.id;
+    let read_token = Uuid::new_v4();
+    let write_token = Uuid::new_v4();
+    state.sessions.write().await.insert(session_id, SessionEntry { handle, read_token, write_token });
     Json(json!({ "session_id": session_id, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
         "read": read_token,
         "write": write_token

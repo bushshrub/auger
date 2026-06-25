@@ -1,8 +1,7 @@
 use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
-use uuid::Uuid;
-use crate::session::{ReadToken, SessionError, SessionId, WriteToken};
+use crate::session::{SessionError, SessionId};
 use crate::session::events::{SessionEvent, ToolCallResponse, UserAction, UserCommand, UserMessage};
 
 #[derive(Clone)]
@@ -10,8 +9,6 @@ pub struct SessionHandle {
     pub id: SessionId,
     pub model: String,
     pub created_at: u64,
-    pub read_token: ReadToken,
-    pub write_token: WriteToken,
     /// Sender for commands to the session thread.
     cmds: mpsc::Sender<UserCommand>,
     /// Sender for events from the session thread.
@@ -29,8 +26,6 @@ impl SessionHandle {
             id,
             model,
             created_at,
-            read_token: ReadToken(Uuid::new_v4()),
-            write_token: WriteToken(Uuid::new_v4()),
             cmds: cmd_tx,
             events: event_tx,
         }
