@@ -4,7 +4,7 @@ use thiserror::Error;
 use tracing::{debug, error};
 use agent_tools::ToolCallResult;
 use provider::ToolCall;
-use crate::session::tool_registry::{ToolInvokeIssue, ToolRegistry};
+use crate::tools::tool_registry::{ToolInvokeIssue, ToolRegistry};
 
 pub(crate) type ToolCallId = String;
 

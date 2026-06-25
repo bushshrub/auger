@@ -1,6 +1,7 @@
 
 mod session;
 mod system_prompt;
+mod tools;
 
 pub use session::events::UserMessage;
 pub use session::events::SessionEvent;

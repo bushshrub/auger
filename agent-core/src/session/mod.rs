@@ -7,10 +7,8 @@ pub(crate) mod events;
 pub(crate) mod handle;
 
 pub(crate) mod session_loop;
-mod tool_registry;
-mod tool_call_batch;
+
 mod session_history;
-mod auto_approval;
 
 pub type SessionId = Uuid;
 

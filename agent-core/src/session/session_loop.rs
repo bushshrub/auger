@@ -11,10 +11,10 @@ use crate::system_prompt::SystemPrompt;
 use futures::stream::StreamExt;
 use tracing::{debug, error, info, trace, warn};
 use agent_tools::Dummy;
-use crate::session::auto_approval::AutoApprovalPolicy;
 use crate::session::session_history::SessionHistory;
-use crate::session::tool_call_batch::{Resolving, ToolCallBatch};
-use crate::session::tool_registry::ToolRegistry;
+use crate::tools::auto_approval::AutoApprovalPolicy;
+use crate::tools::tool_call_batch::{Resolving, ToolCallBatch};
+use crate::tools::tool_registry::ToolRegistry;
 
 enum RunState {
     Idle,
