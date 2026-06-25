@@ -191,7 +191,7 @@ async fn respond_to_tool_call(
     span.record("session_id", tracing::field::display(&session_handle.id));
     span.record("call_id", tracing::field::display(&req.tool_call_id));
     debug!("Tool call approved: {}", req.approved);
-    session_handle.respond_to_tool_call(req.tool_call_id, req.approved).expect("closed");
+    session_handle.respond_to_tool_call(req.tool_call_id, req.approved, req.message).expect("closed");
     // TODO: garbage return type
     Json(json!({ "status": "ok" }))
 }

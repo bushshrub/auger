@@ -25,6 +25,8 @@
 
 	let ctxUsed = $state(0);
 	let ctxWindow = $state(0);
+	/** @type {Record<string, string>} */
+	let toolMessages = $state({});
 
 	let assistantIdx = -1;
 	let reasoningIdx = -1;
@@ -234,11 +236,13 @@
 	 */
 	async function decide(toolId, approved) {
 		if (!session) return;
+		const message = toolMessages[toolId]?.trim() || undefined;
+		delete toolMessages[toolId];
 		const t = items.find((i) => i.kind === 'tool' && i.toolId === toolId);
 		if (t) t.decided = approved ? 'approved' : 'denied';
 		pendingToolIds = new Set([...pendingToolIds].filter((id) => id !== toolId));
 		try {
-			await approveTool(session.session_id, session.owner_token, toolId, approved);
+			await approveTool(session.session_id, session.owner_token, toolId, approved, message);
 		} catch (err) {
 			items.push({ kind: 'error', text: String(err) });
 		}
@@ -509,6 +513,7 @@
 							{#if item.decided}
 								<span class="tag {item.decided}">{item.decided}</span>
 							{:else if pendingToolIds.has(item.toolId)}
+								<input class="tool-msg-input" bind:value={toolMessages[item.toolId]} placeholder="optional message…" />
 								<button class="ok inline-btn" onclick={() => decide(item.toolId, true)}>Approve</button>
 								<button class="no inline-btn" onclick={() => decide(item.toolId, false)}>Deny</button>
 							{/if}
@@ -522,6 +527,7 @@
 								{#if item.decided}
 									<span class="tag {item.decided}">{item.decided}</span>
 								{:else if pendingToolIds.has(item.toolId)}
+									<input class="tool-msg-input" bind:value={toolMessages[item.toolId]} placeholder="optional message…" />
 									<button class="ok inline-btn" onclick={() => decide(item.toolId, true)}>Approve</button>
 									<button class="no inline-btn" onclick={() => decide(item.toolId, false)}>Deny</button>
 								{/if}
@@ -873,6 +879,18 @@
 	.inline-btn {
 		font-size: 0.72rem;
 		padding: 0.1rem 0.5rem;
+	}
+	.tool-msg-input {
+		font-size: 0.72rem;
+		padding: 0.1rem 0.4rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		color: var(--text);
+		width: 12rem;
+	}
+	.tool-msg-input::placeholder {
+		color: var(--muted);
 	}
 	.ok { border-color: #2f5a3c; }
 	.no { border-color: #5a2f2f; }

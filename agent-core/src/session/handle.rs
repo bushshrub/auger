@@ -45,9 +45,9 @@ impl SessionHandle {
         Ok(())
     }
 
-    pub fn respond_to_tool_call(&self, tool_call_id: String, approved: bool) -> Result<(), SessionError> {
+    pub fn respond_to_tool_call(&self, tool_call_id: String, approved: bool, message: Option<String>) -> Result<(), SessionError> {
         let response = if approved { ToolCallResponse::Approve } else { ToolCallResponse::Deny };
-        self.cmds.send(UserAction::RespondToToolCall { response, tool_call_id, message: None }.into())
+        self.cmds.send(UserAction::RespondToToolCall { response, tool_call_id, message }.into())
             .map_err(|_| SessionError::Closed)?;
         Ok(())
     }

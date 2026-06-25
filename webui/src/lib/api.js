@@ -74,15 +74,19 @@ export async function sendInput(id, ownerToken, content) {
  * @param {string} ownerToken
  * @param {string} toolCallId
  * @param {boolean} approved
+ * @param {string} [message]
  */
-export async function approveTool(id, ownerToken, toolCallId, approved) {
+export async function approveTool(id, ownerToken, toolCallId, approved, message) {
+	/** @type {Record<string, unknown>} */
+	const body = { tool_call_id: toolCallId, approved };
+	if (message) body.message = message;
 	const res = await fetch(`${BASE}/sessions/${id}/approve`, {
 		method: 'POST',
 		headers: {
 			'content-type': 'application/json',
 			authorization: `Bearer ${ownerToken}`
 		},
-		body: JSON.stringify({ tool_call_id: toolCallId, approved })
+		body: JSON.stringify(body)
 	});
 	if (!res.ok) throw new Error(`approveTool failed: ${res.status} ${await res.text()}`);
 }
