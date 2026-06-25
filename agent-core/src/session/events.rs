@@ -21,15 +21,23 @@ impl UserMessage {
 }
 
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ToolCallResponse {
+    Approve,
+    Deny,
+}
+
 /// Actions that the user can take directly in a session
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum UserAction {
     /// Send a message to the clanker
     SendMessage(UserMessage),
-    /// Approve a tool call that was requested by the clanker
-    ApproveToolCall { tool_call_id: String },
-    /// Deny a tool call that was requested by the clanker
-    DenyToolCall { tool_call_id: String },
+    /// Respond to a tool call that was requested by the clanker
+    RespondToToolCall {
+        response: ToolCallResponse,
+        tool_call_id: String,
+        message: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug)]

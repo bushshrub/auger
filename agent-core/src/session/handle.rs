@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 use crate::session::{ReadToken, SessionError, SessionId, WriteToken};
-use crate::session::events::{SessionEvent, UserAction, UserCommand, UserMessage};
+use crate::session::events::{SessionEvent, ToolCallResponse, UserAction, UserCommand, UserMessage};
 
 #[derive(Clone)]
 pub struct SessionHandle {
@@ -46,11 +46,9 @@ impl SessionHandle {
     }
 
     pub fn respond_to_tool_call(&self, tool_call_id: String, approved: bool) -> Result<(), SessionError> {
-        let event = match approved {
-            true => UserAction::ApproveToolCall { tool_call_id: tool_call_id.clone() },
-            false => UserAction::DenyToolCall { tool_call_id: tool_call_id.clone() }
-        };
-        self.cmds.send(event.into()).map_err(|_| SessionError::Closed)?;
+        let response = if approved { ToolCallResponse::Approve } else { ToolCallResponse::Deny };
+        self.cmds.send(UserAction::RespondToToolCall { response, tool_call_id, message: None }.into())
+            .map_err(|_| SessionError::Closed)?;
         Ok(())
     }
 
