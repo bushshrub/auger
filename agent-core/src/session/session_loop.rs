@@ -4,7 +4,7 @@ use provider::{LlmProvider, LlmRequest, LlmResponse, ToolCall, ToolResult};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 use uuid::Uuid;
-use crate::session::events::{UserCmd, SessionEvent};
+use crate::session::events::{UserAction, SessionEvent, UserCommand, ToolCallEvent, ClankerEvent};
 use crate::session::handle::SessionHandle;
 use crate::session::SessionId;
 use crate::system_prompt::SystemPrompt;
@@ -58,7 +58,7 @@ impl Session {
         SessionHandle::new(id, model, cmds_tx, events_tx)
     }
 
-    fn run(mut self, rx: mpsc::Receiver<UserCmd>, handle: Handle) {
+    fn run(mut self, rx: mpsc::Receiver<UserCommand>, handle: Handle) {
         self.tools.register(Box::new(Dummy {}));
         self.tools.register(Box::new(agent_tools::ReadFile {}));
         self.tools.register(Box::new(agent_tools::ListFiles {}));
@@ -78,87 +78,87 @@ impl Session {
         info!(session_id = %self.id, "Starting session");
         while let Ok(cmd) = rx.recv() {
             match cmd {
-                UserCmd::SendMessage(content) => {
-                    if matches!(run_state, RunState::AwaitingApproval(_)) {
-                        warn!(session_id = %self.id, "Ignoring SendMessage while awaiting tool call approval");
-                        continue;
+                UserCommand::Action(action) => match action {
+                    UserAction::SendMessage(content) => {
+                        if matches!(run_state, RunState::AwaitingApproval(_)) {
+                            warn!(session_id = %self.id, "Ignoring SendMessage while awaiting tool call approval");
+                            continue;
+                        }
+                        let request = self.history
+                            .begin_user_turn(self.model.clone(), self.tools.list_for_clanker())
+                            .with_user_message(content.msg)
+                            .build();
+                        let tool_calls = self.stream_llm_turn(request, handle.clone());
+                        run_state = self.resolve_tool_calls(tool_calls, handle.clone());
                     }
-                    let _ = self.events.send(SessionEvent::UserMessage { content: content.clone() });
-                    let request = self.history
-                        .begin_user_turn(self.model.clone(), self.tools.list_for_clanker())
-                        .with_user_message(content.msg)
-                        .build();
-                    let tool_calls = self.stream_llm_turn(request, handle.clone());
-                    run_state = self.resolve_tool_calls(tool_calls, handle.clone());
+                    UserAction::ApproveToolCall { tool_call_id } => {
+                        let RunState::AwaitingApproval(mut batch) = run_state else {
+                            warn!(session_id = %self.id, "Received ApproveToolCall while not awaiting approval");
+                            run_state = RunState::Idle;
+                            continue;
+                        };
+                        let tool_result = handle.block_on(async {
+                            batch.approve_and_run(&tool_call_id, &self.tools).await
+                        });
+                        match tool_result {
+                            Ok(result) => {
+                                debug!(tool_call_id = %tool_call_id, "Tool executed successfully: {}", &result);
+                                let _ = self.events.send(ToolCallEvent::Result { id: tool_call_id, result: result.to_string() }.into());
+                            }
+                            Err(e) => {
+                                error!(tool_call_id = %tool_call_id, "Error executing tool: {:?}", e);
+                                let _ = self.events.send(ToolCallEvent::Error { id: tool_call_id, error: format!("{:?}", e) }.into());
+                            }
+                        }
+                        match batch.try_complete() {
+                            Ok(complete) => {
+                                debug!("All pending tool calls processed. Resuming LLM turn.");
+                                let tool_results = complete.drain();
+                                let request = self.history
+                                    .begin_tool_turn(self.model.clone(), self.tools.list_for_clanker())
+                                    .with_tool_results(None, tool_results)
+                                    .build();
+                                let tool_calls = self.stream_llm_turn(request, handle.clone());
+                                run_state = self.resolve_tool_calls(tool_calls, handle.clone());
+                            }
+                            Err(batch) => {
+                                run_state = RunState::AwaitingApproval(batch);
+                            }
+                        }
+                    }
+                    UserAction::DenyToolCall { tool_call_id } => {
+                        let RunState::AwaitingApproval(mut batch) = run_state else {
+                            warn!(session_id = %self.id, "Received DenyToolCall while not awaiting approval");
+                            run_state = RunState::Idle;
+                            continue;
+                        };
+                        match batch.deny(&tool_call_id) {
+                            Ok(_) => {
+                                debug!(tool_call_id = %tool_call_id, "Tool call denied by user.");
+                            }
+                            Err(e) => {
+                                error!(tool_call_id = %tool_call_id, "Error denying tool call: {:?}", e);
+                            }
+                        }
+                        match batch.try_complete() {
+                            Ok(complete) => {
+                                debug!("All pending tool calls processed. Resuming LLM turn.");
+                                let tool_results = complete.drain();
+                                let request = self.history
+                                    .begin_tool_turn(self.model.clone(), self.tools.list_for_clanker())
+                                    .with_tool_results(None, tool_results)
+                                    .build();
+                                let tool_calls = self.stream_llm_turn(request, handle.clone());
+                                run_state = self.resolve_tool_calls(tool_calls, handle.clone());
+                            }
+                            Err(batch) => {
+                                run_state = RunState::AwaitingApproval(batch);
+                            }
+                        }
+                    }
                 }
-                UserCmd::ApproveToolCall { tool_call_id } => {
-                    let RunState::AwaitingApproval(mut batch) = run_state else {
-                        warn!(session_id = %self.id, "Received ApproveToolCall while not awaiting approval");
-                        run_state = RunState::Idle;
-                        continue;
-                    };
-                    let tool_result = handle.block_on(async {
-                        batch.approve_and_run(&tool_call_id, &self.tools).await
-                    });
-                    match tool_result {
-                        Ok(result) => {
-                            debug!(tool_call_id = %tool_call_id, "Tool executed successfully: {}", &result);
-                            let _ = self.events.send(SessionEvent::ToolCallResult { id: tool_call_id, result: result.to_string() });
-                        }
-                        Err(e) => {
-                            error!(tool_call_id = %tool_call_id, "Error executing tool: {:?}", e);
-                            let _ = self.events.send(SessionEvent::ToolCallError { id: tool_call_id, error: format!("{:?}", e) });
-                        }
-                    }
-                    match batch.try_complete() {
-                        Ok(complete) => {
-                            debug!("All pending tool calls processed. Resuming LLM turn.");
-                            let tool_results = complete.drain();
-                            let request = self.history
-                                .begin_tool_turn(self.model.clone(), self.tools.list_for_clanker())
-                                .with_tool_results(None, tool_results)
-                                .build();
-                            let tool_calls = self.stream_llm_turn(request, handle.clone());
-                            run_state = self.resolve_tool_calls(tool_calls, handle.clone());
-                        }
-                        Err(batch) => {
-                            run_state = RunState::AwaitingApproval(batch);
-                        }
-                    }
-                }
-                UserCmd::DenyToolCall { tool_call_id } => {
-                    let RunState::AwaitingApproval(mut batch) = run_state else {
-                        warn!(session_id = %self.id, "Received DenyToolCall while not awaiting approval");
-                        run_state = RunState::Idle;
-                        continue;
-                    };
-                    match batch.deny(&tool_call_id) {
-                        Ok(_) => {
-                            debug!(tool_call_id = %tool_call_id, "Tool call denied by user.");
-                            let _ = self.events.send(SessionEvent::ToolCallDenied { id: tool_call_id, reason: "User denied".to_string() });
-                        }
-                        Err(e) => {
-                            error!(tool_call_id = %tool_call_id, "Error denying tool call: {:?}", e);
-                            let _ = self.events.send(SessionEvent::ToolCallError { id: tool_call_id, error: format!("{:?}", e) });
-                        }
-                    }
-                    match batch.try_complete() {
-                        Ok(complete) => {
-                            debug!("All pending tool calls processed. Resuming LLM turn.");
-                            let tool_results = complete.drain();
-                            let request = self.history
-                                .begin_tool_turn(self.model.clone(), self.tools.list_for_clanker())
-                                .with_tool_results(None, tool_results)
-                                .build();
-                            let tool_calls = self.stream_llm_turn(request, handle.clone());
-                            run_state = self.resolve_tool_calls(tool_calls, handle.clone());
-                        }
-                        Err(batch) => {
-                            run_state = RunState::AwaitingApproval(batch);
-                        }
-                    }
-                }
-                UserCmd::Snapshot { reply } => {
+
+                UserCommand::Snapshot { reply } => {
                     let _ = reply.send(self.history.messages().to_vec());
                 }
             }
@@ -176,18 +176,18 @@ impl Session {
         ).await});
 
         let auto_results = approved.into_iter().zip(results).map(|(tc, result)| {
-            let _ = self.events.send(SessionEvent::ToolCallAutoApproved {
+            let _ = self.events.send(ToolCallEvent::AutoApproved {
                 id: tc.id.clone(),
                 name: tc.name.clone(),
                 arguments: tc.arguments.clone(),
-            });
+            }.into());
             let content = match result {
                 Ok(r) => {
-                    let _ = self.events.send(SessionEvent::ToolCallResult { id: tc.id.clone(), result: r.to_string() });
+                    let _ = self.events.send(ToolCallEvent::Result { id: tc.id.clone(), result: r.to_string() }.into());
                     r.to_string()
                 }
                 Err(e) => {
-                    let _ = self.events.send(SessionEvent::ToolCallError { id: tc.id.clone(), error: e.to_string() });
+                    let _ = self.events.send(ToolCallEvent::Error { id: tc.id.clone(), error: e.to_string() }.into());
                     format!("error: {e}")
                 }
             };
@@ -241,11 +241,11 @@ impl Session {
                 match event_result {
                     Ok(provider::StreamEvent::TextDelta(text)) => {
                         trace!("text delta: {}", text);
-                        let _ = events.send(SessionEvent::Content { delta: text });
+                        let _ = events.send(ClankerEvent::ContentDelta { delta: text }.into());
                     }
                     Ok(provider::StreamEvent::ReasoningDelta(text)) => {
                         trace!("reasoning delta: {}", text);
-                        let _ = events.send(SessionEvent::Reasoning { delta: text });
+                        let _ = events.send(ClankerEvent::ReasoningDelta { delta: text }.into());
                     }
                     Ok(provider::StreamEvent::ToolCall { id, name, arguments }) => {
                         trace!(tool_call_id = %id, tool = %name, "tool call delta: {}", arguments)
@@ -253,11 +253,11 @@ impl Session {
                     Ok(provider::StreamEvent::ToolCallComplete { id, name, arguments }) => {
                         debug!(tool_call_id = %id, tool = %name, "tool call complete: {}", arguments);
                         pending_tool_calls.push(ToolCall { id: id.clone(), name: name.clone(), arguments: arguments.clone() });
-                        let _ = events.send(SessionEvent::ToolCallRequest { id, name, arguments });
+                        let _ = events.send(ClankerEvent::ToolCallRequest { id, name, arguments }.into());
                     }
                     Ok(provider::StreamEvent::Done { usage, stop_reason }) => {
                         debug!("Response finished. Usage: {:?}, stop reason: {:?}", usage, stop_reason);
-                        let _ = events.send(SessionEvent::Done { usage, stop_reason });
+                        let _ = events.send(ClankerEvent::Done { usage, stop_reason }.into());
                     }
                     Err(e) => {
                         error!("Error while streaming response from provider: {:?}", e);
