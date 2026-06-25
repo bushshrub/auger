@@ -17,6 +17,7 @@ use uuid::Uuid;
 use agent_tools::{ReadFile, Tool, WebFetch};
 use provider_openai_responses::OpenAiResponsesProvider;
 use agent_core::{Session, SessionHandle, SystemPrompt};
+use provider_anthropic::AnthropicProvider;
 use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
 use crate::server_types::{ApproveRequest, CreateSessionRequest, SessionEntry, SnapshotMessage, UserInputRequest};
 
@@ -44,7 +45,7 @@ const SYSTEM_PROMPT: &str =
 #[derive(Clone)]
 struct AppState {
     // TODO: support multiple providers
-    provider: Arc<OpenAiChatCompletionsProvider>,
+    provider: Arc<AnthropicProvider>,
     sessions: Arc<RwLock<HashMap<Uuid, SessionEntry>>>,
     default_model: String
 }
@@ -102,7 +103,7 @@ async fn main() {
         .unwrap_or_else(|_| "http://server-slop:8080/v1".to_string());
     let api_key = std::env::var("PROVIDER_API_KEY").unwrap_or_default();
 
-    let provider = Arc::new(OpenAiChatCompletionsProvider::new(api_key, base_url));
+    let provider = Arc::new(AnthropicProvider::new(api_key, base_url));
 
     let state = AppState {
         provider: Arc::clone(&provider),

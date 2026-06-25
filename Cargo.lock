@@ -26,6 +26,7 @@ dependencies = [
  "axum",
  "futures",
  "provider",
+ "provider-anthropic",
  "provider-openai-chatcompletions",
  "provider-openai-responses",
  "reqwest 0.12.28",

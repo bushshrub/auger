@@ -7,20 +7,25 @@ use provider::{
 use reqwest::Client;
 use serde_json::{Value, json};
 
-const API_URL: &str = "https://api.anthropic.com/v1/messages";
+const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const API_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 8096;
 
 pub struct AnthropicProvider {
     client: Client,
     api_key: String,
+    messages_url: String,
 }
 
 impl AnthropicProvider {
-    pub fn new(api_key: impl Into<String>) -> Self {
+    pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        let base = base_url.into();
+        let base = if base.is_empty() { DEFAULT_BASE_URL.to_string() } else { base };
+        let messages_url = format!("{}/v1/messages", base.trim_end_matches('/'));
         Self {
             client: Client::new(),
             api_key: api_key.into(),
+            messages_url,
         }
     }
 }
@@ -189,7 +194,7 @@ impl LlmProvider for AnthropicProvider {
 
         let resp = self
             .client
-            .post(API_URL)
+            .post(&self.messages_url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", API_VERSION)
             .header("content-type", "application/json")
@@ -217,7 +222,7 @@ impl LlmProvider for AnthropicProvider {
 
         let resp = self
             .client
-            .post(API_URL)
+            .post(&self.messages_url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", API_VERSION)
             .header("content-type", "application/json")
