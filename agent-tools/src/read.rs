@@ -3,6 +3,8 @@ use serde_json::json;
 
 use crate::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
+const INLINE_LINE_LIMIT: usize = 500;
+
 pub struct ReadFile;
 
 #[async_trait]
@@ -10,7 +12,7 @@ impl Tool for ReadFile {
     fn details(&self) -> ToolDetails {
         ToolDetails {
             name: "read_file",
-            description: "Read a file from the local filesystem. Returns file contents with line numbers. Use offset and limit to read a specific range of lines.",
+            description: "Read a file from the local filesystem. Returns file contents with line numbers. Use offset and limit to read a specific range of lines. If the output exceeds 500 lines and no limit is set, the result is written to a temp file instead.",
         }
     }
 
@@ -62,12 +64,29 @@ impl Tool for ReadFile {
             None => total,
         };
 
+        let line_count = end - start;
         let mut out = String::new();
         for (i, line) in lines[start..end].iter().enumerate() {
             let lineno = start + i + 1;
             out.push_str(&format!("{lineno}\t{line}\n"));
         }
 
-        Ok(json!({ "content": out, "total_lines": total }).to_string().into())
+        if limit.is_none() && line_count > INLINE_LINE_LIMIT {
+            let tmp_path = format!("/tmp/auger_read_{}.txt", sanitize_filename(path));
+            tokio::fs::write(&tmp_path, &out).await?;
+            return Ok(format!(
+                "File has {total} lines (exceeds inline limit of {INLINE_LINE_LIMIT}). Full contents written to: {tmp_path}"
+            ).into());
+        }
+
+        let mut result = format!("Total lines: {total}\n\n");
+        result.push_str(&out);
+        Ok(result.into())
     }
+}
+
+fn sanitize_filename(path: &str) -> String {
+    path.chars()
+        .map(|c| if c.is_alphanumeric() || c == '.' { c } else { '_' })
+        .collect()
 }

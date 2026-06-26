@@ -23,7 +23,7 @@ use crate::server_types::{ApproveRequest, CreateSessionRequest, SessionEntry, Sn
 
 mod server_types;
 
-const DEFAULT_MODEL: &str = "qwen3.6-27b";
+const DEFAULT_MODEL: &str = "ornith-1.0-35b-q6k";
 const DEFAULT_CONTEXT_WINDOW: usize = 113072;
 const SYSTEM_PROMPT: &str =
 "You are a precise, capable software engineering agent. You have access to tools to read files, run commands, make changes, and search the web.
@@ -45,7 +45,7 @@ const SYSTEM_PROMPT: &str =
 #[derive(Clone)]
 struct AppState {
     // TODO: support multiple providers
-    provider: Arc<AnthropicProvider>,
+    provider: Arc<OpenAiResponsesProvider>,
     sessions: Arc<RwLock<HashMap<Uuid, SessionEntry>>>,
     default_model: String
 }
@@ -100,10 +100,10 @@ async fn main() {
 
     let addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
     let base_url = std::env::var("PROVIDER_BASE_URL")
-        .unwrap_or_else(|_| "http://server-slop:8080".to_string());
+        .unwrap_or_else(|_| "http://server-slop:8080/v1/".to_string());
     let api_key = std::env::var("PROVIDER_API_KEY").unwrap_or_default();
 
-    let provider = Arc::new(AnthropicProvider::new(api_key, base_url));
+    let provider = Arc::new(OpenAiResponsesProvider::new(api_key, base_url));
 
     let state = AppState {
         provider: Arc::clone(&provider),
