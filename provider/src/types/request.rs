@@ -63,7 +63,7 @@ impl From<LlmResponse> for Message {
     fn from(response: LlmResponse) -> Self {
         let tool_calls = response.tool_calls.unwrap_or_default();
         Message::Assistant {
-            reasoning: response.reasoning,
+            reasoning: None,
             content: response.content,
             tool_calls,
         }
