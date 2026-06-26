@@ -184,15 +184,15 @@ fn messages_to_input(messages: Vec<provider::Message>) -> Vec<Value> {
     for msg in messages {
         match msg {
             provider::Message::System(content) => {
-                items.push(serde_json::json!({"role": "system", "content": content}));
+                items.push(serde_json::json!({"type": "message", "role": "system", "content": content}));
             }
             provider::Message::User(content) => {
-                items.push(serde_json::json!({"role": "user", "content": content}));
+                items.push(serde_json::json!({"type": "message", "role": "user", "content": content}));
             }
             provider::Message::Assistant { content, tool_calls, reasoning: _ } => {
                 if tool_calls.is_empty() {
                     if !content.is_empty() {
-                        items.push(serde_json::json!({"role": "assistant", "content": content}));
+                        items.push(serde_json::json!({"type": "message", "role": "assistant", "content": content}));
                     }
                 } else {
                     for tc in tool_calls {
