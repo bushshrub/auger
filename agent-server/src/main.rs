@@ -100,7 +100,7 @@ async fn main() {
 
     let addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
     let base_url = std::env::var("PROVIDER_BASE_URL")
-        .unwrap_or_else(|_| "http://server-slop:8080/v1".to_string());
+        .unwrap_or_else(|_| "http://server-slop:8080".to_string());
     let api_key = std::env::var("PROVIDER_API_KEY").unwrap_or_default();
 
     let provider = Arc::new(AnthropicProvider::new(api_key, base_url));

@@ -250,6 +250,8 @@ impl LlmProvider for AnthropicProvider {
             let mut current_block: Option<BlockState> = None;
             let mut input_tokens: Option<i32> = None;
             let mut output_tokens: Option<i32> = None;
+            let mut cached_tokens: Option<i32> = None;
+            let mut cache_creation_tokens: Option<i32> = None;
             let mut stop_reason: Option<String> = None;
 
             while let Some(chunk) = bytes.next().await {
@@ -277,9 +279,10 @@ impl LlmProvider for AnthropicProvider {
 
                             match event["type"].as_str() {
                                 Some("message_start") => {
-                                    input_tokens = event["message"]["usage"]["input_tokens"]
-                                        .as_i64()
-                                        .map(|n| n as i32);
+                                    let usage = &event["message"]["usage"];
+                                    input_tokens = usage["input_tokens"].as_i64().map(|n| n as i32);
+                                    cached_tokens = usage["cache_read_input_tokens"].as_i64().map(|n| n as i32);
+                                    cache_creation_tokens = usage["cache_creation_input_tokens"].as_i64().map(|n| n as i32);
                                 }
                                 Some("content_block_start") => {
                                     let block = &event["content_block"];
@@ -347,8 +350,8 @@ impl LlmProvider for AnthropicProvider {
                                         total_tokens: input_tokens
                                             .zip(output_tokens)
                                             .map(|(i, o)| i + o),
-                                        cached_tokens: None,
-                                        cache_creation_tokens: None,
+                                        cached_tokens,
+                                        cache_creation_tokens,
                                     });
                                     yield Ok(StreamEvent::Done {
                                         usage,
