@@ -51,23 +51,22 @@ pub struct ToolDetails {
 
 /// Result of a tool call which can be sent back to the model.
 #[derive(Debug, Clone)]
-pub struct ToolCallResult(String);
-
-impl ToolCallResult {
-    pub fn error(message: impl Display) -> Self {
-        ToolCallResult(format!("Error: {}", message))
-    }
+pub enum ToolCallResult {
+    /// Tool call was successful, and the result is in the string.
+    Success(String),
+    /// Tool call was denied by the user, and the reason is in the string.
+    DeniedByUser(String),
+    /// Tool call failed, and the error message is in the string.
+    Error(String)
 }
 
 impl Display for ToolCallResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ToolCallResult({})", self.0)
-    }
-}
-
-impl From<String> for ToolCallResult {
-    fn from(s: String) -> Self {
-        ToolCallResult(s)
+        match self {
+            ToolCallResult::Success(s) => write!(f, "ToolCallResult(Success: {})", s),
+            ToolCallResult::DeniedByUser(s) => write!(f, "ToolCallResult(DeniedByUser: {})", s),
+            ToolCallResult::Error(s) => write!(f, "ToolCallResult(Error: {})", s),
+        }
     }
 }
 
