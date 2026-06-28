@@ -74,14 +74,14 @@ impl Tool for ReadFile {
         if limit.is_none() && line_count > INLINE_LINE_LIMIT {
             let tmp_path = format!("/tmp/auger_read_{}.txt", sanitize_filename(path));
             tokio::fs::write(&tmp_path, &out).await?;
-            return Ok(format!(
+            return Ok(ToolCallResult::success(format!(
                 "File has {total} lines (exceeds inline limit of {INLINE_LINE_LIMIT}). Full contents written to: {tmp_path}"
-            ).into());
+            )));
         }
 
         let mut result = format!("Total lines: {total}\n\n");
         result.push_str(&out);
-        Ok(result.into())
+        Ok(ToolCallResult::success(result))
     }
 }
 

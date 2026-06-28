@@ -149,20 +149,18 @@ impl Tool for WebSearch {
         let results = parse_results(&html, max_results);
 
         if results.is_empty() {
-            return Ok(json!({
+            return Ok(ToolCallResult::success(json!({
                 "query": query,
                 "results": [],
                 "note": "No results found. DuckDuckGo may be rate-limiting — try again shortly."
             })
-            .to_string()
-            .into());
+            .to_string()));
         }
 
-        Ok(json!({
+        Ok(ToolCallResult::success(json!({
             "query": query,
             "results": results,
         })
-        .to_string()
-        .into())
+        .to_string()))
     }
 }

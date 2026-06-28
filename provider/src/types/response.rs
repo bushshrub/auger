@@ -48,6 +48,16 @@ pub struct ClankerMessage {
     content: String,
 }
 
+impl From<LlmResponse> for ClankerMessage {
+    fn from(response: LlmResponse) -> Self {
+        Self {
+            reasoning: response.reasoning,
+            tool_calls: response.tool_calls.unwrap_or_default(),
+            content: response.content,
+        }
+    }
+}
+
 impl From<ClankerMessage> for Message {
     fn from(msg: ClankerMessage) -> Self {
         Message::Assistant {

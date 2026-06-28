@@ -81,7 +81,7 @@ impl Tool for Grep {
         .await
         .map_err(|e| ToolError::Execution(e.to_string()))??;
 
-        Ok(output.into())
+        Ok(ToolCallResult::success(output))
     }
 }
 

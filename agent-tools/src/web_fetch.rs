@@ -80,13 +80,12 @@ impl Tool for WebFetch {
             .map_err(|e| ToolError::Execution(format!("failed to read body: {e}")))?;
 
         if body.len() <= MAX_INLINE {
-            return Ok(json!({
+            return Ok(ToolCallResult::success(json!({
                 "status": status,
                 "content_type": content_type,
                 "body": body,
             })
-            .to_string()
-            .into());
+            .to_string()));
         }
 
         let nanos = std::time::SystemTime::now()
@@ -98,7 +97,7 @@ impl Tool for WebFetch {
             .await
             .map_err(|e| ToolError::Execution(format!("failed to write temp file: {e}")))?;
 
-        Ok(json!({
+        Ok(ToolCallResult::success(json!({
             "status": status,
             "content_type": content_type,
             "body_size_bytes": body.len(),
@@ -111,7 +110,6 @@ impl Tool for WebFetch {
                 path.display()
             ),
         })
-        .to_string()
-        .into())
+        .to_string()))
     }
 }

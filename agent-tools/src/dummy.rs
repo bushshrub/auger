@@ -32,6 +32,6 @@ impl Tool for Dummy {
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: message".into()))?;
 
-        Ok(json!({ "echo": message }).to_string().into())
+        Ok(ToolCallResult::success(json!({ "echo": message }).to_string()))
     }
 }

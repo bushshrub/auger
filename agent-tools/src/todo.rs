@@ -134,7 +134,7 @@ impl Tool for TodoList {
             }
         }
 
-        Ok(json!({ "items": *items }).to_string().into())
+        Ok(ToolCallResult::success(json!({ "items": *items }).to_string()))
     }
 }
 

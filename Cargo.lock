@@ -7,6 +7,7 @@ name = "agent-core"
 version = "0.1.0"
 dependencies = [
  "agent-tools",
+ "either",
  "futures",
  "provider",
  "serde",
@@ -512,6 +513,12 @@ name = "ego-tree"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b04dc5a38e4f151a79d9f2451ae6037fb6eaf5cba34771f44781f80e508498e3"
+
+[[package]]
+name = "either"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "encoding_rs"
@@ -1624,6 +1631,7 @@ name = "provider"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "either",
  "futures",
  "futures-core",
  "serde",

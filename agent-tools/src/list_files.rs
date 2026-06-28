@@ -43,7 +43,7 @@ impl Tool for ListFiles {
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))??;
 
-        Ok(json!({ "entries": entries }).to_string().into())
+        Ok(ToolCallResult::success(json!({ "entries": entries }).to_string()))
     }
 }
 

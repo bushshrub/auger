@@ -45,7 +45,7 @@ impl Tool for Glob {
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))??;
 
-        Ok(output.into())
+        Ok(ToolCallResult::success(output))
     }
 }
 

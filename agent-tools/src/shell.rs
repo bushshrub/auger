@@ -59,12 +59,11 @@ impl Tool for Shell {
 
         let exit_code = output.status.code().unwrap_or(-1);
 
-        Ok(json!({
+        Ok(ToolCallResult::success(json!({
             "stdout": stdout,
             "stderr": stderr,
             "exit_code": exit_code
         })
-        .to_string()
-        .into())
+        .to_string()))
     }
 }

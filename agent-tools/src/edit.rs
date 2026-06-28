@@ -68,6 +68,6 @@ impl Tool for EditFile {
         let new_content = content.replacen(old_string, new_string, 1);
         fs::write(path, &new_content).await?;
 
-        Ok(json!({ "success": true, "path": path }).to_string().into())
+        Ok(ToolCallResult::success(json!({ "success": true, "path": path }).to_string()))
     }
 }

@@ -195,14 +195,13 @@ impl Tool for FetchContent {
             (text, trunc)
         };
 
-        Ok(json!({
+        Ok(ToolCallResult::success(json!({
             "url": url,
             "status": status,
             "content_type": content_type,
             "text": text,
             "truncated": truncated,
         })
-        .to_string()
-        .into())
+        .to_string()))
     }
 }
