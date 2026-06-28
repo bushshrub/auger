@@ -1,11 +1,12 @@
 use async_stream::stream;
 use futures::StreamExt;
 use provider::{
-    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, Message, StreamEvent, TokenUsage,
-    ToolCall,
+    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage,
+    ToolCallRequest,
 };
 use reqwest::Client;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
+use provider::types::Message;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const API_VERSION: &str = "2023-06-01";
@@ -30,19 +31,34 @@ impl AnthropicProvider {
     }
 }
 
-fn convert_messages(messages: Vec<Message>) -> (Option<String>, Vec<Value>) {
+fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
     let mut system: Option<String> = None;
     let mut out: Vec<Value> = Vec::new();
 
     for msg in messages {
         match msg {
             Message::System(content) => {
-                system = Some(content);
+                system = Some(content.clone());
             }
-            Message::User(content) => {
-                out.push(json!({"role": "user", "content": content}));
+            Message::User { message, tool_call_results } => {
+                let mut blocks: Vec<Value> = Vec::new();
+                let msg_text = message.message();
+                if !msg_text.is_empty() {
+                    blocks.push(json!({"type": "text", "text": msg_text}));
+                }
+                for tr in tool_call_results {
+                    blocks.push(json!({
+                        "type": "tool_result",
+                        "tool_use_id": tr.id(),
+                        "content": tr.content(),
+                    }));
+                }
+                if blocks.is_empty() {
+                    blocks.push(json!({"type": "text", "text": ""}));
+                }
+                out.push(json!({"role": "user", "content": blocks}));
             }
-            Message::Assistant { content, tool_calls, reasoning: _ } => {
+            Message::Assistant { reasoning: _, content, tool_calls } => {
                 let mut blocks: Vec<Value> = Vec::new();
                 if !content.is_empty() {
                     blocks.push(json!({"type": "text", "text": content}));
@@ -61,29 +77,6 @@ fn convert_messages(messages: Vec<Message>) -> (Option<String>, Vec<Value>) {
                     blocks.push(json!({"type": "text", "text": ""}));
                 }
                 out.push(json!({"role": "assistant", "content": blocks}));
-            }
-            Message::Tool { tool_call_id, content } => {
-                let result = json!({
-                    "type": "tool_result",
-                    "tool_use_id": tool_call_id,
-                    "content": content,
-                });
-                // merge consecutive tool results into single user message
-                let should_merge = match out.last() {
-                    Some(last) if last["role"] == "user" => last["content"]
-                        .as_array()
-                        .map(|arr| arr.iter().all(|v| v["type"] == "tool_result"))
-                        .unwrap_or(false),
-                    _ => false,
-                };
-                if should_merge {
-                    out.last_mut()
-                        .and_then(|last| last["content"].as_array_mut())
-                        .unwrap()
-                        .push(result);
-                } else {
-                    out.push(json!({"role": "user", "content": [result]}));
-                }
             }
         }
     }
@@ -107,11 +100,11 @@ fn convert_tools(tools: Vec<provider::ToolDefinition>) -> Vec<Value> {
 }
 
 fn build_body(request: LlmRequest, do_stream: bool) -> Value {
-    let (system, messages) = convert_messages(request.messages);
-    let tools = convert_tools(request.tools);
+    let (system, messages) = convert_messages(request.messages());
+    let tools = convert_tools(request.tools().to_vec());
 
     let mut body = json!({
-        "model": request.model,
+        "model": request.model(),
         "max_tokens": DEFAULT_MAX_TOKENS,
         "messages": messages,
     });
@@ -146,7 +139,7 @@ fn parse_usage(u: &Value) -> Option<TokenUsage> {
 fn parse_response(data: &Value) -> LlmResponse {
     let mut text = String::new();
     let mut reasoning = String::new();
-    let mut tool_calls: Vec<ToolCall> = Vec::new();
+    let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
 
     if let Some(blocks) = data["content"].as_array() {
         for block in blocks {
@@ -165,7 +158,7 @@ fn parse_response(data: &Value) -> LlmResponse {
                     if let (Some(id), Some(name)) =
                         (block["id"].as_str(), block["name"].as_str())
                     {
-                        tool_calls.push(ToolCall {
+                        tool_calls.push(ToolCallRequest {
                             id: id.to_string(),
                             name: name.to_string(),
                             arguments: serde_json::to_string(&block["input"])

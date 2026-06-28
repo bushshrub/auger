@@ -2,7 +2,7 @@ use async_openai::config::OpenAIConfig;
 use async_openai::Client;
 use futures::StreamExt;
 use provider::{
-    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage, ToolCall,
+    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage, ToolCallRequest,
 };
 use serde_json::{json, Value};
 
@@ -21,13 +21,28 @@ impl OpenAiChatCompletionsProvider {
     }
 }
 
-fn messages_to_json(messages: Vec<provider::Message>) -> Vec<Value> {
-    messages
-        .into_iter()
-        .map(|m| match m {
-            provider::Message::System(content) => json!({"role": "system", "content": content}),
-            provider::Message::User(content) => json!({"role": "user", "content": content}),
-            provider::Message::Assistant { content, tool_calls, reasoning } => {
+fn messages_to_json(messages: &[provider::Message]) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for m in messages {
+        match m {
+            provider::Message::System(content) => {
+                out.push(json!({"role": "system", "content": content}));
+            }
+            provider::Message::User { message, tool_call_results } => {
+                let msg_text = message.message();
+                if tool_call_results.is_empty() {
+                    out.push(json!({"role": "user", "content": msg_text}));
+                } else {
+                    out.push(json!({"role": "user", "content": msg_text}));
+                    for tr in tool_call_results {
+                        out.push(json!({
+                            "role": "user",
+                            "content": tr.content(),
+                        }));
+                    }
+                }
+            }
+            provider::Message::Assistant { reasoning, content, tool_calls } => {
                 let mut msg = json!({"role": "assistant"});
                 if !content.is_empty() {
                     msg["content"] = json!(content);
@@ -37,7 +52,7 @@ fn messages_to_json(messages: Vec<provider::Message>) -> Vec<Value> {
                 }
                 if !tool_calls.is_empty() {
                     msg["tool_calls"] = json!(tool_calls
-                        .into_iter()
+                        .iter()
                         .map(|tc| json!({
                             "id": tc.id,
                             "type": "function",
@@ -45,18 +60,16 @@ fn messages_to_json(messages: Vec<provider::Message>) -> Vec<Value> {
                         }))
                         .collect::<Vec<_>>());
                 }
-                msg
+                out.push(msg);
             }
-            provider::Message::Tool { tool_call_id, content } => {
-                json!({"role": "tool", "tool_call_id": tool_call_id, "content": content})
-            }
-        })
-        .collect()
+        }
+    }
+    out
 }
 
-fn tools_to_json(tools: Vec<provider::ToolDefinition>) -> Vec<Value> {
+fn tools_to_json(tools: &[provider::ToolDefinition]) -> Vec<Value> {
     tools
-        .into_iter()
+        .iter()
         .map(|t| {
             json!({
                 "type": "function",
@@ -81,12 +94,12 @@ fn extract_usage(v: &Value) -> Option<TokenUsage> {
     })
 }
 
-fn extract_tool_calls(v: &Value) -> Option<Vec<ToolCall>> {
+fn extract_tool_calls(v: &Value) -> Option<Vec<ToolCallRequest>> {
     let tcs = v.as_array()?;
-    let calls: Vec<ToolCall> = tcs
+    let calls: Vec<ToolCallRequest> = tcs
         .iter()
         .filter_map(|tc| {
-            Some(ToolCall {
+            Some(ToolCallRequest {
                 id: tc["id"].as_str()?.to_string(),
                 name: tc["function"]["name"].as_str()?.to_string(),
                 arguments: tc["function"]["arguments"].as_str()?.to_string(),
@@ -100,9 +113,9 @@ fn extract_tool_calls(v: &Value) -> Option<Vec<ToolCall>> {
 impl LlmProvider for OpenAiChatCompletionsProvider {
     async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
         let body = json!({
-            "model": request.model,
-            "messages": messages_to_json(request.messages),
-            "tools": tools_to_json(request.tools),
+            "model": request.model(),
+            "messages": messages_to_json(request.messages()),
+            "tools": tools_to_json(request.tools()),
         });
 
         let resp: Value = self
@@ -127,9 +140,9 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
 
     async fn stream(&self, request: LlmRequest) -> Result<LlmStream, LlmError> {
         let body = json!({
-            "model": request.model,
-            "messages": messages_to_json(request.messages),
-            "tools": tools_to_json(request.tools),
+            "model": request.model(),
+            "messages": messages_to_json(request.messages()),
+            "tools": tools_to_json(request.tools()),
             "stream": true,
             "stream_options": {"include_usage": true},
         });

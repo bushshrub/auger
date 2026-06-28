@@ -1,7 +1,7 @@
 use async_stream::stream;
 use futures::StreamExt;
 use provider::{
-    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage, ToolCall,
+    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage, ToolCallRequest,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -179,17 +179,27 @@ struct CompletedResponse {
 
 // --- Helpers ---
 
-fn messages_to_input(messages: Vec<provider::Message>) -> Vec<Value> {
+fn messages_to_input(messages: &[provider::Message]) -> Vec<Value> {
     let mut items = Vec::new();
     for msg in messages {
         match msg {
             provider::Message::System(content) => {
                 items.push(serde_json::json!({"type": "message", "role": "system", "content": content}));
             }
-            provider::Message::User(content) => {
-                items.push(serde_json::json!({"type": "message", "role": "user", "content": content}));
+            provider::Message::User { message, tool_call_results } => {
+                let msg_text = message.message();
+                if !msg_text.is_empty() {
+                    items.push(serde_json::json!({"type": "message", "role": "user", "content": msg_text}));
+                }
+                for tr in tool_call_results {
+                    items.push(serde_json::json!({
+                        "type": "function_call_output",
+                        "call_id": tr.id(),
+                        "output": tr.content(),
+                    }));
+                }
             }
-            provider::Message::Assistant { content, tool_calls, reasoning: _ } => {
+            provider::Message::Assistant { reasoning: _, content, tool_calls } => {
                 if tool_calls.is_empty() {
                     if !content.is_empty() {
                         items.push(serde_json::json!({"type": "message", "role": "assistant", "content": content}));
@@ -205,26 +215,19 @@ fn messages_to_input(messages: Vec<provider::Message>) -> Vec<Value> {
                     }
                 }
             }
-            provider::Message::Tool { tool_call_id, content } => {
-                items.push(serde_json::json!({
-                    "type": "function_call_output",
-                    "call_id": tool_call_id,
-                    "output": content,
-                }));
-            }
         }
     }
     items
 }
 
-fn tools_to_spec(tools: Vec<provider::ToolDefinition>) -> Vec<ToolSpec> {
+fn tools_to_spec(tools: &[provider::ToolDefinition]) -> Vec<ToolSpec> {
     tools
-        .into_iter()
+        .iter()
         .map(|t| ToolSpec {
             kind: "function",
-            name: t.name,
-            description: t.description,
-            parameters: t.parameters,
+            name: t.name.clone(),
+            description: t.description.clone(),
+            parameters: t.parameters.clone(),
         })
         .collect()
 }
@@ -279,11 +282,11 @@ fn extract_reasoning(output: &[OutputItem]) -> Option<String> {
     if parts.is_empty() { None } else { Some(parts.join("")) }
 }
 
-fn extract_tool_calls(output: &[OutputItem]) -> Option<Vec<ToolCall>> {
-    let calls: Vec<ToolCall> = output
+fn extract_tool_calls(output: &[OutputItem]) -> Option<Vec<ToolCallRequest>> {
+    let calls: Vec<ToolCallRequest> = output
         .iter()
         .filter_map(|item| match item {
-            OutputItem::FunctionCall { call_id, name, arguments } => Some(ToolCall {
+            OutputItem::FunctionCall { call_id, name, arguments } => Some(ToolCallRequest {
                 id: call_id.clone(),
                 name: name.clone(),
                 arguments: arguments.clone(),
@@ -308,9 +311,9 @@ fn stop_reason(status: Option<&str>, has_tool_calls: bool) -> Option<String> {
 impl LlmProvider for OpenAiResponsesProvider {
     async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
         let body = ResponsesRequest {
-            model: request.model,
-            input: messages_to_input(request.messages),
-            tools: tools_to_spec(request.tools),
+            model: request.model().to_string(),
+            input: messages_to_input(request.messages()),
+            tools: tools_to_spec(request.tools()),
             stream: false,
             reasoning: self.reasoning_effort.map(|e| ReasoningParam {
                 effort: e.as_str(),
@@ -357,9 +360,9 @@ impl LlmProvider for OpenAiResponsesProvider {
 
     async fn stream(&self, request: LlmRequest) -> Result<LlmStream, LlmError> {
         let body = ResponsesRequest {
-            model: request.model,
-            input: messages_to_input(request.messages),
-            tools: tools_to_spec(request.tools),
+            model: request.model().to_string(),
+            input: messages_to_input(request.messages()),
+            tools: tools_to_spec(request.tools()),
             stream: true,
             reasoning: self.reasoning_effort.map(|e| ReasoningParam {
                 effort: e.as_str(),
