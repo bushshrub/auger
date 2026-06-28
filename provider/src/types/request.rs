@@ -23,7 +23,7 @@ pub enum Message {
 pub struct ToolResult {
     /// The ID of the tool call that this is a result for
     pub tool_call_id: String,
-    /// The output of the tool call. Generally this is a JSON string, but it could be something else
+    /// The output of the tool call.
     pub content: String,
 }
 
