@@ -12,7 +12,7 @@ pub struct ToolDefinition {
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
+pub struct ToolCallRequest {
     /// The unique ID of this tool call, used for approval and result reporting
     pub id: String,
     /// The name of the tool to call, which should match one of the tools provided in the request

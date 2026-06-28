@@ -2,7 +2,8 @@ use std::pin::Pin;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use crate::types::ToolCall;
+use crate::Message;
+use crate::types::ToolCallRequest;
 
 /// Token usage details
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -41,18 +42,38 @@ pub enum StreamEvent {
     },
 }
 
+pub struct ClankerMessage {
+    reasoning: Option<String>,
+    pub(crate) tool_calls: Vec<ToolCallRequest>,
+    content: String,
+}
+
+impl From<ClankerMessage> for Message {
+    fn from(msg: ClankerMessage) -> Self {
+        Message::Assistant {
+            reasoning: msg.reasoning,
+            tool_calls: msg.tool_calls,
+            content: msg.content,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LlmResponse {
     pub content: String,
     /// Optional reasoning output, if the model supports reasoning.
     pub reasoning: Option<String>,
-    pub tool_calls: Option<Vec<ToolCall>>,
+    /// Tool calls requested by the model.
+    /// These are not guaranteed to be complete or valid.
+    pub tool_calls: Option<Vec<ToolCallRequest>>,
     /// Token usage details after this response is complete.
     /// May be None if the provider doesn't expose token usage details
     pub usage: Option<TokenUsage>,
+    /// The reason why the model stopped generating output.
     pub stop_reason: Option<String>,
 }
 
+/// Convert a stream of events into a single LlmResponse.
 impl From<Vec<StreamEvent>> for LlmResponse {
     fn from(events: Vec<StreamEvent>) -> Self {
         let mut content = String::new();
@@ -71,7 +92,7 @@ impl From<Vec<StreamEvent>> for LlmResponse {
                 StreamEvent::ToolCall { id, name, arguments } => {
                 }
                 StreamEvent::ToolCallComplete { id, name, arguments } => {
-                    tool_calls.push(ToolCall { id, name, arguments })
+                    tool_calls.push(ToolCallRequest { id, name, arguments })
                 }
                 StreamEvent::Done { usage: u, stop_reason: sr } => {
                     usage = u;

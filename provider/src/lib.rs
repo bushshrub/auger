@@ -1,7 +1,8 @@
 pub mod types;
-
+pub mod thread;
 
 pub use types::*;
+pub use thread::{LlmThread, LlmThreadState, AnyThread};
 
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
