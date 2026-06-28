@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use thiserror::Error;
 use agent_tools::{Tool, ToolCallResult, ToolError};
-use provider::{ToolCall, ToolDefinition};
+use provider::{ToolCallRequest, ToolDefinition};
 
 #[derive(Debug, Error)]
 pub(crate) enum ToolInvokeIssue {
@@ -30,7 +30,7 @@ impl ToolRegistry {
         tool.call(args_json).await.map_err(ToolInvokeIssue::ToolError)
     }
 
-    pub(crate) async fn invoke(&self, tc: ToolCall) -> Result<ToolCallResult, ToolInvokeIssue> {
+    pub(crate) async fn invoke(&self, tc: ToolCallRequest) -> Result<ToolCallResult, ToolInvokeIssue> {
         self.call_tool(&tc.name, tc.arguments).await
     }
 
