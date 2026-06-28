@@ -10,6 +10,7 @@
       <sourceFolder url="file://$MODULE_DIR$/provider/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/agent-core/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/tool-call-healer/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/auger-tui/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

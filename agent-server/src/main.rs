@@ -23,7 +23,7 @@ use crate::server_types::{ApproveRequest, CreateSessionRequest, SessionEntry, Sn
 
 mod server_types;
 
-const DEFAULT_MODEL: &str = "ornith-1.0-35b-q6k";
+const DEFAULT_MODEL: &str = "qwen3.6-35b-q8";
 const DEFAULT_CONTEXT_WINDOW: usize = 113072;
 const SYSTEM_PROMPT: &str =
 "You are a precise, capable software engineering agent. You have access to tools to read files, run commands, make changes, and search the web.

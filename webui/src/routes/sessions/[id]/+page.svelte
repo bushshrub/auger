@@ -98,7 +98,7 @@
 		for (const msg of messages) {
 			if (msg.type === 'user') {
 				lastBlockIds = [];
-				result.push({ kind: 'user', text: msg.text });
+				if (msg.text) result.push({ kind: 'user', text: msg.text });
 			} else if (msg.type === 'assistant') {
 				lastBlockIds = [];
 				if (msg.reasoning) result.push({ kind: 'reasoning', text: msg.reasoning });
@@ -461,7 +461,7 @@
 		<strong>auger</strong>
 		<button class="back" onclick={() => goto('/')}>← Sessions</button>
 		<span class="status status-{status}">{status}</span>
-		<span class="sid">{sessionId.slice(0, 8)}</span>
+		<span class="sid">{sessionId?.slice(0, 8) ?? ''}</span>
 	</header>
 
 	{#if loadError}
@@ -512,10 +512,11 @@
 							{/if}
 							{#if item.decided}
 								<span class="tag {item.decided}">{item.decided}</span>
-							{:else if pendingToolIds.has(item.toolId)}
-								<input class="tool-msg-input" bind:value={toolMessages[item.toolId]} placeholder="optional message…" />
-								<button class="ok inline-btn" onclick={() => decide(item.toolId, true)}>Approve</button>
-								<button class="no inline-btn" onclick={() => decide(item.toolId, false)}>Deny</button>
+							{:else if item.toolId != null && pendingToolIds.has(item.toolId)}
+								{@const toolId = item.toolId}
+								<input class="tool-msg-input" bind:value={toolMessages[toolId]} placeholder="optional message…" />
+								<button class="ok inline-btn" onclick={() => decide(toolId, true)}>Approve</button>
+								<button class="no inline-btn" onclick={() => decide(toolId, false)}>Deny</button>
 							{/if}
 						</div>
 					</div>
@@ -526,10 +527,11 @@
 								🔧 <strong>{item.toolName}</strong>
 								{#if item.decided}
 									<span class="tag {item.decided}">{item.decided}</span>
-								{:else if pendingToolIds.has(item.toolId)}
-									<input class="tool-msg-input" bind:value={toolMessages[item.toolId]} placeholder="optional message…" />
-									<button class="ok inline-btn" onclick={() => decide(item.toolId, true)}>Approve</button>
-									<button class="no inline-btn" onclick={() => decide(item.toolId, false)}>Deny</button>
+								{:else if item.toolId != null && pendingToolIds.has(item.toolId)}
+									{@const toolId = item.toolId}
+									<input class="tool-msg-input" bind:value={toolMessages[toolId]} placeholder="optional message…" />
+									<button class="ok inline-btn" onclick={() => decide(toolId, true)}>Approve</button>
+									<button class="no inline-btn" onclick={() => decide(toolId, false)}>Deny</button>
 								{/if}
 							</div>
 							{#if item.toolName && isEditTool(item.toolName) && item.args?.path}

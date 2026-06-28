@@ -76,12 +76,13 @@ export async function GET({ params, request }) {
 			return new Response(await upstream.text(), { status: upstream.status });
 		}
 
+		const body = upstream.body;
 		/** @type {ReadableStreamDefaultReader<Uint8Array>} */
 		let reader;
 
 		const stream = new ReadableStream({
 			async start(controller) {
-				reader = upstream.body.getReader();
+				reader = body.getReader();
 				const decoder = new TextDecoder();
 				let buffer = '';
 
@@ -139,6 +140,7 @@ export async function GET({ params, request }) {
 
 	const { emitter } = session;
 
+	let cleanup = () => {};
 	const stream = new ReadableStream({
 		start(controller) {
 			/** @param {any} ev */
@@ -150,10 +152,10 @@ export async function GET({ params, request }) {
 				}
 			}
 			emitter.on('event', onEvent);
-			controller._cleanup = () => emitter.off('event', onEvent);
+			cleanup = () => emitter.off('event', onEvent);
 		},
-		cancel(controller) {
-			controller._cleanup?.();
+		cancel() {
+			cleanup();
 		}
 	});
 
