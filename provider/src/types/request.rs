@@ -9,6 +9,10 @@ impl UserPrompt {
     pub fn new(message: String) -> Self {
         Self { message }
     }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl From<UserPrompt> for Message {

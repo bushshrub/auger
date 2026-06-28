@@ -89,7 +89,7 @@ impl From<Vec<StreamEvent>> for LlmResponse {
                     reasoning.get_or_insert(String::new()).push_str(&delta)
                 }
                 // discard tool call deltas.
-                StreamEvent::ToolCall { id, name, arguments } => {
+                StreamEvent::ToolCall { .. } => {
                 }
                 StreamEvent::ToolCallComplete { id, name, arguments } => {
                     tool_calls.push(ToolCallRequest { id, name, arguments })
