@@ -1,11 +1,11 @@
-use provider::{LlmResponse, ToolCall};
+use provider::{LlmResponse, ToolCallRequest};
 use uuid::Uuid;
 
 pub struct XmlStyleToolCallHealer;
 
 impl XmlStyleToolCallHealer {
     pub fn heal(&self, mut response: LlmResponse) -> LlmResponse {
-        let mut healed_tool_calls: Vec<ToolCall> = Vec::new();
+        let mut healed_tool_calls: Vec<ToolCallRequest> = Vec::new();
         let mut content = response.content.clone();
 
         while let Some(start) = content.find("<tool_call>") {
@@ -37,11 +37,11 @@ impl XmlStyleToolCallHealer {
     }
 }
 
-fn parse_tool_call(json: &str) -> Option<ToolCall> {
+fn parse_tool_call(json: &str) -> Option<ToolCallRequest> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let name = v["name"].as_str()?.to_string();
     let arguments = serde_json::to_string(&v["arguments"]).ok()?;
-    Some(ToolCall {
+    Some(ToolCallRequest {
         id: Uuid::new_v4().to_string(),
         name,
         arguments,
@@ -99,7 +99,7 @@ mod tests {
     fn preserves_existing_tool_calls() {
         let healer = XmlStyleToolCallHealer;
         let mut response = base_response("<tool_call>{\"name\":\"b\",\"arguments\":{}}</tool_call>");
-        response.tool_calls = Some(vec![ToolCall {
+        response.tool_calls = Some(vec![ToolCallRequest {
             id: "existing-id".to_string(),
             name: "a".to_string(),
             arguments: "{}".to_string(),
