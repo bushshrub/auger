@@ -104,7 +104,7 @@ impl Session {
                                 });
                                 match tool_result {
                                     Ok(result) => {
-                                        debug!(tool_call_id = %tool_call_id, "Tool executed successfully: {}", &result);
+                                        debug!(tool_call_id = %tool_call_id, "Tool executed successfully");
                                         let _ = self.events.send(ToolCallEvent::Result { id: tool_call_id, result: result.to_string() }.into());
                                     }
                                     Err(e) => {
