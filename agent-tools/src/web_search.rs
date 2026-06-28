@@ -7,7 +7,7 @@ use crate::rate_limiter::RateLimiter;
 
 /// Minimum milliseconds between DuckDuckGo search requests.
 const SEARCH_RATE_LIMIT_MS: u64 = 2000;
-const MAX_RESULTS: usize = 10;
+const MAX_RESULTS: usize = 5;
 const DDG_URL: &str = "https://html.duckduckgo.com/html/";
 
 pub struct WebSearch {
@@ -104,9 +104,9 @@ impl Tool for WebSearch {
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum number of results (1-10, default 10)",
+                    "description": "Maximum number of results (1-5, default 5)",
                     "minimum": 1,
-                    "maximum": 10
+                    "maximum": 5
                 }
             },
             "required": ["query"]

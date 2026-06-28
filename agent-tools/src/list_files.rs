@@ -10,7 +10,7 @@ impl Tool for ListFiles {
     fn details(&self) -> ToolDetails {
         ToolDetails {
             name: "list_files",
-            description: "List files and directories at a given path. Non-recursive by default; set recursive=true to walk the full tree.",
+            description: "List files and directories at a given path. Non-recursive by default; set recursive=true to walk the full tree. Respects .gitignore.",
         }
     }
 
@@ -38,44 +38,53 @@ impl Tool for ListFiles {
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: path".into()))?;
         let recursive = args["recursive"].as_bool().unwrap_or(false);
 
-        let entries = collect_entries(path, recursive).await?;
+        let path = path.to_string();
+        let entries = tokio::task::spawn_blocking(move || collect_entries(&path, recursive))
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))??;
+
         Ok(json!({ "entries": entries }).to_string().into())
     }
 }
 
-async fn collect_entries(path: &str, recursive: bool) -> Result<Vec<String>, ToolError> {
+fn collect_entries(root: &str, recursive: bool) -> Result<Vec<String>, ToolError> {
+    let max_depth = if recursive { None } else { Some(1) };
+
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true);
+
+    if let Some(depth) = max_depth {
+        builder.max_depth(Some(depth));
+    }
+
     let mut entries: Vec<String> = Vec::new();
-    collect_dir(path, path, recursive, &mut entries).await?;
+
+    for result in builder.build() {
+        let entry = result.map_err(|e| ToolError::Execution(e.to_string()))?;
+        let path = entry.path();
+
+        // Skip the root itself
+        if path == std::path::Path::new(root) {
+            continue;
+        }
+
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+
+        if path.is_dir() {
+            entries.push(format!("{}/", relative));
+        } else {
+            entries.push(relative);
+        }
+    }
+
     entries.sort();
     Ok(entries)
-}
-
-fn collect_dir<'a>(
-    root: &'a str,
-    dir: &'a str,
-    recursive: bool,
-    out: &'a mut Vec<String>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ToolError>> + Send + 'a>> {
-    Box::pin(async move {
-        let mut read_dir = tokio::fs::read_dir(dir).await?;
-        while let Some(entry) = read_dir.next_entry().await? {
-            let entry_path = entry.path();
-            let relative = entry_path
-                .strip_prefix(root)
-                .unwrap_or(&entry_path)
-                .to_string_lossy()
-                .to_string();
-
-            let file_type = entry.file_type().await?;
-            if file_type.is_dir() {
-                out.push(format!("{}/", relative));
-                if recursive {
-                    collect_dir(root, entry_path.to_str().unwrap_or(dir), recursive, out).await?;
-                }
-            } else {
-                out.push(relative);
-            }
-        }
-        Ok(())
-    })
 }

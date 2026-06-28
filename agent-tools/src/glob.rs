@@ -11,7 +11,7 @@ impl Tool for Glob {
         ToolDetails {
             name: "glob",
             description: "Find files and directories matching a glob pattern. Returns one absolute \
-                path per line. Supports `*`, `**`, and `?` wildcards.",
+                path per line. Supports `*`, `**`, and `?` wildcards. Respects .gitignore.",
         }
     }
 
@@ -63,9 +63,30 @@ fn run_glob(pattern: &str, base_dir: Option<&str>) -> Result<String, ToolError> 
         format!("{}/{}", base.trim_end_matches('/'), pattern)
     };
 
+    let git_root = find_git_root(std::path::Path::new(
+        base_dir.unwrap_or("."),
+    ));
+
+    // Build a gitignore checker rooted at the git root (or cwd if not in a repo)
+    let checker = git_root.as_deref().and_then(|root| {
+        ignore::gitignore::GitignoreBuilder::new(root)
+            .build()
+            .ok()
+    });
+
     let paths: Vec<String> = glob::glob(&full_pattern)
         .map_err(|e| ToolError::InvalidArgs(format!("invalid glob pattern: {e}")))?
         .filter_map(|entry| entry.ok())
+        .filter(|path| {
+            let Some(ref checker) = checker else {
+                return true;
+            };
+            let is_dir = path.is_dir();
+            !matches!(
+                checker.matched(path, is_dir),
+                ignore::Match::Ignore(_)
+            )
+        })
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
 
@@ -74,4 +95,20 @@ fn run_glob(pattern: &str, base_dir: Option<&str>) -> Result<String, ToolError> 
     }
 
     Ok(paths.join("\n"))
+}
+
+fn find_git_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut current = if start.is_absolute() {
+        start.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(start)
+    };
+    loop {
+        if current.join(".git").exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
 }

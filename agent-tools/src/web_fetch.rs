@@ -7,7 +7,8 @@ pub struct WebFetch {
     client: reqwest::Client,
 }
 
-const MAX_INLINE: usize = 20_000;
+// ~8000 chars ≈ 2000 tokens (English words ~1.3 tokens/word, ~5 chars/word → 3.85 chars/token)
+const MAX_INLINE: usize = 8_000;
 
 impl WebFetch {
     pub fn new() -> Self {
