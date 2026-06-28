@@ -5,7 +5,6 @@ pub(crate) mod handle;
 
 pub(crate) mod session_loop;
 
-mod session_history;
 
 pub type SessionId = Uuid;
 

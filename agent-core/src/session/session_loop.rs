@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::mpsc;
-use provider::{LlmProvider, LlmRequest, LlmResponse, ToolCall, ToolResult};
+use either::Either;
+use provider::{AnyThread, ClankerMessage, LlmProvider, LlmThread, ToolCallRequest, ToolResult, UserPrompt};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -11,14 +12,17 @@ use crate::system_prompt::SystemPrompt;
 use futures::stream::StreamExt;
 use tracing::{debug, error, info, trace, warn};
 use agent_tools::Dummy;
-use crate::session::session_history::SessionHistory;
 use crate::tools::auto_approval::AutoApprovalPolicy;
 use crate::tools::tool_call_batch::{Resolving, ToolCallBatch};
 use crate::tools::tool_registry::ToolRegistry;
+use provider::thread::{UserTurn, ToolResultsPending, ClankerTurn};
 
 enum RunState {
     Idle,
-    AwaitingApproval(ToolCallBatch<Resolving>),
+    AwaitingApproval {
+        batch: ToolCallBatch<Resolving>,
+        completed_results: Vec<ToolResult>,
+    },
 }
 
 pub struct Session {
@@ -27,8 +31,8 @@ pub struct Session {
     tools: ToolRegistry,
     provider: Arc<dyn LlmProvider>,
     events: broadcast::Sender<SessionEvent>,
-    history: SessionHistory,
-    auto_approve: AutoApprovalPolicy
+    thread: AnyThread,
+    auto_approve: AutoApprovalPolicy,
 }
 
 impl Session {
@@ -46,7 +50,7 @@ impl Session {
             model: model.clone(),
             provider: provider.clone(),
             events: events_tx.clone(),
-            history: SessionHistory::new(id, prompt),
+            thread: AnyThread::User(LlmThread::new(prompt.into())),
             auto_approve: AutoApprovalPolicy::new(auto_approved_defaults.iter().map(|s| s.to_string())),
         };
 
@@ -66,7 +70,7 @@ impl Session {
         self.tools.register(Box::new(agent_tools::Glob {}));
         self.tools.register(Box::new(agent_tools::WriteFile {}));
         self.tools.register(Box::new(agent_tools::EditFile {}));
-        self.tools.register(Box::new(agent_tools::Shell{}));
+        self.tools.register(Box::new(agent_tools::Shell {}));
         self.tools.register(Box::new(agent_tools::WebSearch::new()));
         self.tools.register(Box::new(agent_tools::FetchContent::new()));
         self.tools.register(Box::new(agent_tools::WebFetch::new()));
@@ -80,80 +84,101 @@ impl Session {
             match cmd {
                 UserCommand::Action(action) => match action {
                     UserAction::SendMessage(content) => {
-                        if matches!(run_state, RunState::AwaitingApproval(_)) {
+                        if matches!(run_state, RunState::AwaitingApproval { .. }) {
                             warn!(session_id = %self.id, "Ignoring SendMessage while awaiting tool call approval");
                             continue;
                         }
-                        let request = self.history
-                            .begin_user_turn(self.model.clone(), self.tools.list_for_clanker())
-                            .with_user_message(content.msg)
-                            .build();
-                        let tool_calls = self.stream_llm_turn(request, handle.clone());
-                        run_state = self.resolve_tool_calls(tool_calls, handle.clone());
+                        let AnyThread::User(user_thread) = std::mem::replace(&mut self.thread, AnyThread::User(LlmThread::new(String::new()))) else {
+                            warn!(session_id = %self.id, "SendMessage received but thread is not in UserTurn state");
+                            continue;
+                        };
+                        let clanker_thread = user_thread.add_user_message(UserPrompt::new(content.msg));
+                        match self.stream_llm_turn(clanker_thread, handle.clone()) {
+                            Either::Left(user_thread) => {
+                                self.thread = AnyThread::User(user_thread);
+                                run_state = RunState::Idle;
+                            }
+                            Either::Right(tools_thread) => {
+                                run_state = self.resolve_tool_calls(tools_thread, handle.clone());
+                            }
+                        }
                     }
                     UserAction::RespondToToolCall { response, tool_call_id, .. } => {
-                        let RunState::AwaitingApproval(mut batch) = run_state else {
+                        let RunState::AwaitingApproval { batch, completed_results } = run_state else {
                             warn!(session_id = %self.id, "Received RespondToToolCall while not awaiting approval");
                             run_state = RunState::Idle;
                             continue;
                         };
-                        match response {
+                        let result = match response {
                             ToolCallResponse::Approve => {
-                                let tool_result = handle.block_on(async {
+                                handle.block_on(async {
                                     batch.approve_and_run(&tool_call_id, &self.tools).await
-                                });
-                                match tool_result {
-                                    Ok(result) => {
-                                        debug!(tool_call_id = %tool_call_id, "Tool executed successfully");
-                                        let _ = self.events.send(ToolCallEvent::Result { id: tool_call_id, result: result.to_string() }.into());
-                                    }
-                                    Err(e) => {
-                                        error!(tool_call_id = %tool_call_id, "Error executing tool: {:?}", e);
-                                        let _ = self.events.send(ToolCallEvent::Error { id: tool_call_id, error: format!("{:?}", e) }.into());
-                                    }
-                                }
+                                })
                             }
-                            ToolCallResponse::Deny => {
-                                match batch.deny(&tool_call_id) {
-                                    Ok(_) => debug!(tool_call_id = %tool_call_id, "Tool call denied by user."),
-                                    Err(e) => error!(tool_call_id = %tool_call_id, "Error denying tool call: {:?}", e),
-                                }
+                            ToolCallResponse::Deny => batch.deny(&tool_call_id),
+                        };
+                        match result {
+                            Ok(Either::Left(batch)) => {
+                                run_state = RunState::AwaitingApproval { batch, completed_results };
                             }
-                        }
-                        match batch.try_complete() {
-                            Ok(complete) => {
-                                debug!("All pending tool calls processed. Resuming LLM turn.");
-                                let tool_results = complete.drain();
-                                let request = self.history
-                                    .begin_tool_turn(self.model.clone(), self.tools.list_for_clanker())
-                                    .with_tool_results(None, tool_results)
-                                    .build();
-                                let tool_calls = self.stream_llm_turn(request, handle.clone());
-                                run_state = self.resolve_tool_calls(tool_calls, handle.clone());
+                            Ok(Either::Right(complete)) => {
+                                let mut all_results = complete.drain();
+                                all_results.extend(completed_results);
+                                run_state = self.submit_tool_results(all_results, handle.clone());
                             }
-                            Err(batch) => {
-                                run_state = RunState::AwaitingApproval(batch);
+                            Err(e) => {
+                                error!(tool_call_id = %tool_call_id, "Error processing tool call: {:?}", e);
+                                let _ = self.events.send(ToolCallEvent::Error { id: tool_call_id, error: format!("{:?}", e) }.into());
+                                run_state = RunState::Idle;
                             }
                         }
                     }
                 }
 
                 UserCommand::Snapshot { reply } => {
-                    let _ = reply.send(self.history.messages().to_vec());
+                    let messages = match &self.thread {
+                        AnyThread::User(t) => t.messages().to_vec(),
+                        AnyThread::ToolsPending(t) => t.messages().to_vec(),
+                        AnyThread::Clanker(t) => t.messages().to_vec(),
+                    };
+                    let _ = reply.send(messages);
                 }
             }
         }
         info!(session_id = %self.id, "Session has been closed");
     }
 
-    fn run_auto_approved(&self, tool_calls: Vec<ToolCall>, handle: Handle) -> (Vec<ToolCall>, Vec<ToolResult>) {
+    fn submit_tool_results(&mut self, results: Vec<ToolResult>, handle: Handle) -> RunState {
+        let AnyThread::ToolsPending(tools_thread) = std::mem::replace(&mut self.thread, AnyThread::User(LlmThread::new(String::new()))) else {
+            error!(session_id = %self.id, "Expected ToolsPending state when submitting tool results");
+            return RunState::Idle;
+        };
+        let clanker_thread = match tools_thread.add_tool_results(results) {
+            Ok(t) => t,
+            Err(e) => {
+                error!(session_id = %self.id, "Failed to add tool results: {:?}", e);
+                return RunState::Idle;
+            }
+        };
+        match self.stream_llm_turn(clanker_thread, handle.clone()) {
+            Either::Left(user_thread) => {
+                self.thread = AnyThread::User(user_thread);
+                RunState::Idle
+            }
+            Either::Right(tools_thread) => {
+                self.resolve_tool_calls(tools_thread, handle)
+            }
+        }
+    }
+
+    fn run_auto_approved(&self, tool_calls: Vec<ToolCallRequest>, handle: Handle) -> (Vec<ToolCallRequest>, Vec<ToolResult>) {
         let (approved, deferred): (Vec<_>, Vec<_>) = tool_calls
             .into_iter()
             .partition(|tc| self.auto_approve.is_approved(&tc.name));
 
-        let results = handle.block_on(async { futures::future::join_all(
-            approved.iter().map(|tc| self.tools.invoke(tc.clone()))
-        ).await});
+        let results = handle.block_on(async {
+            futures::future::join_all(approved.iter().map(|tc| self.tools.invoke(tc.clone()))).await
+        });
 
         let auto_results = approved.into_iter().zip(results).map(|(tc, result)| {
             let _ = self.events.send(ToolCallEvent::AutoApproved {
@@ -171,51 +196,51 @@ impl Session {
                     format!("error: {e}")
                 }
             };
-            ToolResult { tool_call_id: tc.id, content }
+            ToolResult::new(tc.id, content)
         }).collect();
 
         (deferred, auto_results)
     }
 
-    fn resolve_tool_calls(&mut self, mut tool_calls: Vec<ToolCall>, handle: Handle) -> RunState {
-        loop {
+    fn resolve_tool_calls(&mut self, tools_thread: LlmThread<ToolResultsPending>, handle: Handle) -> RunState {
+        let tool_calls = tools_thread.get_pending_tool_calls();
+        let (deferred, auto_results) = self.run_auto_approved(tool_calls, handle.clone());
 
-            let (deferred, auto_results) = self.run_auto_approved(tool_calls, handle.clone());
-            if deferred.is_empty() {
-                if auto_results.is_empty() {
-                    return RunState::Idle;
-                }
-                let request = self.history
-                    .begin_tool_turn(self.model.clone(), self.tools.list_for_clanker())
-                    .with_tool_results(None, auto_results)
-                    .build();
-                tool_calls = self.stream_llm_turn(request, handle.clone());
-            } else {
-                return RunState::AwaitingApproval(ToolCallBatch::new_batch_with_results(deferred, auto_results));
+        if deferred.is_empty() {
+            if auto_results.is_empty() {
+                self.thread = AnyThread::ToolsPending(tools_thread);
+                return RunState::Idle;
+            }
+            self.thread = AnyThread::ToolsPending(tools_thread);
+            self.submit_tool_results(auto_results, handle)
+        } else {
+            self.thread = AnyThread::ToolsPending(tools_thread);
+            RunState::AwaitingApproval {
+                batch: ToolCallBatch::new_batch(deferred),
+                completed_results: auto_results,
             }
         }
     }
 
-    fn stream_llm_turn(&mut self, request: LlmRequest, handle: Handle) -> Vec<ToolCall> {
-        let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
+    fn stream_llm_turn(&self, thread: LlmThread<ClankerTurn>, handle: Handle) -> Either<LlmThread<UserTurn>, LlmThread<ToolResultsPending>> {
+        let request = thread.create_request(self.model.clone(), self.tools.list_for_clanker());
         let events = &self.events;
         let provider = &self.provider;
-        handle.block_on(async {
+
+        let response = handle.block_on(async {
             trace!("Making request to provider: {:?}", request);
-            let mut stream = match provider.stream(request.clone()).await {
+            let mut stream = match provider.stream(request).await {
                 Ok(stream) => stream,
                 Err(e) => {
                     error!("Error opening provider stream: {:?}", e);
-                    debug!("Request: {:?}", request);
-                    return;
+                    return None;
                 }
             };
 
             let mut full_response = Vec::new();
             while let Some(event_result) = stream.next().await {
-                let evt_clone = event_result.clone();
-                match evt_clone {
-                    Ok(evt) => full_response.push(evt),
+                match &event_result {
+                    Ok(evt) => full_response.push(evt.clone()),
                     Err(_) => {}
                 }
                 match event_result {
@@ -228,11 +253,10 @@ impl Session {
                         let _ = events.send(ClankerEvent::ReasoningDelta { delta: text }.into());
                     }
                     Ok(provider::StreamEvent::ToolCall { id, name, arguments }) => {
-                        trace!(tool_call_id = %id, tool = %name, "tool call delta: {}", arguments)
+                        trace!(tool_call_id = %id, tool = %name, "tool call delta: {}", arguments);
                     }
                     Ok(provider::StreamEvent::ToolCallComplete { id, name, arguments }) => {
                         debug!(tool_call_id = %id, tool = %name, "tool call complete: {}", arguments);
-                        pending_tool_calls.push(ToolCall { id: id.clone(), name: name.clone(), arguments: arguments.clone() });
                         let _ = events.send(ClankerEvent::ToolCallRequest { id, name, arguments }.into());
                     }
                     Ok(provider::StreamEvent::Done { usage, stop_reason }) => {
@@ -244,9 +268,20 @@ impl Session {
                     }
                 }
             }
-            let complete_response = LlmResponse::from(full_response);
-            self.history.push_llm_response(complete_response);
+            Some(provider::LlmResponse::from(full_response))
         });
-        pending_tool_calls
+
+        let clanker_msg = match response {
+            Some(r) => ClankerMessage::from(r),
+            None => ClankerMessage::from(provider::LlmResponse {
+                content: String::new(),
+                reasoning: None,
+                tool_calls: None,
+                usage: None,
+                stop_reason: Some("error".to_string()),
+            }),
+        };
+
+        thread.add_clanker_reply(clanker_msg)
     }
 }
