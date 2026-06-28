@@ -49,26 +49,34 @@ pub struct ToolDetails {
     pub description: &'static str,
 }
 
-/// Result of a tool call which can be sent back to the model.
 #[derive(Debug, Clone)]
-pub enum ToolCallResult {
-    /// Tool call was successful, and the result is in the string.
-    Success(String),
-    /// Tool call was denied by the user, and the reason is in the string.
-    DeniedByUser(String),
-    /// Tool call failed, and the error message is in the string.
-    Error(String)
+pub enum ToolCallResultKind {
+    Success,
+    DeniedByUser,
+    Error
 }
 
-impl Display for ToolCallResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ToolCallResult::Success(s) => write!(f, "ToolCallResult(Success: {})", s),
-            ToolCallResult::DeniedByUser(s) => write!(f, "ToolCallResult(DeniedByUser: {})", s),
-            ToolCallResult::Error(s) => write!(f, "ToolCallResult(Error: {})", s),
-        }
+/// Result of a tool call which can be sent back to the model.
+#[derive(Debug, Clone)]
+pub struct ToolCallResult {
+    kind: ToolCallResultKind,
+    msg: String,
+}
+
+impl ToolCallResult {
+    pub fn success(result: String) -> Self {
+        Self { kind: ToolCallResultKind::Success, msg: result }
+    }
+
+    pub fn denied_by_user(why: String) -> Self {
+        Self { kind: ToolCallResultKind::DeniedByUser, msg: why }
+    }
+
+    pub fn error(error: String) -> Self {
+        Self { kind: ToolCallResultKind::Error, msg: error }
     }
 }
+
 
 
 pub struct JsonSchema(pub serde_json::Value);
