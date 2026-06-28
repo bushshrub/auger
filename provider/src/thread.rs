@@ -199,8 +199,8 @@ impl LlmThread<ClankerTurn> {
     }
 
     /// Create an LLM request from the thread. This is used to send the thread to the LLM for processing.
-    pub fn create_request(self, model: String, tools: Vec<ToolDefinition>) -> LlmRequest {
-        LlmRequest::new(model, self.messages, tools)
+    pub fn create_request(&self, model: String, tools: Vec<ToolDefinition>) -> LlmRequest {
+        LlmRequest::new(model, self.messages.clone(), tools)
     }
 }
 

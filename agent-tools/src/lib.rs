@@ -77,6 +77,12 @@ impl ToolCallResult {
     }
 }
 
+impl std::fmt::Display for ToolCallResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.msg)
+    }
+}
+
 
 
 pub struct JsonSchema(pub serde_json::Value);
