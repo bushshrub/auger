@@ -205,7 +205,8 @@ async fn snapshot(
         Ok(Ok(messages)) => {
             let snapshot: Vec<SnapshotMessage> = messages
                 .into_iter()
-                .filter_map(SnapshotMessage::from_provider)
+                .map(SnapshotMessage::from_provider)
+                .flatten()
                 .collect();
             Json(json!({ "messages": snapshot })).into_response()
         }

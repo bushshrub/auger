@@ -52,11 +52,20 @@ pub(crate) enum SnapshotMessage {
 }
 
 impl SnapshotMessage {
-    pub(crate) fn from_provider(msg: provider::Message) -> Option<Self> {
+    pub(crate) fn from_provider(msg: provider::Message) -> Vec<Self> {
         match msg {
-            provider::Message::System(_) => None,
-            provider::Message::User(text) => Some(Self::User { text }),
-            provider::Message::Assistant { reasoning, content, tool_calls } => Some(Self::Assistant {
+            provider::Message::System(_) => vec![],
+            provider::Message::User { message, tool_call_results } => {
+                let mut messages = vec![Self::User { text: message.message().to_string() }];
+                for tool_call_result in tool_call_results {
+                    messages.push(Self::Tool {
+                        tool_call_id: tool_call_result.id().to_string(),
+                        content: tool_call_result.content().to_string(),
+                    });
+                }
+                messages
+            },
+            provider::Message::Assistant { reasoning, content, tool_calls } => vec![Self::Assistant {
                 reasoning,
                 content,
                 tool_calls: tool_calls.into_iter().map(|tc| SnapshotToolCall {
@@ -64,8 +73,7 @@ impl SnapshotMessage {
                     name: tc.name,
                     arguments: tc.arguments,
                 }).collect(),
-            }),
-            provider::Message::Tool { tool_call_id, content } => Some(Self::Tool { tool_call_id, content }),
+            }],
         }
     }
 }
