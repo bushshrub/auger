@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 use uuid::Uuid;
-use agent_tools::{ReadFile, Tool, WebFetch};
+
 use provider_openai_responses::OpenAiResponsesProvider;
 use agent_core::{Session, SessionHandle, SystemPrompt};
 use provider_anthropic::AnthropicProvider;

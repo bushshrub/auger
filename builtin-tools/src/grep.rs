@@ -5,7 +5,7 @@ use serde_json::json;
 use std::path::Path;
 use walkdir::WalkDir;
 
-use crate::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
+use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 pub struct Grep;
 

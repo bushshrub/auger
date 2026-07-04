@@ -11,7 +11,7 @@ use crate::session::SessionId;
 use crate::system_prompt::SystemPrompt;
 use futures::stream::StreamExt;
 use tracing::{debug, error, info, trace, warn};
-use agent_tools::Dummy;
+use builtin_tools::Dummy;
 use crate::tools::auto_approval::AutoApprovalPolicy;
 use crate::tools::tool_call_batch::{Resolving, ToolCallBatch};
 use crate::tools::tool_registry::ToolRegistry;
@@ -64,18 +64,18 @@ impl Session {
 
     fn run(mut self, rx: mpsc::Receiver<UserCommand>, handle: Handle) {
         self.tools.register(Box::new(Dummy {}));
-        self.tools.register(Box::new(agent_tools::ReadFile {}));
-        self.tools.register(Box::new(agent_tools::ListFiles {}));
-        self.tools.register(Box::new(agent_tools::Grep {}));
-        self.tools.register(Box::new(agent_tools::Glob {}));
-        self.tools.register(Box::new(agent_tools::WriteFile {}));
-        self.tools.register(Box::new(agent_tools::EditFile {}));
-        self.tools.register(Box::new(agent_tools::Shell {}));
-        self.tools.register(Box::new(agent_tools::WebSearch::new()));
-        self.tools.register(Box::new(agent_tools::FetchContent::new()));
-        self.tools.register(Box::new(agent_tools::WebFetch::new()));
-        self.tools.register(Box::new(agent_tools::WebFetchText::new()));
-        self.tools.register(Box::new(agent_tools::TodoList::new()));
+        self.tools.register(Box::new(builtin_tools::ReadFile {}));
+        self.tools.register(Box::new(builtin_tools::ListFiles {}));
+        self.tools.register(Box::new(builtin_tools::Grep {}));
+        self.tools.register(Box::new(builtin_tools::Glob {}));
+        self.tools.register(Box::new(builtin_tools::WriteFile {}));
+        self.tools.register(Box::new(builtin_tools::EditFile {}));
+        self.tools.register(Box::new(builtin_tools::Shell {}));
+        self.tools.register(Box::new(builtin_tools::WebSearch::new()));
+        self.tools.register(Box::new(builtin_tools::FetchContent::new()));
+        self.tools.register(Box::new(builtin_tools::WebFetch::new()));
+        self.tools.register(Box::new(builtin_tools::WebFetchText::new()));
+        self.tools.register(Box::new(builtin_tools::TodoList::new()));
 
         let mut run_state = RunState::Idle;
 

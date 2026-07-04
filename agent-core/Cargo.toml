@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 agent-tools = { version = "0.1.0", path = "../agent-tools" }
+builtin-tools = { version = "0.1.0", path = "../builtin-tools" }
 futures.workspace = true
 provider = { version = "0.1.0", path = "../provider" }
 serde.workspace = true

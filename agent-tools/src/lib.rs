@@ -1,35 +1,5 @@
-pub mod dummy;
-pub mod edit;
-pub mod fetch_content;
-pub mod glob;
-pub mod grep;
-pub mod list_files;
-pub(crate) mod rate_limiter;
-pub mod read;
-pub mod shell;
-pub mod todo;
-pub mod web_fetch;
-pub mod web_fetch_text;
-pub mod web_search;
-pub mod write;
-
-use std::fmt::Display;
 use async_trait::async_trait;
 use thiserror::Error;
-
-pub use dummy::Dummy;
-pub use edit::EditFile;
-pub use fetch_content::FetchContent;
-pub use glob::Glob;
-pub use grep::Grep;
-pub use list_files::ListFiles;
-pub use read::ReadFile;
-pub use shell::Shell;
-pub use todo::TodoList;
-pub use web_fetch::WebFetch;
-pub use web_fetch_text::WebFetchText;
-pub use web_search::WebSearch;
-pub use write::WriteFile;
 
 #[derive(Debug, Error)]
 pub enum ToolError {
@@ -41,11 +11,11 @@ pub enum ToolError {
     Execution(String),
 }
 
-/// Details of a tool that the clanker should know about.
+/// Details of a tool that the agent should know about.
 pub struct ToolDetails {
-    /// Name of the tool, will be given to the clanker.
+    /// Name of the tool, will be given to the agent.
     pub name: &'static str,
-    /// Description of the tool, will be given to the clanker.
+    /// Description of the tool, will be given to the agent.
     pub description: &'static str,
 }
 
@@ -83,13 +53,11 @@ impl std::fmt::Display for ToolCallResult {
     }
 }
 
-
-
 pub struct JsonSchema(pub serde_json::Value);
 
 #[async_trait]
 pub trait Tool: Send + Sync {
-    /// High level description of the tool for the clanker.
+    /// High level description of the tool for the agent.
     fn details(&self) -> ToolDetails;
     /// JSON Schema describing the tool's arguments.
     fn parameters(&self) -> JsonSchema;

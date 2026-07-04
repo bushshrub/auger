@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use scraper::{ElementRef, Html, Selector};
 use serde_json::json;
 
-use crate::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
+use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 pub struct WebFetchText {
     client: reqwest::Client,

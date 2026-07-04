@@ -7,6 +7,7 @@ name = "agent-core"
 version = "0.1.0"
 dependencies = [
  "agent-tools",
+ "builtin-tools",
  "either",
  "futures",
  "provider",
@@ -23,8 +24,8 @@ name = "agent-server"
 version = "0.1.0"
 dependencies = [
  "agent-core",
- "agent-tools",
  "axum",
+ "builtin-tools",
  "futures",
  "provider",
  "provider-anthropic",
@@ -45,17 +46,8 @@ name = "agent-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "glob",
- "grep",
- "ignore",
- "json-schema-derive",
- "reqwest 0.12.28",
- "scraper",
- "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tokio",
- "walkdir",
 ]
 
 [[package]]
@@ -326,13 +318,31 @@ dependencies = [
 
 [[package]]
 name = "bstr"
-version = "1.12.1"
+version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63044e1ae8e69f3b5a92c736ca6269b8d12fa7efe39bf34ddb06d102cf0e2cab"
+checksum = "5cee35f73844aa3014bb606320a6c1f010249dbdf43342fe54b5a4f6a8ed4b79"
 dependencies = [
  "memchr",
  "regex-automata",
+ "serde_core",
+]
+
+[[package]]
+name = "builtin-tools"
+version = "0.1.0"
+dependencies = [
+ "agent-tools",
+ "async-trait",
+ "glob",
+ "grep",
+ "ignore",
+ "reqwest 0.12.28",
+ "scraper",
  "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "walkdir",
 ]
 
 [[package]]
@@ -1477,9 +1487,9 @@ dependencies = [
 
 [[package]]
 name = "ignore"
-version = "0.4.26"
+version = "0.4.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b915661dd01db3f05050265b2477bcc6527b3792388e2749b41623cc592be67d"
+checksum = "fe112b004901c62c2faa11f4f75e9864e0cc5af8da71c9115d184a3aa888749f"
 dependencies = [
  "crossbeam-deque",
  "globset",
@@ -1614,27 +1624,6 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "json-schema-derive"
-version = "0.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91df1c9902aca0e708752319c1a0caa7496ee28c634a2aec60b96537c2339075"
-dependencies = [
- "json-schema-derive-macro",
- "serde_json",
-]
-
-[[package]]
-name = "json-schema-derive-macro"
-version = "0.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21ceb059759ae7dcb65d06a3e29d078e8caf17206d447d5626a0ee541fff5cf3"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
+use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
