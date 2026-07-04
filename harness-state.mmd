@@ -1,0 +1,47 @@
+%%{init: {"state": {"nodeSpacing": 110, "rankSpacing": 110}}}%%
+
+stateDiagram-v2
+    direction LR
+
+    state "Ready to send" as ReadyToSend
+    state "Aborted" as Aborted
+    state "Model is generating" as ModelGenerating
+    state "Finished" as Finished
+    state "Resolving tools" as ResolvingTools
+    state "Tool(s) executing" as ToolsExecuting
+
+    ReadyToSend : waiting to send the next request
+
+    Aborted : the turn stopped before completion
+
+    ModelGenerating : waiting for the model response
+    ModelGenerating : the user can interrupt from here
+
+    Finished : the turn completed successfully
+
+    ResolvingTools : waiting for requested tool decision(s)
+    ResolvingTools : preparing approved tool call(s)
+
+    ToolsExecuting : running approved tool call(s)
+    ToolsExecuting : collecting tool result(s)
+
+    [*] --> ReadyToSend : user - start turn
+
+    ReadyToSend --> ModelGenerating : internal - send request
+    ModelGenerating --> ModelGenerating : internal - retry
+    ModelGenerating --> Aborted : user - interrupt
+    ModelGenerating --> Finished : model responds with no tools
+    ModelGenerating --> ResolvingTools : model requests tool calls
+
+    ResolvingTools --> ResolvingTools : user or agent denies tool(s)
+    ResolvingTools --> ToolsExecuting : user or agent approves tool(s)
+    ResolvingTools --> Aborted : user interrupts
+    ResolvingTools --> ModelGenerating : internal - all tool decisions resolved
+
+    ToolsExecuting --> ResolvingTools : tool(s) complete, more tools pending
+    ToolsExecuting --> ModelGenerating : tool(s) complete, next request ready
+    ToolsExecuting --> Aborted : user interrupts
+
+    Aborted --> ReadyToSend : user - prompt or retry
+    Finished --> ReadyToSend : user - prompt
+    Finished --> [*]
