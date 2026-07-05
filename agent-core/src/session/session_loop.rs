@@ -1,7 +1,6 @@
-use std::sync::Arc;
 use std::sync::mpsc;
 use either::Either;
-use provider::{AnyThread, ClankerMessage, LlmProvider, LlmThread, ToolCallRequest, ToolResult, UserPrompt};
+use provider::{AnyThread, ClankerMessage, LlmModel, LlmThread, ToolCallRequest, ToolResult, UserPrompt};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -27,28 +26,27 @@ enum RunState {
 
 pub struct Session {
     id: SessionId,
-    model: String,
+    model: LlmModel,
     tools: ToolRegistry,
-    provider: Arc<dyn LlmProvider>,
     events: broadcast::Sender<SessionEvent>,
     thread: AnyThread,
     auto_approve: AutoApprovalPolicy,
 }
 
 impl Session {
-    pub fn spawn(prompt: SystemPrompt, provider: &Arc<impl LlmProvider + 'static>, model: String) -> SessionHandle {
+    pub fn spawn(prompt: SystemPrompt, model: LlmModel) -> SessionHandle {
         let (cmds_tx, cmds_rx) = mpsc::channel();
         let (events_tx, _) = broadcast::channel(32);
 
         let id = Uuid::new_v4();
+        let model_name = model.name().to_string();
 
         let auto_approved_defaults = vec!["read_file", "list_files", "grep", "glob", "todo_list", "web_search"];
 
         let session = Session {
             id,
             tools: ToolRegistry::new(),
-            model: model.clone(),
-            provider: provider.clone(),
+            model,
             events: events_tx.clone(),
             thread: AnyThread::User(LlmThread::new(prompt.into())),
             auto_approve: AutoApprovalPolicy::new(auto_approved_defaults.iter().map(|s| s.to_string())),
@@ -59,7 +57,7 @@ impl Session {
             .name(format!("session-{id}"))
             .spawn(move || session.run(cmds_rx, handle))
             .expect("failed to spawn session thread");
-        SessionHandle::new(id, model, cmds_tx, events_tx)
+        SessionHandle::new(id, model_name, cmds_tx, events_tx)
     }
 
     fn run(mut self, rx: mpsc::Receiver<UserCommand>, handle: Handle) {
@@ -223,13 +221,13 @@ impl Session {
     }
 
     fn stream_llm_turn(&self, thread: LlmThread<ClankerTurn>, handle: Handle) -> Either<LlmThread<UserTurn>, LlmThread<ToolResultsPending>> {
-        let request = thread.create_request(self.model.clone(), self.tools.list_for_clanker());
+        let request = thread.create_request(self.tools.list_for_clanker());
         let events = &self.events;
-        let provider = &self.provider;
+        let model = &self.model;
 
         let response = handle.block_on(async {
             trace!("Making request to provider: {:?}", request);
-            let mut stream = match provider.stream(request).await {
+            let mut stream = match model.stream(request).await {
                 Ok(stream) => stream,
                 Err(e) => {
                     error!("Error opening provider stream: {:?}", e);

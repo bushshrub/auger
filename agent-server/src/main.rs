@@ -15,6 +15,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 use uuid::Uuid;
 
+use provider::LlmModel;
 use provider_openai_responses::OpenAiResponsesProvider;
 use agent_core::{Session, SessionHandle, SystemPrompt};
 use provider_anthropic::AnthropicProvider;
@@ -158,7 +159,7 @@ async fn create_session(
 ) -> impl IntoResponse {
     let model = req.model.unwrap_or_else(|| state.default_model.clone());
     let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
-    let handle = Session::spawn(sys_prompt, &state.provider, model);
+    let handle = Session::spawn(sys_prompt, LlmModel::new(state.provider.clone(), &model));
     let session_id = handle.id;
     let read_token = Uuid::new_v4();
     let write_token = Uuid::new_v4();

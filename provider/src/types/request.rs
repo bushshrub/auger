@@ -54,7 +54,6 @@ impl ToolResult {
 
 #[derive(Debug, Clone)]
 pub struct LlmRequest {
-    model: String,
     /// Full conversation history and the new message the user asks
     ///
     /// Provider implementations should perform caching/state management as needed.
@@ -65,16 +64,8 @@ pub struct LlmRequest {
 }
 
 impl LlmRequest {
-    pub fn new(model: String, messages: Vec<Message>, tools: Vec<ToolDefinition>) -> Self {
-        Self {
-            model,
-            messages,
-            tools,
-        }
-    }
-
-    pub fn model(&self) -> &str {
-        &self.model
+    pub fn new(messages: Vec<Message>, tools: Vec<ToolDefinition>) -> Self {
+        Self { messages, tools }
     }
 
     pub fn messages(&self) -> &[Message] {
