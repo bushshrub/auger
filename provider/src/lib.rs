@@ -1,10 +1,12 @@
 pub mod types;
 pub mod thread;
 pub mod model;
+pub mod capabilities;
 
 pub use types::*;
 pub use thread::{LlmThread, LlmThreadState, AnyThread};
 pub use model::LlmModel;
+pub use capabilities::{ModelCatalog, ModelId, ModelInfo};
 
 /// A connection to a language model API: endpoint, credentials, wire format.
 ///
