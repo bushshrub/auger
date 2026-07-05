@@ -13,6 +13,7 @@ pub(crate) enum ToolInvokeIssue {
     ToolError(ToolError)
 }
 
+// TODO: refactor tool registry into the agent-tools crate and other tool handling stuff.
 pub(crate) struct ToolRegistry(HashMap<String, Box<dyn Tool>>);
 impl ToolRegistry {
     pub(crate) fn new() -> Self {
