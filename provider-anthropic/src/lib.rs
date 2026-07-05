@@ -99,12 +99,12 @@ fn convert_tools(tools: Vec<provider::ToolDefinition>) -> Vec<Value> {
         .collect()
 }
 
-fn build_body(request: LlmRequest, do_stream: bool) -> Value {
+fn build_body(model: &str, request: LlmRequest, do_stream: bool) -> Value {
     let (system, messages) = convert_messages(request.messages());
     let tools = convert_tools(request.tools().to_vec());
 
     let mut body = json!({
-        "model": request.model(),
+        "model": model,
         "max_tokens": DEFAULT_MAX_TOKENS,
         "messages": messages,
     });
@@ -182,8 +182,8 @@ fn parse_response(data: &Value) -> LlmResponse {
 
 #[async_trait::async_trait]
 impl LlmProvider for AnthropicProvider {
-    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
-        let body = build_body(request, false);
+    async fn complete(&self, model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError> {
+        let body = build_body(model, request, false);
 
         let resp = self
             .client
@@ -210,8 +210,8 @@ impl LlmProvider for AnthropicProvider {
         Ok(parse_response(&data))
     }
 
-    async fn stream(&self, request: LlmRequest) -> Result<LlmStream, LlmError> {
-        let body = build_body(request, true);
+    async fn stream(&self, model: &str, request: LlmRequest) -> Result<LlmStream, LlmError> {
+        let body = build_body(model, request, true);
 
         let resp = self
             .client

@@ -309,9 +309,9 @@ fn stop_reason(status: Option<&str>, has_tool_calls: bool) -> Option<String> {
 
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiResponsesProvider {
-    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
+    async fn complete(&self, model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError> {
         let body = ResponsesRequest {
-            model: request.model().to_string(),
+            model: model.to_string(),
             input: messages_to_input(request.messages()),
             tools: tools_to_spec(request.tools()),
             stream: false,
@@ -358,9 +358,9 @@ impl LlmProvider for OpenAiResponsesProvider {
         })
     }
 
-    async fn stream(&self, request: LlmRequest) -> Result<LlmStream, LlmError> {
+    async fn stream(&self, model: &str, request: LlmRequest) -> Result<LlmStream, LlmError> {
         let body = ResponsesRequest {
-            model: request.model().to_string(),
+            model: model.to_string(),
             input: messages_to_input(request.messages()),
             tools: tools_to_spec(request.tools()),
             stream: true,

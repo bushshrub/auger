@@ -111,9 +111,9 @@ fn extract_tool_calls(v: &Value) -> Option<Vec<ToolCallRequest>> {
 
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiChatCompletionsProvider {
-    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
+    async fn complete(&self, model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError> {
         let body = json!({
-            "model": request.model(),
+            "model": model,
             "messages": messages_to_json(request.messages()),
             "tools": tools_to_json(request.tools()),
         });
@@ -138,9 +138,9 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
         })
     }
 
-    async fn stream(&self, request: LlmRequest) -> Result<LlmStream, LlmError> {
+    async fn stream(&self, model: &str, request: LlmRequest) -> Result<LlmStream, LlmError> {
         let body = json!({
-            "model": request.model(),
+            "model": model,
             "messages": messages_to_json(request.messages()),
             "tools": tools_to_json(request.tools()),
             "stream": true,
