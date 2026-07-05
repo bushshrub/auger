@@ -5,7 +5,7 @@ use thiserror::Error;
 use tracing::{debug, error};
 use agent_tools::ToolCallResult;
 use provider::ToolCallRequest;
-use crate::tools::tool_registry::{ToolInvokeIssue, ToolRegistry};
+use crate::tools::tool_registry::ToolRegistry;
 
 pub(crate) type ToolCallId = String;
 
@@ -35,8 +35,6 @@ pub(crate) enum RunToolCallError {
     NotFound(String),
     #[error("Tool call with id '{0}' has already been processed")]
     AlreadyProcessed(String),
-    #[error("Error invoking tool: {0}")]
-    InvokeError(#[from] ToolInvokeIssue)
 }
 
 impl ToolCallBatch<Resolving> {
@@ -52,6 +50,11 @@ impl ToolCallBatch<Resolving> {
         }
     }
 
+    /// The calls still awaiting a decision.
+    pub(crate) fn requested(&self) -> impl Iterator<Item = &ToolCallRequest> {
+        self.pending_calls.values()
+    }
+
     pub(crate) async fn approve_and_run(mut self, id: &ToolCallId, registry: &ToolRegistry) -> Result<Either<Self, ToolCallBatch<Complete>>, RunToolCallError> {
         let tool_call = self.pending_calls.remove(id).ok_or_else(|| RunToolCallError::NotFound(id.clone()))?;
         debug!(tool_call_id = %id, "Tool call approved and being executed");
@@ -60,9 +63,12 @@ impl ToolCallBatch<Resolving> {
                 debug!(tool_call_id = %id, "Tool call executed successfully");
                 result
             }
+            // A failed tool still resolves its call: record the error as the
+            // result so the batch (and prior results) survive and the model
+            // sees what went wrong.
             Err(e) => {
                 error!(tool_call_id = %id, "Error executing tool: {:?}", e);
-                return Err(RunToolCallError::InvokeError(e));
+                ToolCallResult::error(e.to_string())
             }
         };
         self.results.insert(id.clone(), result);
