@@ -6,6 +6,8 @@ use provider::{
 };
 use serde_json::{json, Value};
 
+mod catalog;
+
 pub struct OpenAiChatCompletionsProvider {
     client: Client<OpenAIConfig>,
 }

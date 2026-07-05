@@ -8,6 +8,8 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use provider::types::Message;
 
+mod catalog;
+
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const API_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 8096;
@@ -16,17 +18,19 @@ pub struct AnthropicProvider {
     client: Client,
     api_key: String,
     messages_url: String,
+    models_url: String,
 }
 
 impl AnthropicProvider {
     pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
         let base = base_url.into();
         let base = if base.is_empty() { DEFAULT_BASE_URL.to_string() } else { base };
-        let messages_url = format!("{}/v1/messages", base.trim_end_matches('/'));
+        let base = base.trim_end_matches('/');
         Self {
             client: Client::new(),
             api_key: api_key.into(),
-            messages_url,
+            messages_url: format!("{base}/v1/messages"),
+            models_url: format!("{base}/v1/models"),
         }
     }
 }

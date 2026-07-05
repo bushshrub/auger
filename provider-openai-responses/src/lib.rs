@@ -7,6 +7,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod catalog;
+
 /// Reasoning effort level for models that support it (o3, o4-mini, etc.).
 /// When set, requests reasoning summaries via `reasoning.summary = "auto"`.
 #[derive(Debug, Clone, Copy)]

@@ -11,5 +11,5 @@ serde_json = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
-async-openai = { version = "0.41.0", features = ["chat-completion", "byot"] }
+async-openai = { version = "0.41.0", features = ["chat-completion", "byot", "model"] }
 async-stream = "0.3"
