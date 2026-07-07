@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use scraper::{Html, Selector};
 use serde_json::json;
 
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 use crate::rate_limiter::RateLimiter;
+use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 /// Minimum milliseconds between DuckDuckGo search requests.
 const SEARCH_RATE_LIMIT_MS: u64 = 2000;
@@ -149,18 +149,22 @@ impl Tool for WebSearch {
         let results = parse_results(&html, max_results);
 
         if results.is_empty() {
-            return Ok(ToolCallResult::success(json!({
-                "query": query,
-                "results": [],
-                "note": "No results found. DuckDuckGo may be rate-limiting — try again shortly."
-            })
-            .to_string()));
+            return Ok(ToolCallResult::success(
+                json!({
+                    "query": query,
+                    "results": [],
+                    "note": "No results found. DuckDuckGo may be rate-limiting — try again shortly."
+                })
+                .to_string(),
+            ));
         }
 
-        Ok(ToolCallResult::success(json!({
-            "query": query,
-            "results": results,
-        })
-        .to_string()))
+        Ok(ToolCallResult::success(
+            json!({
+                "query": query,
+                "results": results,
+            })
+            .to_string(),
+        ))
     }
 }

@@ -82,21 +82,51 @@ pub struct SnapshotToolCall {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SnapshotMessage {
-    User { text: String },
-    Assistant { reasoning: Option<String>, content: String, tool_calls: Vec<SnapshotToolCall> },
-    Tool { tool_call_id: String, content: String },
+    User {
+        text: String,
+    },
+    Assistant {
+        reasoning: Option<String>,
+        content: String,
+        tool_calls: Vec<SnapshotToolCall>,
+    },
+    Tool {
+        tool_call_id: String,
+        content: String,
+    },
 }
 
 #[derive(Debug)]
 pub enum SseEvent {
-    Content { text: String },
-    Reasoning { text: String },
-    ToolCall { id: String, name: String, arguments: String },
-    ToolCallAutoApproved { id: String, name: String, arguments: String },
-    ToolResult { id: String, content: String },
-    Metrics { prompt_tokens: Option<u64>, completion_tokens: Option<u64>, total_tokens: Option<u64> },
+    Content {
+        text: String,
+    },
+    Reasoning {
+        text: String,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
+    ToolCallAutoApproved {
+        id: String,
+        name: String,
+        arguments: String,
+    },
+    ToolResult {
+        id: String,
+        content: String,
+    },
+    Metrics {
+        prompt_tokens: Option<u64>,
+        completion_tokens: Option<u64>,
+        total_tokens: Option<u64>,
+    },
     TurnComplete,
-    StreamError { message: String },
+    StreamError {
+        message: String,
+    },
 }
 
 // ── Raw server event deserialization ─────────────────────────────────────────
@@ -112,17 +142,38 @@ pub enum RawSessionEvent {
 
 #[derive(Debug, Deserialize)]
 pub enum RawClankerEvent {
-    ContentDelta { delta: String },
-    ReasoningDelta { delta: String },
-    ToolCallRequest { id: String, name: String, arguments: String },
-    Done { usage: Option<RawUsage>, stop_reason: Option<String> },
+    ContentDelta {
+        delta: String,
+    },
+    ReasoningDelta {
+        delta: String,
+    },
+    ToolCallRequest {
+        id: String,
+        name: String,
+        arguments: String,
+    },
+    Done {
+        usage: Option<RawUsage>,
+        stop_reason: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
 pub enum RawToolCallEvent {
-    Result { id: String, result: String },
-    Error { id: String, error: String },
-    AutoApproved { id: String, name: String, arguments: String },
+    Result {
+        id: String,
+        result: String,
+    },
+    Error {
+        id: String,
+        error: String,
+    },
+    AutoApproved {
+        id: String,
+        name: String,
+        arguments: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,8 +189,16 @@ pub fn transform_raw_event(ev: RawSessionEvent) -> Vec<SseEvent> {
         RawSessionEvent::Clanker(c) => match c {
             RawClankerEvent::ContentDelta { delta } => vec![SseEvent::Content { text: delta }],
             RawClankerEvent::ReasoningDelta { delta } => vec![SseEvent::Reasoning { text: delta }],
-            RawClankerEvent::ToolCallRequest { id, name, arguments } => {
-                vec![SseEvent::ToolCall { id, name, arguments }]
+            RawClankerEvent::ToolCallRequest {
+                id,
+                name,
+                arguments,
+            } => {
+                vec![SseEvent::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                }]
             }
             RawClankerEvent::Done { usage, .. } => {
                 let mut out = Vec::new();
@@ -156,13 +215,27 @@ pub fn transform_raw_event(ev: RawSessionEvent) -> Vec<SseEvent> {
         },
         RawSessionEvent::ToolCall(t) => match t {
             RawToolCallEvent::Result { id, result } => {
-                vec![SseEvent::ToolResult { id, content: result }]
+                vec![SseEvent::ToolResult {
+                    id,
+                    content: result,
+                }]
             }
             RawToolCallEvent::Error { id, error } => {
-                vec![SseEvent::ToolResult { id, content: format!("error: {error}") }]
+                vec![SseEvent::ToolResult {
+                    id,
+                    content: format!("error: {error}"),
+                }]
             }
-            RawToolCallEvent::AutoApproved { id, name, arguments } => {
-                vec![SseEvent::ToolCallAutoApproved { id, name, arguments }]
+            RawToolCallEvent::AutoApproved {
+                id,
+                name,
+                arguments,
+            } => {
+                vec![SseEvent::ToolCallAutoApproved {
+                    id,
+                    name,
+                    arguments,
+                }]
             }
         },
         RawSessionEvent::User(_) => vec![],

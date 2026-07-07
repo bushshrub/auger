@@ -1,7 +1,8 @@
 use async_stream::stream;
 use futures::StreamExt;
 use provider::{
-    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage, ToolCallRequest,
+    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage,
+    ToolCallRequest,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -111,7 +112,11 @@ enum OutputItem {
         reasoning_content: Option<String>,
     },
     #[serde(rename = "function_call")]
-    FunctionCall { call_id: String, name: String, arguments: String },
+    FunctionCall {
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
     #[serde(rename = "reasoning")]
     Reasoning {
         // OpenAI spec uses `summary`, llama.cpp uses `content`
@@ -186,12 +191,19 @@ fn messages_to_input(messages: &[provider::Message]) -> Vec<Value> {
     for msg in messages {
         match msg {
             provider::Message::System(content) => {
-                items.push(serde_json::json!({"type": "message", "role": "system", "content": content}));
+                items.push(
+                    serde_json::json!({"type": "message", "role": "system", "content": content}),
+                );
             }
-            provider::Message::User { message, tool_call_results } => {
+            provider::Message::User {
+                message,
+                tool_call_results,
+            } => {
                 let msg_text = message.message();
                 if !msg_text.is_empty() {
-                    items.push(serde_json::json!({"type": "message", "role": "user", "content": msg_text}));
+                    items.push(
+                        serde_json::json!({"type": "message", "role": "user", "content": msg_text}),
+                    );
                 }
                 for tr in tool_call_results {
                     items.push(serde_json::json!({
@@ -201,7 +213,11 @@ fn messages_to_input(messages: &[provider::Message]) -> Vec<Value> {
                     }));
                 }
             }
-            provider::Message::Assistant { reasoning: _, content, tool_calls } => {
+            provider::Message::Assistant {
+                reasoning: _,
+                content,
+                tool_calls,
+            } => {
                 if tool_calls.is_empty() {
                     if !content.is_empty() {
                         items.push(serde_json::json!({"type": "message", "role": "assistant", "content": content}));
@@ -272,23 +288,36 @@ fn extract_reasoning(output: &[OutputItem]) -> Option<String> {
                         ReasoningPart::ReasoningText { text } => Some(text.as_str()),
                         ReasoningPart::Unknown => None,
                     };
-                    if let Some(t) = text { parts.push(t); }
+                    if let Some(t) = text {
+                        parts.push(t);
+                    }
                 }
             }
-            OutputItem::Message { reasoning_content: Some(rc), .. } if !rc.is_empty() => {
+            OutputItem::Message {
+                reasoning_content: Some(rc),
+                ..
+            } if !rc.is_empty() => {
                 parts.push(rc.as_str());
             }
             _ => {}
         }
     }
-    if parts.is_empty() { None } else { Some(parts.join("")) }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(""))
+    }
 }
 
 fn extract_tool_calls(output: &[OutputItem]) -> Option<Vec<ToolCallRequest>> {
     let calls: Vec<ToolCallRequest> = output
         .iter()
         .filter_map(|item| match item {
-            OutputItem::FunctionCall { call_id, name, arguments } => Some(ToolCallRequest {
+            OutputItem::FunctionCall {
+                call_id,
+                name,
+                arguments,
+            } => Some(ToolCallRequest {
                 id: call_id.clone(),
                 name: name.clone(),
                 arguments: arguments.clone(),
@@ -331,22 +360,21 @@ impl LlmProvider for OpenAiResponsesProvider {
             req = req.header("Authorization", auth);
         }
 
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError { message: e.to_string() })?;
+        let resp = req.json(&body).send().await.map_err(|e| LlmError {
+            message: e.to_string(),
+        })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError { message: format!("HTTP {}: {}", status, text) });
+            return Err(LlmError {
+                message: format!("HTTP {}: {}", status, text),
+            });
         }
 
-        let data: ResponsesResponse = resp
-            .json()
-            .await
-            .map_err(|e| LlmError { message: format!("parse error: {}", e) })?;
+        let data: ResponsesResponse = resp.json().await.map_err(|e| LlmError {
+            message: format!("parse error: {}", e),
+        })?;
 
         let tool_calls = extract_tool_calls(&data.output);
         let has_tool_calls = tool_calls.is_some();
@@ -380,16 +408,16 @@ impl LlmProvider for OpenAiResponsesProvider {
             req = req.header("Authorization", auth);
         }
 
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError { message: e.to_string() })?;
+        let resp = req.json(&body).send().await.map_err(|e| LlmError {
+            message: e.to_string(),
+        })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError { message: format!("HTTP {}: {}", status, text) });
+            return Err(LlmError {
+                message: format!("HTTP {}: {}", status, text),
+            });
         }
 
         struct FcAccum {

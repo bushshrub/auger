@@ -63,16 +63,12 @@ fn run_glob(pattern: &str, base_dir: Option<&str>) -> Result<String, ToolError> 
         format!("{}/{}", base.trim_end_matches('/'), pattern)
     };
 
-    let git_root = find_git_root(std::path::Path::new(
-        base_dir.unwrap_or("."),
-    ));
+    let git_root = find_git_root(std::path::Path::new(base_dir.unwrap_or(".")));
 
     // Build a gitignore checker rooted at the git root (or cwd if not in a repo)
-    let checker = git_root.as_deref().and_then(|root| {
-        ignore::gitignore::GitignoreBuilder::new(root)
-            .build()
-            .ok()
-    });
+    let checker = git_root
+        .as_deref()
+        .and_then(|root| ignore::gitignore::GitignoreBuilder::new(root).build().ok());
 
     let paths: Vec<String> = glob::glob(&full_pattern)
         .map_err(|e| ToolError::InvalidArgs(format!("invalid glob pattern: {e}")))?
@@ -82,10 +78,7 @@ fn run_glob(pattern: &str, base_dir: Option<&str>) -> Result<String, ToolError> 
                 return true;
             };
             let is_dir = path.is_dir();
-            !matches!(
-                checker.matched(path, is_dir),
-                ignore::Match::Ignore(_)
-            )
+            !matches!(checker.matched(path, is_dir), ignore::Match::Ignore(_))
         })
         .map(|p| p.to_string_lossy().into_owned())
         .collect();

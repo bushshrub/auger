@@ -64,7 +64,8 @@ mod tests {
     #[test]
     fn heals_single_tool_call() {
         let healer = XmlStyleToolCallHealer;
-        let content = r#"Sure!<tool_call>{"name":"read_file","arguments":{"path":"/tmp/foo"}}</tool_call>"#;
+        let content =
+            r#"Sure!<tool_call>{"name":"read_file","arguments":{"path":"/tmp/foo"}}</tool_call>"#;
         let result = healer.heal(base_response(content));
 
         let tcs = result.tool_calls.unwrap();
@@ -98,7 +99,8 @@ mod tests {
     #[test]
     fn preserves_existing_tool_calls() {
         let healer = XmlStyleToolCallHealer;
-        let mut response = base_response("<tool_call>{\"name\":\"b\",\"arguments\":{}}</tool_call>");
+        let mut response =
+            base_response("<tool_call>{\"name\":\"b\",\"arguments\":{}}</tool_call>");
         response.tool_calls = Some(vec![ToolCallRequest {
             id: "existing-id".to_string(),
             name: "a".to_string(),

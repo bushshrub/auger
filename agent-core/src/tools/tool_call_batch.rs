@@ -1,11 +1,11 @@
+use crate::tools::tool_registry::ToolRegistry;
+use agent_tools::ToolCallResult;
+use either::Either;
+use provider::ToolCallRequest;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use either::Either;
 use thiserror::Error;
 use tracing::{debug, error};
-use agent_tools::ToolCallResult;
-use provider::ToolCallRequest;
-use crate::tools::tool_registry::ToolRegistry;
 
 pub(crate) type ToolCallId = String;
 
@@ -55,8 +55,15 @@ impl ToolCallBatch<Resolving> {
         self.pending_calls.values()
     }
 
-    pub(crate) async fn approve_and_run(mut self, id: &ToolCallId, registry: &ToolRegistry) -> Result<Either<Self, ToolCallBatch<Complete>>, RunToolCallError> {
-        let tool_call = self.pending_calls.remove(id).ok_or_else(|| RunToolCallError::NotFound(id.clone()))?;
+    pub(crate) async fn approve_and_run(
+        mut self,
+        id: &ToolCallId,
+        registry: &ToolRegistry,
+    ) -> Result<Either<Self, ToolCallBatch<Complete>>, RunToolCallError> {
+        let tool_call = self
+            .pending_calls
+            .remove(id)
+            .ok_or_else(|| RunToolCallError::NotFound(id.clone()))?;
         debug!(tool_call_id = %id, "Tool call approved and being executed");
         let result = match registry.invoke(tool_call).await {
             Ok(result) => {
@@ -75,17 +82,58 @@ impl ToolCallBatch<Resolving> {
         Ok(Self::transition(self))
     }
 
-    /// Deny a tool call
-    pub(crate) fn deny(mut self, id: &ToolCallId) -> Result<Either<Self, ToolCallBatch<Complete>>, RunToolCallError> {
-        self.pending_calls.remove(id).ok_or_else(|| RunToolCallError::NotFound(id.clone()))?;
-        debug!(tool_call_id = %id, "Tool call denied and removed from pending calls");
-        self.results.insert(id.clone(), ToolCallResult::denied_by_user("Tool call denied by user".to_string()));
+    /// Record a tool call result that was produced outside the batch.
+    pub(crate) fn resolve(
+        mut self,
+        id: &ToolCallId,
+        result: ToolCallResult,
+    ) -> Result<Either<Self, ToolCallBatch<Complete>>, RunToolCallError> {
+        self.pending_calls
+            .remove(id)
+            .ok_or_else(|| RunToolCallError::NotFound(id.clone()))?;
+        self.results.insert(id.clone(), result);
         Ok(Self::transition(self))
+    }
+
+    /// Deny a tool call
+    pub(crate) fn deny(
+        mut self,
+        id: &ToolCallId,
+    ) -> Result<Either<Self, ToolCallBatch<Complete>>, RunToolCallError> {
+        self.pending_calls
+            .remove(id)
+            .ok_or_else(|| RunToolCallError::NotFound(id.clone()))?;
+        debug!(tool_call_id = %id, "Tool call denied and removed from pending calls");
+        self.results.insert(
+            id.clone(),
+            ToolCallResult::denied_by_user("Tool call denied by user".to_string()),
+        );
+        Ok(Self::transition(self))
+    }
+
+    /// Resolve every still-pending call as interrupted, without executing it.
+    pub(crate) fn interrupt_remaining(mut self) -> ToolCallBatch<Complete> {
+        let pending = std::mem::take(&mut self.pending_calls);
+        for (id, _) in pending {
+            self.results.insert(
+                id,
+                ToolCallResult::error("Tool call interrupted by user before execution".to_string()),
+            );
+        }
+        ToolCallBatch {
+            pending_calls: HashMap::new(),
+            results: self.results,
+            _state: PhantomData,
+        }
     }
 
     fn transition(self) -> Either<Self, ToolCallBatch<Complete>> {
         if self.pending_calls.is_empty() {
-            Either::Right(ToolCallBatch { pending_calls: self.pending_calls, results: self.results, _state: PhantomData })
+            Either::Right(ToolCallBatch {
+                pending_calls: self.pending_calls,
+                results: self.results,
+                _state: PhantomData,
+            })
         } else {
             Either::Left(self)
         }

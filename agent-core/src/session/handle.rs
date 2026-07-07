@@ -1,8 +1,10 @@
+use crate::session::events::{
+    SessionEvent, ToolCallResponse, UserAction, UserCommand, UserMessage,
+};
+use crate::session::{SessionError, SessionId};
 use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
-use crate::session::{SessionError, SessionId};
-use crate::session::events::{SessionEvent, ToolCallResponse, UserAction, UserCommand, UserMessage};
 
 #[derive(Clone)]
 pub struct SessionHandle {
@@ -16,8 +18,12 @@ pub struct SessionHandle {
 }
 
 impl SessionHandle {
-
-    pub(crate) fn new(id: SessionId, model: String, cmd_tx: mpsc::Sender<UserCommand>, event_tx: broadcast::Sender<SessionEvent>) -> Self {
+    pub(crate) fn new(
+        id: SessionId,
+        model: String,
+        cmd_tx: mpsc::Sender<UserCommand>,
+        event_tx: broadcast::Sender<SessionEvent>,
+    ) -> Self {
         let created_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -36,13 +42,32 @@ impl SessionHandle {
 
     /// Enqueue a message for the clanker.
     pub fn enqueue(&self, msg: UserMessage) -> Result<(), SessionError> {
-        self.cmds.send(UserAction::SendMessage(msg.clone()).into()).map_err(|_| SessionError::Closed)?;
+        self.cmds
+            .send(UserAction::SendMessage(msg.clone()).into())
+            .map_err(|_| SessionError::Closed)?;
         Ok(())
     }
 
-    pub fn respond_to_tool_call(&self, tool_call_id: String, approved: bool, message: Option<String>) -> Result<(), SessionError> {
-        let response = if approved { ToolCallResponse::Approve } else { ToolCallResponse::Deny };
-        self.cmds.send(UserAction::RespondToToolCall { response, tool_call_id, message }.into())
+    pub fn respond_to_tool_call(
+        &self,
+        tool_call_id: String,
+        approved: bool,
+        message: Option<String>,
+    ) -> Result<(), SessionError> {
+        let response = if approved {
+            ToolCallResponse::Approve
+        } else {
+            ToolCallResponse::Deny
+        };
+        self.cmds
+            .send(
+                UserAction::RespondToToolCall {
+                    response,
+                    tool_call_id,
+                    message,
+                }
+                .into(),
+            )
             .map_err(|_| SessionError::Closed)?;
         Ok(())
     }
@@ -53,7 +78,9 @@ impl SessionHandle {
 
     pub fn snapshot(&self) -> Result<Vec<provider::Message>, SessionError> {
         let (tx, rx) = mpsc::sync_channel(1);
-        self.cmds.send(UserCommand::Snapshot { reply: tx }).map_err(|_| SessionError::Closed)?;
+        self.cmds
+            .send(UserCommand::Snapshot { reply: tx })
+            .map_err(|_| SessionError::Closed)?;
         rx.recv().map_err(|_| SessionError::Closed)
     }
 }

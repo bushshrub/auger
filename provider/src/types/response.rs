@@ -1,9 +1,9 @@
-use std::pin::Pin;
-use futures_core::Stream;
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use crate::Message;
 use crate::types::ToolCallRequest;
+use futures_core::Stream;
+use serde::{Deserialize, Serialize};
+use std::pin::Pin;
+use thiserror::Error;
 
 /// Token usage details
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -18,7 +18,6 @@ pub struct TokenUsage {
 /// Events that can be emitted while streaming a response from the clanker.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
-
     TextDelta(String),
     /// Thinking output from clanker
     ReasoningDelta(String),
@@ -99,12 +98,20 @@ impl From<Vec<StreamEvent>> for LlmResponse {
                     reasoning.get_or_insert(String::new()).push_str(&delta)
                 }
                 // discard tool call deltas.
-                StreamEvent::ToolCall { .. } => {
-                }
-                StreamEvent::ToolCallComplete { id, name, arguments } => {
-                    tool_calls.push(ToolCallRequest { id, name, arguments })
-                }
-                StreamEvent::Done { usage: u, stop_reason: sr } => {
+                StreamEvent::ToolCall { .. } => {}
+                StreamEvent::ToolCallComplete {
+                    id,
+                    name,
+                    arguments,
+                } => tool_calls.push(ToolCallRequest {
+                    id,
+                    name,
+                    arguments,
+                }),
+                StreamEvent::Done {
+                    usage: u,
+                    stop_reason: sr,
+                } => {
                     usage = u;
                     stop_reason = sr;
                 }
@@ -114,7 +121,11 @@ impl From<Vec<StreamEvent>> for LlmResponse {
         Self {
             content,
             reasoning,
-            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
             usage,
             stop_reason,
         }

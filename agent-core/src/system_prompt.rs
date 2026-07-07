@@ -1,12 +1,9 @@
-
 #[derive(Clone, Debug)]
 pub struct SystemPrompt {
-    base: String
+    base: String,
 }
 
-pub struct Skill {
-
-}
+pub struct Skill {}
 
 impl SystemPrompt {
     pub fn new(base: String) -> Self {

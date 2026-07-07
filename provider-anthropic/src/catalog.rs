@@ -1,4 +1,4 @@
-use crate::{AnthropicProvider, API_VERSION};
+use crate::{API_VERSION, AnthropicProvider};
 use provider::{LlmError, ModelCatalog, ModelId, ModelInfo};
 use serde_json::Value;
 
@@ -11,17 +11,21 @@ impl AnthropicProvider {
             .header("anthropic-version", API_VERSION)
             .send()
             .await
-            .map_err(|e| LlmError { message: e.to_string() })?;
+            .map_err(|e| LlmError {
+                message: e.to_string(),
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError { message: format!("HTTP {}: {}", status, text) });
+            return Err(LlmError {
+                message: format!("HTTP {}: {}", status, text),
+            });
         }
 
-        resp.json()
-            .await
-            .map_err(|e| LlmError { message: format!("parse error: {}", e) })
+        resp.json().await.map_err(|e| LlmError {
+            message: format!("parse error: {}", e),
+        })
     }
 }
 

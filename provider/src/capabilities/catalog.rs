@@ -18,7 +18,7 @@ impl ModelId {
 /// Descriptive metadata about a model.
 ///
 /// Fields a provider does not report are `None`. Note that
-/// these are not necessarily the same as the model's actual capabilities, 
+/// these are not necessarily the same as the model's actual capabilities,
 /// which may be publicly known (e.g. openai models do not report this in their
 /// API, but their capabilities can be looked up elsewhere.)
 #[derive(Debug, Clone)]
@@ -57,7 +57,7 @@ pub trait ModelCatalog: LlmProvider {
 /// before binding an [`LlmModel`] to it.
 ///
 /// This should be used instead of `LlmModel::new` whenever the
-/// provider exposes the `ModelCatalog` capability, 
+/// provider exposes the `ModelCatalog` capability,
 /// to avoid runtime errors from selecting a
 /// model that doesn't exist.
 pub async fn resolve_model<C>(catalog: &Arc<C>, name: &str) -> Result<LlmModel, LlmError>

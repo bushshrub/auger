@@ -87,6 +87,12 @@ impl Tool for ReadFile {
 
 fn sanitize_filename(path: &str) -> String {
     path.chars()
-        .map(|c| if c.is_alphanumeric() || c == '.' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }

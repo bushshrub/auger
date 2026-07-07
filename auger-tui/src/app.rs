@@ -1,8 +1,10 @@
-use std::collections::{HashMap, HashSet};
 use ratatui::widgets::ListState;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
-use crate::types::{AppEvent, ChatItem, SnapshotMessage, SseEvent, SessionInfo, Status, ToolDecision};
+use crate::types::{
+    AppEvent, ChatItem, SessionInfo, SnapshotMessage, SseEvent, Status, ToolDecision,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum View {
@@ -76,7 +78,12 @@ impl App {
                 }
             }
 
-            AppEvent::SessionCreated { session_id, write_token, read_token, context_window } => {
+            AppEvent::SessionCreated {
+                session_id,
+                write_token,
+                read_token,
+                context_window,
+            } => {
                 self.session_id = Some(session_id);
                 self.write_token = Some(write_token);
                 self.read_token = Some(read_token);
@@ -133,13 +140,20 @@ impl App {
                         }
                     }
                     None => {
-                        self.items.push(ChatItem::Reasoning { text, collapsed: true });
+                        self.items.push(ChatItem::Reasoning {
+                            text,
+                            collapsed: true,
+                        });
                         self.reasoning_idx = Some(self.items.len() - 1);
                     }
                 }
             }
 
-            SseEvent::ToolCall { id, name, arguments } => {
+            SseEvent::ToolCall {
+                id,
+                name,
+                arguments,
+            } => {
                 self.assistant_idx = None;
                 self.reasoning_idx = None;
                 self.pending_tool_id = Some(id.clone());
@@ -153,10 +167,18 @@ impl App {
                 self.status = Status::Running;
             }
 
-            SseEvent::ToolCallAutoApproved { id, name, arguments } => {
+            SseEvent::ToolCallAutoApproved {
+                id,
+                name,
+                arguments,
+            } => {
                 self.assistant_idx = None;
                 self.reasoning_idx = None;
-                if let Some(item) = self.items.iter_mut().find(|i| matches!(i, ChatItem::Tool { id: tid, .. } if tid == &id)) {
+                if let Some(item) = self
+                    .items
+                    .iter_mut()
+                    .find(|i| matches!(i, ChatItem::Tool { id: tid, .. } if tid == &id))
+                {
                     if let ChatItem::Tool { decision, .. } = item {
                         *decision = Some(ToolDecision::Auto);
                     }
@@ -174,8 +196,15 @@ impl App {
 
             SseEvent::ToolResult { id, content } => {
                 self.assistant_idx = None;
-                if let Some(item) = self.items.iter_mut().find(|i| matches!(i, ChatItem::Tool { id: tid, .. } if tid == &id)) {
-                    if let ChatItem::Tool { result, decision, .. } = item {
+                if let Some(item) = self
+                    .items
+                    .iter_mut()
+                    .find(|i| matches!(i, ChatItem::Tool { id: tid, .. } if tid == &id))
+                {
+                    if let ChatItem::Tool {
+                        result, decision, ..
+                    } = item
+                    {
                         *result = Some(content);
                         if decision.is_none() {
                             *decision = Some(ToolDecision::Approved);
@@ -187,7 +216,11 @@ impl App {
                 }
             }
 
-            SseEvent::Metrics { prompt_tokens, completion_tokens, total_tokens } => {
+            SseEvent::Metrics {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            } => {
                 self.ctx_used = total_tokens
                     .or_else(|| prompt_tokens.zip(completion_tokens).map(|(p, c)| p + c))
                     .unwrap_or(self.ctx_used);
@@ -242,7 +275,8 @@ impl App {
             return;
         }
         let i = self.session_list_state.selected().unwrap_or(0);
-        self.session_list_state.select(Some((i + 1) % self.sessions.len()));
+        self.session_list_state
+            .select(Some((i + 1) % self.sessions.len()));
     }
 
     pub fn session_list_prev(&mut self) {
@@ -250,13 +284,17 @@ impl App {
             return;
         }
         let i = self.session_list_state.selected().unwrap_or(0);
-        self.session_list_state.select(Some(
-            if i == 0 { self.sessions.len() - 1 } else { i - 1 },
-        ));
+        self.session_list_state.select(Some(if i == 0 {
+            self.sessions.len() - 1
+        } else {
+            i - 1
+        }));
     }
 
     pub fn selected_session(&self) -> Option<&SessionInfo> {
-        self.session_list_state.selected().and_then(|i| self.sessions.get(i))
+        self.session_list_state
+            .selected()
+            .and_then(|i| self.sessions.get(i))
     }
 
     pub fn send_message(&mut self) -> Option<(Uuid, String, String)> {
@@ -290,11 +328,18 @@ impl App {
                     last_block_ids.clear();
                     self.items.push(ChatItem::User { text });
                 }
-                SnapshotMessage::Assistant { reasoning, content, tool_calls } => {
+                SnapshotMessage::Assistant {
+                    reasoning,
+                    content,
+                    tool_calls,
+                } => {
                     last_block_ids.clear();
                     if let Some(r) = reasoning {
                         if !r.is_empty() {
-                            self.items.push(ChatItem::Reasoning { text: r, collapsed: true });
+                            self.items.push(ChatItem::Reasoning {
+                                text: r,
+                                collapsed: true,
+                            });
                         }
                     }
                     if !content.is_empty() {
@@ -312,7 +357,10 @@ impl App {
                         });
                     }
                 }
-                SnapshotMessage::Tool { tool_call_id, content } => {
+                SnapshotMessage::Tool {
+                    tool_call_id,
+                    content,
+                } => {
                     if let Some(&idx) = tool_idx_map.get(&tool_call_id) {
                         if let Some(ChatItem::Tool { result, .. }) = self.items.get_mut(idx) {
                             *result = Some(content);
@@ -343,9 +391,17 @@ impl App {
         let session_id = self.session_id?;
         let write_token = self.write_token.clone()?;
 
-        if let Some(item) = self.items.iter_mut().find(|i| matches!(i, ChatItem::Tool { id, .. } if id == &tool_id)) {
+        if let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|i| matches!(i, ChatItem::Tool { id, .. } if id == &tool_id))
+        {
             if let ChatItem::Tool { decision, .. } = item {
-                *decision = Some(if approved { ToolDecision::Approved } else { ToolDecision::Denied });
+                *decision = Some(if approved {
+                    ToolDecision::Approved
+                } else {
+                    ToolDecision::Denied
+                });
             }
         }
         self.pending_tool_id = None;

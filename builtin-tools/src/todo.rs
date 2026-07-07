@@ -1,7 +1,7 @@
-use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::{Arc, Mutex};
 
 use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
@@ -106,7 +106,8 @@ impl Tool for TodoList {
             "update" => {
                 let id = args["id"]
                     .as_u64()
-                    .ok_or_else(|| ToolError::InvalidArgs("update requires 'id'".into()))? as u32;
+                    .ok_or_else(|| ToolError::InvalidArgs("update requires 'id'".into()))?
+                    as u32;
                 let item = items
                     .iter_mut()
                     .find(|i| i.id == id)
@@ -121,7 +122,8 @@ impl Tool for TodoList {
             "remove" => {
                 let id = args["id"]
                     .as_u64()
-                    .ok_or_else(|| ToolError::InvalidArgs("remove requires 'id'".into()))? as u32;
+                    .ok_or_else(|| ToolError::InvalidArgs("remove requires 'id'".into()))?
+                    as u32;
                 let before = items.len();
                 items.retain(|i| i.id != id);
                 if items.len() == before {
@@ -134,7 +136,9 @@ impl Tool for TodoList {
             }
         }
 
-        Ok(ToolCallResult::success(json!({ "items": *items }).to_string()))
+        Ok(ToolCallResult::success(
+            json!({ "items": *items }).to_string(),
+        ))
     }
 }
 

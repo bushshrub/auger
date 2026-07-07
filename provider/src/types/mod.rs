@@ -17,16 +17,15 @@ pub enum Message {
     /// want it sooo yeah we'll stick to it.
     User {
         message: UserPrompt,
-        tool_call_results: Vec<ToolResult>
+        tool_call_results: Vec<ToolResult>,
     }, // TODO: in the future we will need to support images
     /// A message from the model.
     Assistant {
         reasoning: Option<String>,
         content: String,
         tool_calls: Vec<ToolCallRequest>,
-    }
+    },
 }
-
 
 impl From<LlmResponse> for Message {
     fn from(response: LlmResponse) -> Self {

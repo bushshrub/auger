@@ -10,21 +10,21 @@ impl OpenAiResponsesProvider {
             req = req.header("Authorization", auth);
         }
 
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| LlmError { message: e.to_string() })?;
+        let resp = req.send().await.map_err(|e| LlmError {
+            message: e.to_string(),
+        })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError { message: format!("HTTP {}: {}", status, text) });
+            return Err(LlmError {
+                message: format!("HTTP {}: {}", status, text),
+            });
         }
 
-        let data: Value = resp
-            .json()
-            .await
-            .map_err(|e| LlmError { message: format!("parse error: {}", e) })?;
+        let data: Value = resp.json().await.map_err(|e| LlmError {
+            message: format!("parse error: {}", e),
+        })?;
 
         Ok(data["data"].as_array().cloned().unwrap_or_default())
     }

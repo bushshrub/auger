@@ -50,7 +50,8 @@ impl Tool for WriteFile {
         fs::write(path, content).await?;
 
         let lines = content.lines().count();
-        Ok(ToolCallResult::success(json!({ "success": true, "path": path, "lines_written": lines })
-            .to_string()))
+        Ok(ToolCallResult::success(
+            json!({ "success": true, "path": path, "lines_written": lines }).to_string(),
+        ))
     }
 }

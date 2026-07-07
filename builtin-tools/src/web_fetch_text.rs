@@ -171,12 +171,14 @@ impl Tool for WebFetchText {
         };
 
         if text.len() <= MAX_INLINE {
-            return Ok(ToolCallResult::success(json!({
-                "status": status,
-                "content_type": content_type,
-                "text": text,
-            })
-            .to_string()));
+            return Ok(ToolCallResult::success(
+                json!({
+                    "status": status,
+                    "content_type": content_type,
+                    "text": text,
+                })
+                .to_string(),
+            ));
         }
 
         let nanos = std::time::SystemTime::now()
@@ -188,19 +190,21 @@ impl Tool for WebFetchText {
             .await
             .map_err(|e| ToolError::Execution(format!("failed to write temp file: {e}")))?;
 
-        Ok(ToolCallResult::success(json!({
-            "status": status,
-            "content_type": content_type,
-            "text_size_bytes": text.len(),
-            "full_response_path": path.to_string_lossy(),
-            "note": format!(
-                "Extracted text ({} bytes) exceeds inline limit ({} bytes). \
-                Full content saved to: {}",
-                text.len(),
-                MAX_INLINE,
-                path.display()
-            ),
-        })
-        .to_string()))
+        Ok(ToolCallResult::success(
+            json!({
+                "status": status,
+                "content_type": content_type,
+                "text_size_bytes": text.len(),
+                "full_response_path": path.to_string_lossy(),
+                "note": format!(
+                    "Extracted text ({} bytes) exceeds inline limit ({} bytes). \
+                    Full content saved to: {}",
+                    text.len(),
+                    MAX_INLINE,
+                    path.display()
+                ),
+            })
+            .to_string(),
+        ))
     }
 }

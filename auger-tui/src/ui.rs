@@ -54,7 +54,11 @@ fn render_session_list(frame: &mut Frame, app: &App) {
 
         let list = List::new(items)
             .block(Block::default().borders(Borders::ALL).title("Sessions"))
-            .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+            .highlight_style(
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
             .highlight_symbol(">> ");
 
         let mut state = app.session_list_state.clone();
@@ -134,7 +138,12 @@ fn render_ctx_bar(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let bar: String = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
-    let label = format!(" {:.0}%  {}k/{}k tok", pct, app.ctx_used / 1000, app.ctx_window / 1000);
+    let label = format!(
+        " {:.0}%  {}k/{}k tok",
+        pct,
+        app.ctx_used / 1000,
+        app.ctx_window / 1000
+    );
 
     let line = Paragraph::new(Line::from(vec![
         Span::styled(bar, Style::default().fg(bar_color)),
@@ -154,7 +163,9 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
                 for l in wrap_text(text, width) {
                     lines.push(Line::from(Span::styled(
                         format!("  > {l}"),
-                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
                     )));
                 }
             }
@@ -171,7 +182,9 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
                 if *collapsed {
                     lines.push(Line::from(Span::styled(
                         format!("  [thinking: {} chars — press r to expand]", text.len()),
-                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC),
                     )));
                 } else {
                     lines.push(Line::from(Span::styled(
@@ -187,10 +200,18 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
                 }
             }
 
-            ChatItem::Tool { id, name, args, result, decision } => {
+            ChatItem::Tool {
+                id,
+                name,
+                args,
+                result,
+                decision,
+            } => {
                 lines.push(Line::from(""));
                 let (decision_str, decision_style) = match decision {
-                    Some(ToolDecision::Approved) => (" [approved]", Style::default().fg(Color::Green)),
+                    Some(ToolDecision::Approved) => {
+                        (" [approved]", Style::default().fg(Color::Green))
+                    }
                     Some(ToolDecision::Denied) => (" [denied]", Style::default().fg(Color::Red)),
                     Some(ToolDecision::Auto) => (" [auto]", Style::default().fg(Color::DarkGray)),
                     None => ("", Style::default()),
@@ -198,7 +219,12 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
 
                 lines.push(Line::from(vec![
                     Span::styled("  tool ", Style::default().fg(Color::Magenta)),
-                    Span::styled(name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        name,
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(decision_str, decision_style),
                 ]));
 
@@ -242,11 +268,9 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     if lines.is_empty() {
-        let placeholder = Paragraph::new(
-            "No messages yet. Type below and press Enter to send.",
-        )
-        .style(Style::default().fg(Color::DarkGray))
-        .block(Block::default().borders(Borders::ALL));
+        let placeholder = Paragraph::new("No messages yet. Type below and press Enter to send.")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL));
         frame.render_widget(placeholder, area);
         return;
     }
@@ -268,12 +292,12 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let (placeholder, style) = if app.status != Status::Idle {
-        (
-            "agent is busy…",
-            Style::default().fg(Color::DarkGray),
-        )
+        ("agent is busy…", Style::default().fg(Color::DarkGray))
     } else if app.pending_tool_id.is_some() {
-        ("press [y] approve / [n] deny", Style::default().fg(Color::Yellow))
+        (
+            "press [y] approve / [n] deny",
+            Style::default().fg(Color::Yellow),
+        )
     } else {
         ("Message… (Enter to send)", Style::default())
     };

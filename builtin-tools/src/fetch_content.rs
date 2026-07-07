@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use scraper::{ElementRef, Html, Selector};
 use serde_json::json;
 
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 use crate::rate_limiter::RateLimiter;
+use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 /// Minimum milliseconds between content fetch requests.
 const FETCH_RATE_LIMIT_MS: u64 = 1000;
@@ -16,13 +16,35 @@ const SKIP_TAGS: &[&str] = &[
 
 /// Block-level tags that should be separated with newlines.
 const BLOCK_TAGS: &[&str] = &[
-    "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "br", "tr", "td", "th",
-    "article", "section", "blockquote", "pre",
+    "p",
+    "div",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "li",
+    "br",
+    "tr",
+    "td",
+    "th",
+    "article",
+    "section",
+    "blockquote",
+    "pre",
 ];
 
 /// CSS selectors tried in order to find the main content region.
 const CONTENT_SELECTORS: &[&str] = &[
-    "article", "main", "[role=\"main\"]", "#content", ".content", ".post", ".article", "body",
+    "article",
+    "main",
+    "[role=\"main\"]",
+    "#content",
+    ".content",
+    ".post",
+    ".article",
+    "body",
 ];
 
 pub struct FetchContent {
@@ -195,13 +217,15 @@ impl Tool for FetchContent {
             (text, trunc)
         };
 
-        Ok(ToolCallResult::success(json!({
-            "url": url,
-            "status": status,
-            "content_type": content_type,
-            "text": text,
-            "truncated": truncated,
-        })
-        .to_string()))
+        Ok(ToolCallResult::success(
+            json!({
+                "url": url,
+                "status": status,
+                "content_type": content_type,
+                "text": text,
+                "truncated": truncated,
+            })
+            .to_string(),
+        ))
     }
 }

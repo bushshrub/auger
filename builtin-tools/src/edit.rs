@@ -55,12 +55,12 @@ impl Tool for EditFile {
             0 => {
                 return Err(ToolError::Execution(format!(
                     "old_string not found in {path}"
-                )))
+                )));
             }
             n if n > 1 => {
                 return Err(ToolError::Execution(format!(
                     "old_string appears {n} times in {path}; it must be unique"
-                )))
+                )));
             }
             _ => {}
         }
@@ -68,6 +68,8 @@ impl Tool for EditFile {
         let new_content = content.replacen(old_string, new_string, 1);
         fs::write(path, &new_content).await?;
 
-        Ok(ToolCallResult::success(json!({ "success": true, "path": path }).to_string()))
+        Ok(ToolCallResult::success(
+            json!({ "success": true, "path": path }).to_string(),
+        ))
     }
 }

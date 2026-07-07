@@ -1,6 +1,8 @@
-use crate::{ClankerMessage, LlmRequest, Message, ToolCallRequest, ToolDefinition, ToolResult, UserPrompt};
-use std::marker::PhantomData;
+use crate::{
+    ClankerMessage, LlmRequest, Message, ToolCallRequest, ToolDefinition, ToolResult, UserPrompt,
+};
 use either::Either;
+use std::marker::PhantomData;
 use thiserror::Error;
 
 /// The user's turn to the model, which may include a prompt and/or tool calls.
@@ -9,13 +11,13 @@ pub struct UserTurn;
 /// which MUST be all responded to.
 pub struct ToolResultsPending {
     /// An optional steering prompt.
-    steering_prompt: Option<UserPrompt>
+    steering_prompt: Option<UserPrompt>,
 }
 
 impl ToolResultsPending {
     fn new() -> Self {
         ToolResultsPending {
-            steering_prompt: None
+            steering_prompt: None,
         }
     }
 }
@@ -89,9 +91,7 @@ impl LlmThread<UserTurn> {
     /// Start a new thread with the LLM, beginning with the system prompt
     pub fn new(system_prompt: String) -> Self {
         Self {
-            messages: vec![
-                Message::System(system_prompt),
-            ],
+            messages: vec![Message::System(system_prompt)],
             _state: UserTurn,
         }
     }
@@ -105,7 +105,6 @@ impl LlmThread<UserTurn> {
             _state: ClankerTurn,
         }
     }
-
 }
 
 impl LlmThread<ToolResultsPending> {
@@ -113,7 +112,10 @@ impl LlmThread<ToolResultsPending> {
     pub fn get_pending_tool_calls(&self) -> Vec<ToolCallRequest> {
         let mut tool_calls = Vec::new();
         // get last message
-        if let Some(Message::Assistant { tool_calls: calls, .. }) = self.messages.last() {
+        if let Some(Message::Assistant {
+            tool_calls: calls, ..
+        }) = self.messages.last()
+        {
             tool_calls.extend(calls.clone());
         } else {
             // shouldn't be possible I think...
@@ -133,17 +135,27 @@ impl LlmThread<ToolResultsPending> {
 
     /// Add tool results to the thread. An optional steering message can be added
     /// to the thread to guide the model's next response.
-    pub fn add_tool_results(self, tool_results: Vec<ToolResult>) -> Result<LlmThread<ClankerTurn>, AddToolResultError> {
+    pub fn add_tool_results(
+        self,
+        tool_results: Vec<ToolResult>,
+    ) -> Result<LlmThread<ClankerTurn>, AddToolResultError> {
         for tool_result in &tool_results {
             // check that the tool result matches a pending tool call
             let pending_tool_calls = self.get_pending_tool_calls();
-            if !pending_tool_calls.iter().any(|call| call.id == tool_result.id()) {
-                return Err(AddToolResultError::ToolNotRequested(tool_result.id().to_string()));
+            if !pending_tool_calls
+                .iter()
+                .any(|call| call.id == tool_result.id())
+            {
+                return Err(AddToolResultError::ToolNotRequested(
+                    tool_result.id().to_string(),
+                ));
             }
         }
         for tc in self.get_pending_tool_calls() {
             if !tool_results.iter().any(|tr| tr.id() == tc.id) {
-                return Err(AddToolResultError::RequestedToolNotProvided(tc.id.to_string()));
+                return Err(AddToolResultError::RequestedToolNotProvided(
+                    tc.id.to_string(),
+                ));
             }
         }
 
@@ -166,7 +178,7 @@ impl LlmThread<ToolResultsPending> {
     }
 }
 #[derive(Debug, Error)]
-pub enum AddToolResultError{
+pub enum AddToolResultError {
     /// Tool result passed in has an ID which was not requested.
     #[error("Tool result ID {0} was not requested")]
     ToolNotRequested(String),
@@ -181,7 +193,10 @@ impl LlmThread<ClankerTurn> {
     ///
     /// If the response contains tool calls, the thread will transition to the ToolResultsPending state.
     /// Otherwise, it will transition to the UserTurn state.
-    pub fn add_clanker_reply(self, clanker_response: ClankerMessage) -> Either<LlmThread<UserTurn>, LlmThread<ToolResultsPending>> {
+    pub fn add_clanker_reply(
+        self,
+        clanker_response: ClankerMessage,
+    ) -> Either<LlmThread<UserTurn>, LlmThread<ToolResultsPending>> {
         let mut messages = self.messages;
         let has_tool_calls = !&clanker_response.tool_calls.is_empty();
         messages.push(clanker_response.into());
@@ -203,4 +218,3 @@ impl LlmThread<ClankerTurn> {
         LlmRequest::new(self.messages.clone(), tools)
     }
 }
-

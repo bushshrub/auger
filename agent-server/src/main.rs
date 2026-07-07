@@ -1,26 +1,28 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use axum::Extension;
 use axum::extract::{Path, Request, State};
-use axum::{middleware, Json, Router};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response, Sse};
 use axum::routing::{get, post};
-use axum::Extension;
+use axum::{Json, Router, middleware};
 use futures::StreamExt;
-use tokio_stream::wrappers::BroadcastStream;
 use serde_json::json;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+use tokio_stream::wrappers::BroadcastStream;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use provider::LlmModel;
-use provider_openai_responses::OpenAiResponsesProvider;
+use crate::server_types::{
+    ApproveRequest, CreateSessionRequest, SessionEntry, SnapshotMessage, UserInputRequest,
+};
 use agent_core::{Session, SessionHandle, SystemPrompt};
+use provider::LlmModel;
 use provider_anthropic::AnthropicProvider;
 use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
-use crate::server_types::{ApproveRequest, CreateSessionRequest, SessionEntry, SnapshotMessage, UserInputRequest};
+use provider_openai_responses::OpenAiResponsesProvider;
 
 mod server_types;
 
@@ -48,7 +50,7 @@ struct AppState {
     // TODO: support multiple providers
     provider: Arc<OpenAiResponsesProvider>,
     sessions: Arc<RwLock<HashMap<Uuid, SessionEntry>>>,
-    default_model: String
+    default_model: String,
 }
 
 async fn write_auth(
@@ -58,7 +60,12 @@ async fn write_auth(
     next: Next,
 ) -> Response {
     let token = match request.headers().get("Authorization") {
-        Some(v) => v.to_str().unwrap_or_default().strip_prefix("Bearer ").unwrap_or_default().to_owned(),
+        Some(v) => v
+            .to_str()
+            .unwrap_or_default()
+            .strip_prefix("Bearer ")
+            .unwrap_or_default()
+            .to_owned(),
         None => return (StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response(),
     };
     let entry = match state.sessions.read().await.get(&id).cloned() {
@@ -79,7 +86,12 @@ async fn read_auth(
     next: Next,
 ) -> Response {
     let token = match request.headers().get("Authorization") {
-        Some(v) => v.to_str().unwrap_or_default().strip_prefix("Bearer ").unwrap_or_default().to_owned(),
+        Some(v) => v
+            .to_str()
+            .unwrap_or_default()
+            .strip_prefix("Bearer ")
+            .unwrap_or_default()
+            .to_owned(),
         None => return (StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response(),
     };
     let entry = match state.sessions.read().await.get(&id).cloned() {
@@ -114,9 +126,10 @@ async fn main() {
 
     let listener = TcpListener::bind(&addr).await.expect("bind failed");
     info!("agent-server listening on {addr}");
-    axum::serve(listener, router(state)).await.expect("server error");
+    axum::serve(listener, router(state))
+        .await
+        .expect("server error");
 }
-
 
 fn router(state: AppState) -> Router {
     let write_routes = Router::new()
@@ -139,16 +152,21 @@ fn router(state: AppState) -> Router {
 /// List all active sessions
 async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
     let sessions = state.sessions.read().await;
-    let list: Vec<_> = sessions.values().map(|e| json!({
-        "session_id": e.handle.id,
-        "model": e.handle.model,
-        "created_at": e.handle.created_at,
-        "context_window": DEFAULT_CONTEXT_WINDOW,
-        "tokens": {
-            "read": e.read_token.to_string(),
-            "write": e.write_token.to_string(),
-        }
-    })).collect();
+    let list: Vec<_> = sessions
+        .values()
+        .map(|e| {
+            json!({
+                "session_id": e.handle.id,
+                "model": e.handle.model,
+                "created_at": e.handle.created_at,
+                "context_window": DEFAULT_CONTEXT_WINDOW,
+                "tokens": {
+                    "read": e.read_token.to_string(),
+                    "write": e.write_token.to_string(),
+                }
+            })
+        })
+        .collect();
     Json(json!({ "sessions": list }))
 }
 
@@ -163,11 +181,20 @@ async fn create_session(
     let session_id = handle.id;
     let read_token = Uuid::new_v4();
     let write_token = Uuid::new_v4();
-    state.sessions.write().await.insert(session_id, SessionEntry { handle, read_token, write_token });
-    Json(json!({ "session_id": session_id, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
+    state.sessions.write().await.insert(
+        session_id,
+        SessionEntry {
+            handle,
+            read_token,
+            write_token,
+        },
+    );
+    Json(
+        json!({ "session_id": session_id, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
         "read": read_token,
         "write": write_token
-    } }))
+    } }),
+    )
 }
 
 /// Submit input to the clanker
@@ -193,15 +220,15 @@ async fn respond_to_tool_call(
     span.record("session_id", tracing::field::display(&session_handle.id));
     span.record("call_id", tracing::field::display(&req.tool_call_id));
     debug!("Tool call approved: {}", req.approved);
-    session_handle.respond_to_tool_call(req.tool_call_id, req.approved, req.message).expect("closed");
+    session_handle
+        .respond_to_tool_call(req.tool_call_id, req.approved, req.message)
+        .expect("closed");
     // TODO: garbage return type
     Json(json!({ "status": "ok" }))
 }
 
 /// Get a point-in-time snapshot of the session's conversation history.
-async fn snapshot(
-    Extension(session_handle): Extension<SessionHandle>,
-) -> impl IntoResponse {
+async fn snapshot(Extension(session_handle): Extension<SessionHandle>) -> impl IntoResponse {
     match tokio::task::spawn_blocking(move || session_handle.snapshot()).await {
         Ok(Ok(messages)) => {
             let snapshot: Vec<SnapshotMessage> = messages
@@ -217,13 +244,13 @@ async fn snapshot(
 
 /// Get a stream of events for a session, including LLM responses and user events.
 #[tracing::instrument(skip(session_handle))]
-async fn event_stream(
-    Extension(session_handle): Extension<SessionHandle>,
-) -> impl IntoResponse {
+async fn event_stream(Extension(session_handle): Extension<SessionHandle>) -> impl IntoResponse {
     let stream = BroadcastStream::new(session_handle.subscribe());
     Sse::new(stream.filter_map(|result| async move {
         let event = result.ok()?;
         let json = serde_json::to_string(&event).ok()?;
-        Some(Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(json)))
+        Some(Ok::<_, std::convert::Infallible>(
+            axum::response::sse::Event::default().data(json),
+        ))
     }))
 }

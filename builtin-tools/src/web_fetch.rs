@@ -80,12 +80,14 @@ impl Tool for WebFetch {
             .map_err(|e| ToolError::Execution(format!("failed to read body: {e}")))?;
 
         if body.len() <= MAX_INLINE {
-            return Ok(ToolCallResult::success(json!({
-                "status": status,
-                "content_type": content_type,
-                "body": body,
-            })
-            .to_string()));
+            return Ok(ToolCallResult::success(
+                json!({
+                    "status": status,
+                    "content_type": content_type,
+                    "body": body,
+                })
+                .to_string(),
+            ));
         }
 
         let nanos = std::time::SystemTime::now()
@@ -97,19 +99,21 @@ impl Tool for WebFetch {
             .await
             .map_err(|e| ToolError::Execution(format!("failed to write temp file: {e}")))?;
 
-        Ok(ToolCallResult::success(json!({
-            "status": status,
-            "content_type": content_type,
-            "body_size_bytes": body.len(),
-            "full_response_path": path.to_string_lossy(),
-            "note": format!(
-                "Response body ({} bytes) exceeds inline limit ({} bytes). \
-                Full content saved to: {}",
-                body.len(),
-                MAX_INLINE,
-                path.display()
-            ),
-        })
-        .to_string()))
+        Ok(ToolCallResult::success(
+            json!({
+                "status": status,
+                "content_type": content_type,
+                "body_size_bytes": body.len(),
+                "full_response_path": path.to_string_lossy(),
+                "note": format!(
+                    "Response body ({} bytes) exceeds inline limit ({} bytes). \
+                    Full content saved to: {}",
+                    body.len(),
+                    MAX_INLINE,
+                    path.display()
+                ),
+            })
+            .to_string(),
+        ))
     }
 }

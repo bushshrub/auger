@@ -31,4 +31,3 @@ impl LlmModel {
         self.provider.stream(&self.name, request).await
     }
 }
-

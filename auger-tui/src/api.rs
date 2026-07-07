@@ -4,7 +4,10 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::types::{AppEvent, RawSessionEvent, SseEvent, SessionInfo, SnapshotMessage, TuiEvent, transform_raw_event};
+use crate::types::{
+    AppEvent, RawSessionEvent, SessionInfo, SnapshotMessage, SseEvent, TuiEvent,
+    transform_raw_event,
+};
 
 fn parse_sse_data(frame: &str) -> Option<String> {
     let lines: Vec<&str> = frame.lines().collect();
@@ -12,7 +15,11 @@ fn parse_sse_data(frame: &str) -> Option<String> {
         .iter()
         .filter_map(|l| l.strip_prefix("data:").map(|s| s.trim()))
         .collect();
-    if data.is_empty() { None } else { Some(data.join("\n")) }
+    if data.is_empty() {
+        None
+    } else {
+        Some(data.join("\n"))
+    }
 }
 
 pub async fn list_sessions(server: &str) -> anyhow::Result<Vec<SessionInfo>> {
@@ -37,7 +44,14 @@ pub async fn list_sessions(server: &str) -> anyhow::Result<Vec<SessionInfo>> {
             // agent-server returns tokens.read / tokens.write (not owner_token/viewer_token)
             let write_token = s["tokens"]["write"].as_str().unwrap_or("").to_string();
             let read_token = s["tokens"]["read"].as_str().unwrap_or("").to_string();
-            Some(SessionInfo { session_id, model, created_at, context_window, write_token, read_token })
+            Some(SessionInfo {
+                session_id,
+                model,
+                created_at,
+                context_window,
+                write_token,
+                read_token,
+            })
         })
         .collect();
 
@@ -63,10 +77,20 @@ pub async fn create_session(server: &str, model: Option<&str>) -> anyhow::Result
     let read_token = resp["tokens"]["read"].as_str().unwrap_or("").to_string();
     let context_window = resp["context_window"].as_u64().unwrap_or(8192);
 
-    Ok(AppEvent::SessionCreated { session_id, write_token, read_token, context_window })
+    Ok(AppEvent::SessionCreated {
+        session_id,
+        write_token,
+        read_token,
+        context_window,
+    })
 }
 
-pub async fn send_input(server: &str, session_id: Uuid, write_token: &str, input: &str) -> anyhow::Result<()> {
+pub async fn send_input(
+    server: &str,
+    session_id: Uuid,
+    write_token: &str,
+    input: &str,
+) -> anyhow::Result<()> {
     let client = Client::new();
     client
         .post(format!("{server}/sessions/{session_id}/input"))
@@ -101,7 +125,11 @@ pub async fn respond_to_tool(
     Ok(())
 }
 
-pub async fn get_snapshot(server: &str, session_id: Uuid, token: &str) -> anyhow::Result<Vec<SnapshotMessage>> {
+pub async fn get_snapshot(
+    server: &str,
+    session_id: Uuid,
+    token: &str,
+) -> anyhow::Result<Vec<SnapshotMessage>> {
     let client = Client::new();
     let resp: serde_json::Value = client
         .get(format!("{server}/sessions/{session_id}/snapshot"))
@@ -147,7 +175,9 @@ pub fn spawn_event_stream(
         {
             Ok(r) => r,
             Err(e) => {
-                let _ = tx.send(TuiEvent::App(AppEvent::NetworkError(e.to_string()))).await;
+                let _ = tx
+                    .send(TuiEvent::App(AppEvent::NetworkError(e.to_string())))
+                    .await;
                 return;
             }
         };
@@ -181,7 +211,9 @@ pub fn spawn_event_stream(
                     }
                 }
                 Err(e) => {
-                    let _ = tx.send(TuiEvent::App(AppEvent::NetworkError(e.to_string()))).await;
+                    let _ = tx
+                        .send(TuiEvent::App(AppEvent::NetworkError(e.to_string())))
+                        .await;
                     return;
                 }
             }

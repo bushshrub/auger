@@ -23,7 +23,7 @@ pub struct ToolDetails {
 pub enum ToolCallResultKind {
     Success,
     DeniedByUser,
-    Error
+    Error,
 }
 
 /// Result of a tool call which can be sent back to the model.
@@ -35,15 +35,28 @@ pub struct ToolCallResult {
 
 impl ToolCallResult {
     pub fn success(result: String) -> Self {
-        Self { kind: ToolCallResultKind::Success, msg: result }
+        Self {
+            kind: ToolCallResultKind::Success,
+            msg: result,
+        }
     }
 
     pub fn denied_by_user(why: String) -> Self {
-        Self { kind: ToolCallResultKind::DeniedByUser, msg: why }
+        Self {
+            kind: ToolCallResultKind::DeniedByUser,
+            msg: why,
+        }
     }
 
     pub fn error(error: String) -> Self {
-        Self { kind: ToolCallResultKind::Error, msg: error }
+        Self {
+            kind: ToolCallResultKind::Error,
+            msg: error,
+        }
+    }
+
+    pub fn is_error(&self) -> bool {
+        matches!(self.kind, ToolCallResultKind::Error)
     }
 }
 

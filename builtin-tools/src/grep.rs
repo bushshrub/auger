@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use grep::regex::RegexMatcherBuilder;
-use grep::searcher::{SearcherBuilder, Sink, SinkContext, SinkMatch, Searcher};
+use grep::searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use serde_json::json;
 use std::path::Path;
 use walkdir::WalkDir;
@@ -180,7 +180,8 @@ impl Sink for CollectSink {
             .trim_end_matches(|c| c == '\n' || c == '\r')
             .to_string();
         let lineno = mat.line_number().unwrap_or(0);
-        self.lines.push(format!("{}:{}:{}", self.path, lineno, line));
+        self.lines
+            .push(format!("{}:{}:{}", self.path, lineno, line));
         self.match_count += 1;
         Ok(true)
     }
@@ -190,7 +191,8 @@ impl Sink for CollectSink {
             .trim_end_matches(|c| c == '\n' || c == '\r')
             .to_string();
         let lineno = ctx.line_number().unwrap_or(0);
-        self.lines.push(format!("{}-{}-{}", self.path, lineno, line));
+        self.lines
+            .push(format!("{}-{}-{}", self.path, lineno, line));
         Ok(true)
     }
 }

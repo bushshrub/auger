@@ -1,7 +1,7 @@
 //! Request and response types for the agent server API
+use agent_core::{SessionHandle, UserMessage};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use agent_core::{SessionHandle, UserMessage};
 
 /// A session entry holds the handle plus its access tokens, which are owned by the server.
 #[derive(Clone)]
@@ -19,7 +19,7 @@ pub(crate) struct CreateSessionRequest {
 /// A request to send a message in an existing session
 #[derive(Deserialize, Debug)]
 pub(crate) struct UserInputRequest {
-    pub(crate) input: String
+    pub(crate) input: String,
 }
 
 impl From<UserInputRequest> for UserMessage {
@@ -32,8 +32,8 @@ impl From<UserInputRequest> for UserMessage {
 #[derive(Deserialize, Debug)]
 pub(crate) struct ApproveRequest {
     pub(crate) tool_call_id: String,
-    pub(crate)  approved: bool,
-    pub(crate)  message: Option<String>,
+    pub(crate) approved: bool,
+    pub(crate) message: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -46,17 +46,31 @@ pub(crate) struct SnapshotToolCall {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum SnapshotMessage {
-    User { text: String },
-    Assistant { reasoning: Option<String>, content: String, tool_calls: Vec<SnapshotToolCall> },
-    Tool { tool_call_id: String, content: String },
+    User {
+        text: String,
+    },
+    Assistant {
+        reasoning: Option<String>,
+        content: String,
+        tool_calls: Vec<SnapshotToolCall>,
+    },
+    Tool {
+        tool_call_id: String,
+        content: String,
+    },
 }
 
 impl SnapshotMessage {
     pub(crate) fn from_provider(msg: provider::Message) -> Vec<Self> {
         match msg {
             provider::Message::System(_) => vec![],
-            provider::Message::User { message, tool_call_results } => {
-                let mut messages = vec![Self::User { text: message.message().to_string() }];
+            provider::Message::User {
+                message,
+                tool_call_results,
+            } => {
+                let mut messages = vec![Self::User {
+                    text: message.message().to_string(),
+                }];
                 for tool_call_result in tool_call_results {
                     messages.push(Self::Tool {
                         tool_call_id: tool_call_result.id().to_string(),
@@ -64,15 +78,22 @@ impl SnapshotMessage {
                     });
                 }
                 messages
-            },
-            provider::Message::Assistant { reasoning, content, tool_calls } => vec![Self::Assistant {
+            }
+            provider::Message::Assistant {
                 reasoning,
                 content,
-                tool_calls: tool_calls.into_iter().map(|tc| SnapshotToolCall {
-                    id: tc.id,
-                    name: tc.name,
-                    arguments: tc.arguments,
-                }).collect(),
+                tool_calls,
+            } => vec![Self::Assistant {
+                reasoning,
+                content,
+                tool_calls: tool_calls
+                    .into_iter()
+                    .map(|tc| SnapshotToolCall {
+                        id: tc.id,
+                        name: tc.name,
+                        arguments: tc.arguments,
+                    })
+                    .collect(),
             }],
         }
     }

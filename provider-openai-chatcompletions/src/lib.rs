@@ -1,10 +1,11 @@
-use async_openai::config::OpenAIConfig;
 use async_openai::Client;
+use async_openai::config::OpenAIConfig;
 use futures::StreamExt;
 use provider::{
-    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage, ToolCallRequest,
+    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage,
+    ToolCallRequest,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 mod catalog;
 
@@ -30,7 +31,10 @@ fn messages_to_json(messages: &[provider::Message]) -> Vec<Value> {
             provider::Message::System(content) => {
                 out.push(json!({"role": "system", "content": content}));
             }
-            provider::Message::User { message, tool_call_results } => {
+            provider::Message::User {
+                message,
+                tool_call_results,
+            } => {
                 let msg_text = message.message();
                 if tool_call_results.is_empty() {
                     out.push(json!({"role": "user", "content": msg_text}));
@@ -44,7 +48,11 @@ fn messages_to_json(messages: &[provider::Message]) -> Vec<Value> {
                     }
                 }
             }
-            provider::Message::Assistant { reasoning, content, tool_calls } => {
+            provider::Message::Assistant {
+                reasoning,
+                content,
+                tool_calls,
+            } => {
                 let mut msg = json!({"role": "assistant"});
                 if !content.is_empty() {
                     msg["content"] = json!(content);
@@ -53,14 +61,16 @@ fn messages_to_json(messages: &[provider::Message]) -> Vec<Value> {
                     msg["reasoning_content"] = json!(rc);
                 }
                 if !tool_calls.is_empty() {
-                    msg["tool_calls"] = json!(tool_calls
-                        .iter()
-                        .map(|tc| json!({
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {"name": tc.name, "arguments": tc.arguments}
-                        }))
-                        .collect::<Vec<_>>());
+                    msg["tool_calls"] = json!(
+                        tool_calls
+                            .iter()
+                            .map(|tc| json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {"name": tc.name, "arguments": tc.arguments}
+                            }))
+                            .collect::<Vec<_>>()
+                    );
                 }
                 out.push(msg);
             }
@@ -91,7 +101,9 @@ fn extract_usage(v: &Value) -> Option<TokenUsage> {
         prompt_tokens: u["prompt_tokens"].as_i64().map(|n| n as i32),
         completion_tokens: u["completion_tokens"].as_i64().map(|n| n as i32),
         total_tokens: u["total_tokens"].as_i64().map(|n| n as i32),
-        cached_tokens: u["prompt_tokens_details"]["cached_tokens"].as_i64().map(|n| n as i32),
+        cached_tokens: u["prompt_tokens_details"]["cached_tokens"]
+            .as_i64()
+            .map(|n| n as i32),
         cache_creation_tokens: None,
     })
 }
@@ -125,15 +137,22 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
             .chat()
             .create_byot(body)
             .await
-            .map_err(|e| LlmError { message: e.to_string() })?;
+            .map_err(|e| LlmError {
+                message: e.to_string(),
+            })?;
 
         let msg = &resp["choices"][0]["message"];
         let tool_calls = extract_tool_calls(&msg["tool_calls"]);
-        let finish_reason = resp["choices"][0]["finish_reason"].as_str().map(str::to_string);
+        let finish_reason = resp["choices"][0]["finish_reason"]
+            .as_str()
+            .map(str::to_string);
 
         Ok(LlmResponse {
             content: msg["content"].as_str().unwrap_or("").to_string(),
-            reasoning: msg["reasoning_content"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+            reasoning: msg["reasoning_content"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             tool_calls,
             usage: extract_usage(&resp),
             stop_reason: finish_reason,
@@ -154,7 +173,9 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
             .chat()
             .create_stream_byot::<Value, Value>(body)
             .await
-            .map_err(|e| LlmError { message: e.to_string() })?;
+            .map_err(|e| LlmError {
+                message: e.to_string(),
+            })?;
 
         struct TcAccum {
             id: String,

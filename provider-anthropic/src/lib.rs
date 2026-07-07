@@ -1,12 +1,12 @@
 use async_stream::stream;
 use futures::StreamExt;
+use provider::types::Message;
 use provider::{
     LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage,
     ToolCallRequest,
 };
 use reqwest::Client;
-use serde_json::{json, Value};
-use provider::types::Message;
+use serde_json::{Value, json};
 
 mod catalog;
 
@@ -24,7 +24,11 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
         let base = base_url.into();
-        let base = if base.is_empty() { DEFAULT_BASE_URL.to_string() } else { base };
+        let base = if base.is_empty() {
+            DEFAULT_BASE_URL.to_string()
+        } else {
+            base
+        };
         let base = base.trim_end_matches('/');
         Self {
             client: Client::new(),
@@ -44,7 +48,10 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
             Message::System(content) => {
                 system = Some(content.clone());
             }
-            Message::User { message, tool_call_results } => {
+            Message::User {
+                message,
+                tool_call_results,
+            } => {
                 let mut blocks: Vec<Value> = Vec::new();
                 let msg_text = message.message();
                 if !msg_text.is_empty() {
@@ -62,7 +69,11 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
                 }
                 out.push(json!({"role": "user", "content": blocks}));
             }
-            Message::Assistant { reasoning: _, content, tool_calls } => {
+            Message::Assistant {
+                reasoning: _,
+                content,
+                tool_calls,
+            } => {
                 let mut blocks: Vec<Value> = Vec::new();
                 if !content.is_empty() {
                     blocks.push(json!({"type": "text", "text": content}));
@@ -159,14 +170,11 @@ fn parse_response(data: &Value) -> LlmResponse {
                     }
                 }
                 Some("tool_use") => {
-                    if let (Some(id), Some(name)) =
-                        (block["id"].as_str(), block["name"].as_str())
-                    {
+                    if let (Some(id), Some(name)) = (block["id"].as_str(), block["name"].as_str()) {
                         tool_calls.push(ToolCallRequest {
                             id: id.to_string(),
                             name: name.to_string(),
-                            arguments: serde_json::to_string(&block["input"])
-                                .unwrap_or_default(),
+                            arguments: serde_json::to_string(&block["input"]).unwrap_or_default(),
                         });
                     }
                 }
@@ -177,8 +185,16 @@ fn parse_response(data: &Value) -> LlmResponse {
 
     LlmResponse {
         content: text,
-        reasoning: if reasoning.is_empty() { None } else { Some(reasoning) },
-        tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+        reasoning: if reasoning.is_empty() {
+            None
+        } else {
+            Some(reasoning)
+        },
+        tool_calls: if tool_calls.is_empty() {
+            None
+        } else {
+            Some(tool_calls)
+        },
         usage: parse_usage(&data["usage"]),
         stop_reason: data["stop_reason"].as_str().map(str::to_string),
     }
@@ -198,18 +214,21 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| LlmError { message: e.to_string() })?;
+            .map_err(|e| LlmError {
+                message: e.to_string(),
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError { message: format!("HTTP {}: {}", status, text) });
+            return Err(LlmError {
+                message: format!("HTTP {}: {}", status, text),
+            });
         }
 
-        let data: Value = resp
-            .json()
-            .await
-            .map_err(|e| LlmError { message: format!("parse error: {}", e) })?;
+        let data: Value = resp.json().await.map_err(|e| LlmError {
+            message: format!("parse error: {}", e),
+        })?;
 
         Ok(parse_response(&data))
     }
@@ -226,12 +245,16 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| LlmError { message: e.to_string() })?;
+            .map_err(|e| LlmError {
+                message: e.to_string(),
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError { message: format!("HTTP {}: {}", status, text) });
+            return Err(LlmError {
+                message: format!("HTTP {}: {}", status, text),
+            });
         }
 
         struct BlockState {

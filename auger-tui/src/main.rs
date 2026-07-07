@@ -39,11 +39,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn terminal event reader
     let term_tx = tx.clone();
-    tokio::task::spawn_blocking(move || loop {
-        if crossterm::event::poll(Duration::from_millis(50)).unwrap_or(false) {
-            if let Ok(ev) = crossterm::event::read() {
-                if term_tx.blocking_send(TuiEvent::Terminal(ev)).is_err() {
-                    break;
+    tokio::task::spawn_blocking(move || {
+        loop {
+            if crossterm::event::poll(Duration::from_millis(50)).unwrap_or(false) {
+                if let Ok(ev) = crossterm::event::read() {
+                    if term_tx.blocking_send(TuiEvent::Terminal(ev)).is_err() {
+                        break;
+                    }
                 }
             }
         }
@@ -55,10 +57,14 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         match api::list_sessions(&startup_server).await {
             Ok(sessions) => {
-                let _ = startup_tx.send(TuiEvent::App(AppEvent::SessionsLoaded(sessions))).await;
+                let _ = startup_tx
+                    .send(TuiEvent::App(AppEvent::SessionsLoaded(sessions)))
+                    .await;
             }
             Err(e) => {
-                let _ = startup_tx.send(TuiEvent::App(AppEvent::NetworkError(e.to_string()))).await;
+                let _ = startup_tx
+                    .send(TuiEvent::App(AppEvent::NetworkError(e.to_string())))
+                    .await;
             }
         }
     });
@@ -183,9 +189,13 @@ async fn handle_session_list_key(
             let s = server.to_string();
             tokio::spawn(async move {
                 match api::create_session(&s, None).await {
-                    Ok(ev) => { let _ = app_tx.send(TuiEvent::App(ev)).await; }
+                    Ok(ev) => {
+                        let _ = app_tx.send(TuiEvent::App(ev)).await;
+                    }
                     Err(e) => {
-                        let _ = app_tx.send(TuiEvent::App(AppEvent::NetworkError(e.to_string()))).await;
+                        let _ = app_tx
+                            .send(TuiEvent::App(AppEvent::NetworkError(e.to_string())))
+                            .await;
                     }
                 }
             });
@@ -215,10 +225,14 @@ async fn handle_chat_key(
             tokio::spawn(async move {
                 match api::list_sessions(&s).await {
                     Ok(sessions) => {
-                        let _ = app_tx.send(TuiEvent::App(AppEvent::SessionsLoaded(sessions))).await;
+                        let _ = app_tx
+                            .send(TuiEvent::App(AppEvent::SessionsLoaded(sessions)))
+                            .await;
                     }
                     Err(e) => {
-                        let _ = app_tx.send(TuiEvent::App(AppEvent::NetworkError(e.to_string()))).await;
+                        let _ = app_tx
+                            .send(TuiEvent::App(AppEvent::NetworkError(e.to_string())))
+                            .await;
                     }
                 }
             });
@@ -235,8 +249,12 @@ async fn handle_chat_key(
                 let s = server.to_string();
                 let app_tx = tx.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = api::respond_to_tool(&s, sid, &write_token, &tool_id, true, None).await {
-                        let _ = app_tx.send(TuiEvent::App(AppEvent::NetworkError(e.to_string()))).await;
+                    if let Err(e) =
+                        api::respond_to_tool(&s, sid, &write_token, &tool_id, true, None).await
+                    {
+                        let _ = app_tx
+                            .send(TuiEvent::App(AppEvent::NetworkError(e.to_string())))
+                            .await;
                     }
                 });
             }
@@ -246,8 +264,12 @@ async fn handle_chat_key(
                 let s = server.to_string();
                 let app_tx = tx.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = api::respond_to_tool(&s, sid, &write_token, &tool_id, false, None).await {
-                        let _ = app_tx.send(TuiEvent::App(AppEvent::NetworkError(e.to_string()))).await;
+                    if let Err(e) =
+                        api::respond_to_tool(&s, sid, &write_token, &tool_id, false, None).await
+                    {
+                        let _ = app_tx
+                            .send(TuiEvent::App(AppEvent::NetworkError(e.to_string())))
+                            .await;
                     }
                 });
             }
@@ -267,7 +289,9 @@ async fn handle_chat_key(
                     let app_tx = tx.clone();
                     tokio::spawn(async move {
                         if let Err(e) = api::send_input(&s, sid, &write_token, &text).await {
-                            let _ = app_tx.send(TuiEvent::App(AppEvent::NetworkError(e.to_string()))).await;
+                            let _ = app_tx
+                                .send(TuiEvent::App(AppEvent::NetworkError(e.to_string())))
+                                .await;
                         }
                     });
                 }
