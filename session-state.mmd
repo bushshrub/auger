@@ -1,0 +1,59 @@
+%%{init: {"state": {"nodeSpacing": 110, "rankSpacing": 110}}}%%
+
+%% Session automaton (agent-core/src/session/sess_automaton.rs).
+%% Each state maps to a `Parked` variant, except Generating and AgentTurn,
+%% which run inline in the pump and are never held by the driver.
+%% This is the long-running session view; harness-state.mmd is the
+%% per-turn lifecycle view.
+
+stateDiagram-v2
+    direction LR
+
+    state "WaitingForUserMessage" as Ready
+    state "Generating (LlmTurn)" as Gen
+    state "AgentTurn (transient)" as Agent
+    state "WaitingForToolApproval" as Approval
+    state "Interrupted" as Intr
+
+    Ready : thread is UserTurn
+    Ready : parked on the command channel
+
+    Gen : thread is ClankerTurn
+    Gen : streaming the model response
+    Gen : checkpoints between events answer Snapshot / accept Interrupt
+
+    Agent : thread is ToolResultsPending
+    Agent : entered only when EVERY requested call is auto-approvable
+    Agent : checkpoints between tool calls
+    Agent : SendMessage here becomes the steering prompt,
+    Agent : returned alongside the tool results
+
+    Approval : thread is ToolResultsPending + Resolving batch
+    Approval : auto-approved calls already resolved in the batch
+    Approval : SendMessage here becomes the steering prompt
+
+    Intr : thread is ToolResultsPending + Complete batch
+    Intr : pending calls resolved as "interrupted", results NOT yet submitted
+    Intr : next user message rides with the interrupted results
+
+    [*] --> Ready
+    Ready --> Gen : user - SendMessage
+
+    Gen --> Ready : no tool calls
+    Gen --> Agent : tool calls, all auto-approved
+    Gen --> Approval : tool calls, any gated
+    Gen --> Ready : interrupt, partial has no tool calls
+    Gen --> Intr : interrupt, partial has tool calls
+
+    Agent --> Agent : user - SendMessage (steering)
+    Agent --> Gen : all tools executed, results submitted
+    Agent --> Intr : interrupt
+
+    Approval --> Approval : approve/deny one call (executes inline)
+    Approval --> Approval : user - SendMessage (steering)
+    Approval --> Gen : last call resolved, results + steering submitted
+    Approval --> Intr : interrupt
+
+    Intr --> Gen : user - SendMessage
+
+    Ready --> [*] : close
