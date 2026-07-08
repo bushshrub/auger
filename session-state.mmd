@@ -1,61 +1,24 @@
-%%{init: {"state": {"nodeSpacing": 110, "rankSpacing": 110}}}%%
-
-%% Session automaton (agent-core/src/session/sess_automaton.rs).
-%% Each state maps to the private `State` enum and is driven directly by
-%% `Session::run`.
-%% This is the long-running session view; harness-state.mmd is the
-%% per-turn lifecycle view.
-
 stateDiagram-v2
-    direction LR
+  [*] --> SessionWaitingForUser
 
-    state "WaitingForUserMessage" as Ready
-    state "StreamingLlm" as Gen
-    state "AgentTurn" as Agent
-    state "WaitingForToolApproval" as Approval
-    state "Interrupted" as Intr
+  SessionWaitingForUser --> CoreStreaming: send SubmitInput to minimal loop
 
-    Ready : thread is UserTurn
-    Ready : parked on the command channel
+  CoreStreaming --> SessionWaitingForUser: minimal loop emits FinalAssistantResponse
+  CoreStreaming --> CoreStreamingFailed: host observes model stream error
+  CoreStreaming --> RunningAutoApprovedTools: minimal loop emits ModelToolCallBatchReady + all calls auto-approved
+  CoreStreaming --> PendingUserAction: minimal loop emits ModelToolCallBatchReady + at least one call requires user intervention
+  CoreStreaming --> SessionWaitingForUser: minimal loop handles LLM-turn Interrupt
 
-    Gen : thread is ClankerTurn
-    Gen : streaming the model response
-    Gen : checkpoints between events answer Snapshot / accept Interrupt
+  CoreStreamingFailed --> CoreStreaming: user retries response
+  CoreStreamingFailed --> CoreStreaming: user chats, send SubmitInput to minimal loop
 
-    Agent : thread is ToolResultsPending
-    Agent : runs auto-approved calls
-    Agent : parks if gated calls remain
-    Agent : checkpoints between tool calls
-    Agent : SendMessage here becomes the steering prompt,
-    Agent : returned alongside the tool results
+  RunningAutoApprovedTools --> CoreStreaming: auto-approved calls done, send SubmitHostFeedback to minimal loop
+  RunningAutoApprovedTools --> SessionWaitingForUser: minimal loop handles tool-call-state Interrupt
 
-    Approval : thread is ToolResultsPending + Resolving batch
-    Approval : auto-approved calls already resolved in the batch
-    Approval : SendMessage here becomes the steering prompt
+  PendingUserAction --> PendingUserAction: user approves/denies/cancels one tool call
+  PendingUserAction --> RunningUserApprovedTools: all calls resolved + approved calls exist
+  PendingUserAction --> CoreStreaming: all calls resolved + no approved calls, send SubmitHostFeedback to minimal loop
+  PendingUserAction --> SessionWaitingForUser: minimal loop handles tool-call-state Interrupt
 
-    Intr : thread is ToolResultsPending + Complete batch
-    Intr : pending calls resolved as "interrupted", results NOT yet submitted
-    Intr : next user message rides with the interrupted results
-
-    [*] --> Ready
-    Ready --> Gen : user - SendMessage
-
-    Gen --> Ready : no tool calls
-    Gen --> Agent : tool calls, all auto-approved
-    Gen --> Approval : tool calls, any gated
-    Gen --> Ready : interrupt, partial has no tool calls
-    Gen --> Intr : interrupt, partial has tool calls
-
-    Agent --> Agent : user - SendMessage (steering)
-    Agent --> Approval : gated calls remain
-    Agent --> Gen : all tools executed, results submitted
-    Agent --> Intr : interrupt
-
-    Approval --> Approval : approve/deny one call (executes inline)
-    Approval --> Approval : user - SendMessage (steering)
-    Approval --> Gen : last call resolved, results + steering submitted
-    Approval --> Intr : interrupt
-
-    Intr --> Gen : user - SendMessage
-
-    Ready --> [*] : close
+  RunningUserApprovedTools --> CoreStreaming: approved calls done, send SubmitHostFeedback to minimal loop
+  RunningUserApprovedTools --> SessionWaitingForUser: minimal loop handles tool-call-state Interrupt
