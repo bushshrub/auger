@@ -19,7 +19,7 @@
 //!     Handle::current(),
 //! );
 //!
-//! let _ = handle.events().send(SessionCommand::AddUserMessage(
+//! let _ = handle.commands().send(SessionCommand::SubmitInput(
 //!     UserPrompt::new("Inspect the repository.".to_string()),
 //! ));
 //! ```
@@ -27,4 +27,4 @@
 mod runtime;
 pub(crate) mod session_state;
 
-pub use runtime::{Session, SessionCommand, SessionHandle};
+pub use runtime::{Session, SessionCommand, SessionEvent, SessionHandle};
