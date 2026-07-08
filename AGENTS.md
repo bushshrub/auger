@@ -25,4 +25,7 @@ Currently, there are 3 provides:
   - Target Rust modules under 500 LoC, excluding tests.
   - If a file exceeds roughly 800 LoC, add new functionality in a new module instead of extending the existing file unless there is a strong documented reason not to.
 - Add crates by using `cargo add`. Do not edit the file manually.
-- Keep crate API surface small. Do not break through abstraction boundaries. 
+- Keep crate API surface small. Do not break through abstraction boundaries.
+- Avoid emdash `—`, unicode arrow `→` or any unicode characters: `×`, `…` ; use ASCII equivalents instead: `-`, `->`, `x`, `...`
+- Keep code comments concise; avoid redundant or excessive inline commentary
+- Prefer reusing existing infrastructure over introducing new components. Avoid invasive changes that add whole new subsystems or risk breaking existing behaviour
