@@ -20,6 +20,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-loop"
+version = "0.1.0"
+dependencies = [
+ "either",
+ "provider",
+ "uuid",
+]
+
+[[package]]
 name = "agent-server"
 version = "0.1.0"
 dependencies = [

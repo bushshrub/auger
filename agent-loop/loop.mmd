@@ -1,0 +1,18 @@
+stateDiagram-v2
+    [*] --> Idle
+
+    Idle --> LlmTurnRunning: SubmitInput
+
+    LlmTurnRunning --> AwaitingHostFeedback: ModelToolCallBatchReady
+    LlmTurnRunning --> Idle: FinalAssistantResponse
+    LlmTurnRunning --> InterruptingLlmTurn: Interrupt
+
+    AwaitingHostFeedback --> LlmTurnRunning: SubmitHostFeedback
+    AwaitingHostFeedback --> InterruptingHostFeedbackWait: Interrupt
+
+    InterruptingLlmTurn --> Idle: Interrupted
+    InterruptingHostFeedbackWait --> Idle: Interrupted
+
+    Idle --> Shutdown: Shutdown
+    LlmTurnRunning --> Shutdown: Shutdown
+    AwaitingHostFeedback --> Shutdown: Shutdown

@@ -1,8 +1,8 @@
 %%{init: {"state": {"nodeSpacing": 110, "rankSpacing": 110}}}%%
 
 %% Session automaton (agent-core/src/session/sess_automaton.rs).
-%% Each state maps to a `Parked` variant, except Generating and AgentTurn,
-%% which run inline in the pump and are never held by the driver.
+%% Each state maps to the private `State` enum and is driven directly by
+%% `Session::run`.
 %% This is the long-running session view; harness-state.mmd is the
 %% per-turn lifecycle view.
 
@@ -10,8 +10,8 @@ stateDiagram-v2
     direction LR
 
     state "WaitingForUserMessage" as Ready
-    state "Generating (LlmTurn)" as Gen
-    state "AgentTurn (transient)" as Agent
+    state "StreamingLlm" as Gen
+    state "AgentTurn" as Agent
     state "WaitingForToolApproval" as Approval
     state "Interrupted" as Intr
 
@@ -23,7 +23,8 @@ stateDiagram-v2
     Gen : checkpoints between events answer Snapshot / accept Interrupt
 
     Agent : thread is ToolResultsPending
-    Agent : entered only when EVERY requested call is auto-approvable
+    Agent : runs auto-approved calls
+    Agent : parks if gated calls remain
     Agent : checkpoints between tool calls
     Agent : SendMessage here becomes the steering prompt,
     Agent : returned alongside the tool results
@@ -46,6 +47,7 @@ stateDiagram-v2
     Gen --> Intr : interrupt, partial has tool calls
 
     Agent --> Agent : user - SendMessage (steering)
+    Agent --> Approval : gated calls remain
     Agent --> Gen : all tools executed, results submitted
     Agent --> Intr : interrupt
 

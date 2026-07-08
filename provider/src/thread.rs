@@ -12,12 +12,15 @@ pub struct UserTurn;
 pub struct ToolResultsPending {
     /// An optional steering prompt.
     steering_prompt: Option<UserPrompt>,
+    /// Tool results that have been provided so far.
+    tool_results: Vec<ToolResult>,
 }
 
 impl ToolResultsPending {
     fn new() -> Self {
         ToolResultsPending {
             steering_prompt: None,
+            tool_results: Vec::new(),
         }
     }
 }
@@ -129,34 +132,42 @@ impl LlmThread<ToolResultsPending> {
             messages: self.messages,
             _state: ToolResultsPending {
                 steering_prompt: Some(prompt),
+                tool_results: self._state.tool_results,
             },
         }
     }
 
-    /// Add tool results to the thread. An optional steering message can be added
+    /// Add a tool result to the thread. An optional steering message can be added
     /// to the thread to guide the model's next response.
-    pub fn add_tool_results(
+    pub fn add_tool_result(
         self,
-        tool_results: Vec<ToolResult>,
-    ) -> Result<LlmThread<ClankerTurn>, AddToolResultError> {
-        for tool_result in &tool_results {
-            // check that the tool result matches a pending tool call
-            let pending_tool_calls = self.get_pending_tool_calls();
-            if !pending_tool_calls
-                .iter()
-                .any(|call| call.id == tool_result.id())
-            {
-                return Err(AddToolResultError::ToolNotRequested(
-                    tool_result.id().to_string(),
-                ));
-            }
+        tool_result: ToolResult,
+    ) -> Result<Either<Self, LlmThread<ClankerTurn>>, AddToolResultError> {
+        let pending_tool_calls = self.get_pending_tool_calls();
+        if !pending_tool_calls
+            .iter()
+            .any(|call| call.id == tool_result.id())
+        {
+            return Err(AddToolResultError::ToolNotRequested(
+                tool_result.id().to_string(),
+            ));
         }
-        for tc in self.get_pending_tool_calls() {
-            if !tool_results.iter().any(|tr| tr.id() == tc.id) {
-                return Err(AddToolResultError::RequestedToolNotProvided(
-                    tc.id.to_string(),
-                ));
-            }
+
+        let mut tool_results = self._state.tool_results;
+        tool_results.push(tool_result);
+
+        let all_results_provided = pending_tool_calls
+            .iter()
+            .all(|call| tool_results.iter().any(|result| result.id() == call.id));
+
+        if !all_results_provided {
+            return Ok(Either::Left(LlmThread {
+                messages: self.messages,
+                _state: ToolResultsPending {
+                    steering_prompt: self._state.steering_prompt,
+                    tool_results,
+                },
+            }));
         }
 
         let mut messages = self.messages;
@@ -171,10 +182,10 @@ impl LlmThread<ToolResultsPending> {
             tool_call_results: tool_results,
         };
         messages.push(msg);
-        Ok(LlmThread {
+        Ok(Either::Right(LlmThread {
             messages,
             _state: ClankerTurn,
-        })
+        }))
     }
 }
 #[derive(Debug, Error)]
@@ -182,12 +193,17 @@ pub enum AddToolResultError {
     /// Tool result passed in has an ID which was not requested.
     #[error("Tool result ID {0} was not requested")]
     ToolNotRequested(String),
-    /// Tool result is lacking a call which was requested
-    #[error("Requested tool {0} was not provided in the result")]
-    RequestedToolNotProvided(String),
 }
 
 impl LlmThread<ClankerTurn> {
+    /// Abandon the model's turn without adding an assistant response.
+    pub fn abandon_clanker_turn(self) -> LlmThread<UserTurn> {
+        LlmThread {
+            messages: self.messages,
+            _state: UserTurn,
+        }
+    }
+
     /// Add a response from the LLM to the user. The harness
     /// will invoke this method when it receives a response from the LLM.
     ///
