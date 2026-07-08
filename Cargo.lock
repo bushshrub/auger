@@ -26,6 +26,7 @@ dependencies = [
  "either",
  "futures",
  "provider",
+ "provider-dummy",
  "tokio",
  "tracing",
  "uuid",
@@ -2277,6 +2278,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "provider-dummy"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "provider",
 ]
 
 [[package]]
