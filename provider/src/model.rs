@@ -1,4 +1,5 @@
 use crate::{LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream};
+use std::fmt;
 use std::sync::Arc;
 
 /// A model selected from an [`LlmProvider`]
@@ -6,6 +7,14 @@ use std::sync::Arc;
 pub struct LlmModel {
     provider: Arc<dyn LlmProvider>,
     name: String,
+}
+
+impl fmt::Debug for LlmModel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LlmModel")
+            .field("name", &self.name)
+            .finish()
+    }
 }
 
 impl LlmModel {

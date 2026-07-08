@@ -24,7 +24,10 @@ name = "agent-loop"
 version = "0.1.0"
 dependencies = [
  "either",
+ "futures",
  "provider",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 

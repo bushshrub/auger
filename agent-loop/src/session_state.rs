@@ -1,9 +1,13 @@
 //! The various states that the session can be in
 
 use either::Either;
-use uuid::Uuid;
-use provider::{ClankerMessage, LlmRequest, LlmThread, ToolDefinition, ToolResult, UserPrompt};
 use provider::thread::{AddToolResultError, ClankerTurn, ToolResultsPending, UserTurn};
+use provider::{
+    ClankerMessage, LlmRequest, LlmResponse, LlmThread, StreamEvent, ToolDefinition, ToolResult,
+    UserPrompt,
+};
+use std::fmt;
+use uuid::Uuid;
 
 pub trait State: private::Sealed {}
 
@@ -16,18 +20,55 @@ mod private {
     impl Sealed for LlmTurnRunning {}
 
     impl Sealed for AwaitingHostFeedback {}
+    impl Sealed for AwaitingInterruptedUserMessage {}
 }
 
-struct SessionState<S: State> {
+pub(crate) struct SessionState<S: State> {
     /// The session ID.
     id: Uuid,
     /// The actual state data
     state: S,
 }
 
+impl fmt::Debug for SessionState<Idle> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionState<Idle>")
+            .field("id", &self.id)
+            .field("thread", &self.state.thread)
+            .finish()
+    }
+}
 
-struct Idle {
-    thread: LlmThread<UserTurn>
+impl fmt::Debug for SessionState<LlmTurnRunning> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionState<LlmTurnRunning>")
+            .field("id", &self.id)
+            .field("thread", &self.state.thread)
+            .finish()
+    }
+}
+
+impl fmt::Debug for SessionState<AwaitingHostFeedback> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionState<AwaitingHostFeedback>")
+            .field("id", &self.id)
+            .field("thread", &self.state.thread)
+            .finish()
+    }
+}
+
+impl fmt::Debug for SessionState<AwaitingInterruptedUserMessage> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionState<AwaitingInterruptedUserMessage>")
+            .field("id", &self.id)
+            .field("thread", &self.state.thread)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Idle {
+    thread: LlmThread<UserTurn>,
 }
 impl State for Idle {}
 
@@ -54,8 +95,8 @@ impl SessionState<Idle> {
     }
 }
 
-struct LlmTurnRunning {
-    thread: LlmThread<ClankerTurn>
+pub(crate) struct LlmTurnRunning {
+    thread: LlmThread<ClankerTurn>,
 }
 impl State for LlmTurnRunning {}
 
@@ -90,14 +131,21 @@ impl SessionState<LlmTurnRunning> {
         }
     }
 
-    /// Abandon this model turn without committing an assistant message.
-    pub fn abandon_llm_turn(self) -> SessionState<Idle> {
-        SessionState {
-            id: self.id,
-            state: Idle {
-                thread: self.state.thread.abandon_clanker_turn(),
-            },
+    /// Abandon this model turn, committing a partial assistant message if one exists.
+    pub fn abandon_llm_turn(
+        self,
+        partial_response: Vec<StreamEvent>,
+    ) -> Either<SessionState<Idle>, SessionState<AwaitingHostFeedback>> {
+        if partial_response.is_empty() {
+            return Either::Left(SessionState {
+                id: self.id,
+                state: Idle {
+                    thread: self.state.thread.abandon_clanker_turn(),
+                },
+            });
         }
+
+        self.add_llm_response(ClankerMessage::from(LlmResponse::from(partial_response)))
     }
 }
 
@@ -106,7 +154,7 @@ impl SessionState<LlmTurnRunning> {
 ///
 /// The host is expected to execute the tool calls,
 /// and then provide the results for the tool calls.
-struct AwaitingHostFeedback {
+pub(crate) struct AwaitingHostFeedback {
     thread: LlmThread<ToolResultsPending>,
 }
 
@@ -122,7 +170,7 @@ impl SessionState<AwaitingHostFeedback> {
         }
     }
 
-    /// Add a tool result. Self-transitions if there are still
+    /// Add a single tool result. Self-transitions if there are still
     /// more tool results to deal with, otherwise moves into a state which
     /// indicates it is time for the LLM to respond.
     /// Errors if the tool result passed in wasn't requested.
@@ -139,6 +187,61 @@ impl SessionState<AwaitingHostFeedback> {
                 id: self.id,
                 state: LlmTurnRunning { thread },
             })),
+        }
+    }
+
+    /// Validate that all tool results correspond to pending tool calls.
+    pub fn validate_tool_results(&self, results: &[ToolResult]) -> Result<(), AddToolResultError> {
+        for result in results {
+            self.state.thread.validate_tool_result(result)?;
+        }
+
+        Ok(())
+    }
+
+    /// Adds multiple tool results.
+    pub fn add_tool_results(
+        self,
+        results: Vec<ToolResult>,
+    ) -> Result<Either<Self, SessionState<LlmTurnRunning>>, AddToolResultError> {
+        let mut state = self;
+        for result in results {
+            state = match state.add_tool_result(result) {
+                Ok(Either::Left(s)) => s,
+                // todo: this disposes invalid tool results at the end, is that okay?
+                Ok(Either::Right(s)) => return Ok(Either::Right(s)),
+                Err(e) => return Err(e),
+            };
+        }
+        Ok(Either::Left(state))
+    }
+
+    /// Abort every pending tool call and wait for the next user message.
+    pub fn interrupt_pending_tool_calls(self) -> SessionState<AwaitingInterruptedUserMessage> {
+        SessionState {
+            id: self.id,
+            state: AwaitingInterruptedUserMessage {
+                thread: self.state.thread,
+            },
+        }
+    }
+}
+
+/// The state after the session has interrupted tool call handling
+/// and is waiting for the next user message to ride back with aborted tool results.
+pub(crate) struct AwaitingInterruptedUserMessage {
+    thread: LlmThread<ToolResultsPending>,
+}
+
+impl State for AwaitingInterruptedUserMessage {}
+
+impl SessionState<AwaitingInterruptedUserMessage> {
+    pub fn add_user_message(self, prompt: UserPrompt) -> SessionState<LlmTurnRunning> {
+        SessionState {
+            id: self.id,
+            state: LlmTurnRunning {
+                thread: self.state.thread.abort_pending_tool_calls(prompt),
+            },
         }
     }
 }

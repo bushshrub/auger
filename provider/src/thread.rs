@@ -2,7 +2,7 @@ use crate::{
     ClankerMessage, LlmRequest, Message, ToolCallRequest, ToolDefinition, ToolResult, UserPrompt,
 };
 use either::Either;
-use std::marker::PhantomData;
+use std::fmt;
 use thiserror::Error;
 
 /// The user's turn to the model, which may include a prompt and/or tool calls.
@@ -51,6 +51,32 @@ pub struct LlmThread<S: LlmThreadState> {
     _state: S,
 }
 
+impl fmt::Debug for LlmThread<UserTurn> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LlmThread<UserTurn>")
+            .field("messages", &self.messages)
+            .finish()
+    }
+}
+
+impl fmt::Debug for LlmThread<ToolResultsPending> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LlmThread<ToolResultsPending>")
+            .field("messages", &self.messages)
+            .field("steering_prompt", &self._state.steering_prompt)
+            .field("tool_results", &self._state.tool_results)
+            .finish()
+    }
+}
+
+impl fmt::Debug for LlmThread<ClankerTurn> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LlmThread<ClankerTurn>")
+            .field("messages", &self.messages)
+            .finish()
+    }
+}
+
 /// Any conversation thread with the LLM, regardless of state
 pub enum AnyThread {
     /// User's turn to send a message to the model
@@ -59,6 +85,16 @@ pub enum AnyThread {
     ToolsPending(LlmThread<ToolResultsPending>),
     /// Model's turn to respond to the user
     Clanker(LlmThread<ClankerTurn>),
+}
+
+impl fmt::Debug for AnyThread {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AnyThread::User(thread) => f.debug_tuple("User").field(thread).finish(),
+            AnyThread::ToolsPending(thread) => f.debug_tuple("ToolsPending").field(thread).finish(),
+            AnyThread::Clanker(thread) => f.debug_tuple("Clanker").field(thread).finish(),
+        }
+    }
 }
 
 impl From<LlmThread<UserTurn>> for AnyThread {
@@ -137,21 +173,49 @@ impl LlmThread<ToolResultsPending> {
         }
     }
 
+    /// Mark all tool calls requested by the model as aborted and return to the model's turn.
+    pub fn abort_pending_tool_calls(self, prompt: UserPrompt) -> LlmThread<ClankerTurn> {
+        let tool_results = self
+            .get_pending_tool_calls()
+            .into_iter()
+            .map(|call| ToolResult::new(call.id, "aborted".to_string()))
+            .collect();
+
+        let mut messages = self.messages;
+        messages.push(Message::User {
+            message: prompt,
+            tool_call_results: tool_results,
+        });
+
+        LlmThread {
+            messages,
+            _state: ClankerTurn,
+        }
+    }
+
     /// Add a tool result to the thread. An optional steering message can be added
     /// to the thread to guide the model's next response.
+    pub fn validate_tool_result(&self, tool_result: &ToolResult) -> Result<(), AddToolResultError> {
+        let pending_tool_calls = self.get_pending_tool_calls();
+        if pending_tool_calls
+            .iter()
+            .any(|call| call.id == tool_result.id())
+        {
+            Ok(())
+        } else {
+            Err(AddToolResultError::ToolNotRequested(
+                tool_result.id().to_string(),
+            ))
+        }
+    }
+
     pub fn add_tool_result(
         self,
         tool_result: ToolResult,
     ) -> Result<Either<Self, LlmThread<ClankerTurn>>, AddToolResultError> {
+        self.validate_tool_result(&tool_result)?;
+
         let pending_tool_calls = self.get_pending_tool_calls();
-        if !pending_tool_calls
-            .iter()
-            .any(|call| call.id == tool_result.id())
-        {
-            return Err(AddToolResultError::ToolNotRequested(
-                tool_result.id().to_string(),
-            ));
-        }
 
         let mut tool_results = self._state.tool_results;
         tool_results.push(tool_result);
@@ -177,11 +241,11 @@ impl LlmThread<ToolResultsPending> {
             UserPrompt::new(String::new())
         };
 
-        let msg = Message::User {
+        messages.push(Message::User {
             message: steering_message,
             tool_call_results: tool_results,
-        };
-        messages.push(msg);
+        });
+
         Ok(Either::Right(LlmThread {
             messages,
             _state: ClankerTurn,
@@ -230,6 +294,7 @@ impl LlmThread<ClankerTurn> {
     }
 
     /// Create an LLM request from the thread. This is used to send the thread to the LLM for processing.
+    // TODO: if tools are passed in mid thread, this will break prompt caching.
     pub fn create_request(&self, tools: Vec<ToolDefinition>) -> LlmRequest {
         LlmRequest::new(self.messages.clone(), tools)
     }
