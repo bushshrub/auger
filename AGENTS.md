@@ -16,7 +16,7 @@ Currently, there are 3 provides:
 - `provider-anthropic` - Supports the Anthropic API.
 
 ## Code conventions
-- Do NOT change code in agent-core. Instead, suggest to the user what changes should be made.
+- Avoid large sweeping changes. Prefer small, targeted changes.
 - This project prefers clean abstraction boundaries and small modules.
   - Abstractions and interfaces should be well-thought-out
   - Accompanying APIs should be easy to use and documented well.
