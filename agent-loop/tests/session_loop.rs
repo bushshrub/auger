@@ -169,7 +169,10 @@ fn session_loop_waits_until_all_tool_results_are_provided() {
     assert!(events.iter().any(|event| {
         matches!(
             event,
-            SessionEvent::ModelTurnDone(ModelTurnOutcome::NeedsToolResults)
+            SessionEvent::ModelTurnDone(ModelTurnOutcome::NeedsToolResults { tool_calls })
+                if tool_calls.len() == 2
+                    && tool_calls[0].id == "call_1"
+                    && tool_calls[1].id == "call_2"
         )
     }));
 

@@ -177,6 +177,10 @@ impl SessionState<AwaitingHostFeedback> {
         }
     }
 
+    pub fn requested_tool_calls(&self) -> Vec<provider::ToolCallRequest> {
+        self.state.tool_call_batch.requested()
+    }
+
     /// Adds multiple tool results.
     pub fn add_tool_results(
         self,

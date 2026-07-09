@@ -52,6 +52,10 @@ impl ToolCallBatch<Resolving> {
         }
     }
 
+    pub(crate) fn requested(&self) -> Vec<ToolCallRequest> {
+        self.requested.clone()
+    }
+
     /// Attempt to resolve a single tool call.
     /// If successful and no more tool calls remain, will move into the `Complete`
     /// state. If tool calls remain, stays in the `Resolving` state.

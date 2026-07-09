@@ -1,4 +1,4 @@
-use provider::TokenUsage;
+use provider::{TokenUsage, ToolCallRequest};
 
 /// Events that can be emitted by the minimal loop during
 /// a session.
@@ -29,13 +29,19 @@ pub enum LlmDelta {
     },
 }
 
+/// Event data emitted when model has finished streaming
 #[derive(Debug, Clone)]
 pub enum ModelTurnOutcome {
+    /// The model has finished its message
     AssistantMessageComplete {
         usage: Option<Usage>,
         stop_reason: Option<String>,
     },
-    NeedsToolResults,
+    /// The model has finished the message and wants tool calls
+    NeedsToolResults {
+        // TODO: technically we can expose usage here as well? idk.
+        tool_calls: Vec<ToolCallRequest>,
+    },
 }
 
 /// Token accounting returned by the provider when it is available.

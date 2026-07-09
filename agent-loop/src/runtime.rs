@@ -296,9 +296,11 @@ impl Session {
                     Either::Right(state) => state.into(),
                 };
                 match &next_state {
-                    SessionStateEnum::AwaitingHostFeedback(_) => {
+                    SessionStateEnum::AwaitingHostFeedback(state) => {
                         let _ = self.event_tx.send(SessionEvent::ModelTurnDone(
-                            ModelTurnOutcome::NeedsToolResults,
+                            ModelTurnOutcome::NeedsToolResults {
+                                tool_calls: state.requested_tool_calls(),
+                            },
                         ));
                         let _ = self.event_tx.send(SessionEvent::StateChanged(
                             SessionStatus::AwaitingHostFeedback,
