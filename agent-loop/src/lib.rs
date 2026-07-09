@@ -32,4 +32,4 @@ pub(crate) mod session_state;
 pub(crate) mod tool_call_batch;
 
 pub use events::{LlmDelta, ModelTurnOutcome, SessionError, SessionEvent, SessionStatus, Usage};
-pub use runtime::{Session, SessionCommand, SessionHandle};
+pub use runtime::{Session, SessionCommand, SessionHandle, SessionSnapshot};

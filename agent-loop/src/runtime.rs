@@ -4,7 +4,7 @@ use crate::session_state::{
 };
 use either::Either;
 use futures::StreamExt;
-use provider::{LlmModel, StreamEvent, ToolDefinition, ToolResult, UserPrompt};
+use provider::{LlmModel, Message, StreamEvent, ToolDefinition, ToolResult, UserPrompt};
 use std::sync::mpsc;
 use std::time::SystemTime;
 use std::{fmt, thread};
@@ -72,7 +72,32 @@ pub struct SessionSnapshot {
     snapshot_id: Uuid,
     /// The time this snapshot was taken.
     snapshot_time: SystemTime,
-    // TODO: the other data in the snapshot...
+    /// The current coarse session status.
+    status: SessionStatus,
+    /// The provider conversation state owned by the loop.
+    messages: Vec<Message>,
+}
+
+impl SessionSnapshot {
+    pub fn session_id(&self) -> SessionId {
+        self.session_id
+    }
+
+    pub fn snapshot_id(&self) -> Uuid {
+        self.snapshot_id
+    }
+
+    pub fn snapshot_time(&self) -> SystemTime {
+        self.snapshot_time
+    }
+
+    pub fn status(&self) -> SessionStatus {
+        self.status
+    }
+
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
 }
 
 /// A command that can be sent to the session
@@ -327,6 +352,8 @@ impl Session {
             session_id: self.id,
             snapshot_id: Uuid::new_v4(),
             snapshot_time: SystemTime::now(),
+            status: self.state.status(),
+            messages: self.state.messages(),
         }
     }
 }
@@ -343,6 +370,30 @@ pub(crate) enum SessionStateEnum {
     AwaitingInterruptedUserMessage(SessionState<AwaitingInterruptedUserMessage>),
     /// This is a bad state. This happens if the event or interrupt handling fails.
     Poisoned,
+}
+
+impl SessionStateEnum {
+    fn status(&self) -> SessionStatus {
+        match self {
+            SessionStateEnum::Idle(_) => SessionStatus::Idle,
+            SessionStateEnum::LlmTurnRunning { .. } => SessionStatus::LlmTurnRunning,
+            SessionStateEnum::AwaitingHostFeedback(_) => SessionStatus::AwaitingHostFeedback,
+            SessionStateEnum::AwaitingInterruptedUserMessage(_) => {
+                SessionStatus::AwaitingInterruptedUserMessage
+            }
+            SessionStateEnum::Poisoned => SessionStatus::AwaitingInterruptedUserMessage,
+        }
+    }
+
+    fn messages(&self) -> Vec<Message> {
+        match self {
+            SessionStateEnum::Idle(state) => state.messages(),
+            SessionStateEnum::LlmTurnRunning { state, .. } => state.messages(),
+            SessionStateEnum::AwaitingHostFeedback(state) => state.messages(),
+            SessionStateEnum::AwaitingInterruptedUserMessage(state) => state.messages(),
+            SessionStateEnum::Poisoned => Vec::new(),
+        }
+    }
 }
 
 impl From<SessionState<Idle>> for SessionStateEnum {

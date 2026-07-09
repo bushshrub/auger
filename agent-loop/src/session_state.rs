@@ -4,13 +4,15 @@ use crate::tool_call_batch::{Resolving, ToolCallBatch, ToolCallBatchError};
 use either::Either;
 use provider::thread::{ClankerTurn, ToolResultsPending, UserTurn};
 use provider::{
-    ClankerMessage, LlmRequest, LlmResponse, LlmThread, StreamEvent, ToolDefinition, ToolResult,
-    UserPrompt,
+    ClankerMessage, LlmRequest, LlmResponse, LlmThread, Message, StreamEvent, ToolDefinition,
+    ToolResult, UserPrompt,
 };
 use std::fmt;
 use uuid::Uuid;
 
-pub trait State: private::Sealed {}
+pub trait State: private::Sealed {
+    fn messages(&self) -> &[Message];
+}
 
 mod private {
     use super::*;
@@ -29,6 +31,12 @@ pub(crate) struct SessionState<S: State> {
     id: Uuid,
     /// The actual state data
     state: S,
+}
+
+impl<S: State> SessionState<S> {
+    pub(crate) fn messages(&self) -> Vec<Message> {
+        self.state.messages().to_vec()
+    }
 }
 
 impl fmt::Debug for SessionState<Idle> {
@@ -72,7 +80,11 @@ impl fmt::Debug for SessionState<AwaitingInterruptedUserMessage> {
 pub(crate) struct Idle {
     thread: LlmThread<UserTurn>,
 }
-impl State for Idle {}
+impl State for Idle {
+    fn messages(&self) -> &[Message] {
+        self.thread.messages()
+    }
+}
 
 impl SessionState<Idle> {
     /// Begin a new session with the given system prompt.
@@ -100,7 +112,11 @@ impl SessionState<Idle> {
 pub(crate) struct LlmTurnRunning {
     thread: LlmThread<ClankerTurn>,
 }
-impl State for LlmTurnRunning {}
+impl State for LlmTurnRunning {
+    fn messages(&self) -> &[Message] {
+        self.thread.messages()
+    }
+}
 
 impl SessionState<LlmTurnRunning> {
     /// Create the provider request for this model turn.
@@ -164,7 +180,11 @@ pub(crate) struct AwaitingHostFeedback {
     tool_call_batch: ToolCallBatch<Resolving>,
 }
 
-impl State for AwaitingHostFeedback {}
+impl State for AwaitingHostFeedback {
+    fn messages(&self) -> &[Message] {
+        self.thread.messages()
+    }
+}
 
 impl SessionState<AwaitingHostFeedback> {
     pub fn add_steering_prompt(self, prompt: UserPrompt) -> SessionState<AwaitingHostFeedback> {
@@ -252,7 +272,11 @@ pub(crate) struct AwaitingInterruptedUserMessage {
     thread: LlmThread<ToolResultsPending>,
 }
 
-impl State for AwaitingInterruptedUserMessage {}
+impl State for AwaitingInterruptedUserMessage {
+    fn messages(&self) -> &[Message] {
+        self.thread.messages()
+    }
+}
 
 impl SessionState<AwaitingInterruptedUserMessage> {
     pub fn add_user_message(self, prompt: UserPrompt) -> SessionState<LlmTurnRunning> {

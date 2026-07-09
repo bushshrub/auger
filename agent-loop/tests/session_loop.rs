@@ -247,6 +247,119 @@ fn session_loop_waits_until_all_tool_results_are_provided() {
         .expect("send shutdown");
 }
 
+#[test]
+fn session_snapshot_contains_loop_owned_thread_state() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("create tokio runtime");
+    let provider = DummyProvider::new([llm_response("hello")]);
+    let model = LlmModel::new(Arc::new(provider), "dummy-model");
+
+    let handle = Session::start(
+        "You are a test assistant.".to_string(),
+        Vec::new(),
+        model,
+        runtime.handle().clone(),
+    );
+
+    handle
+        .command_channel()
+        .send(SessionCommand::AddUserMessage(UserPrompt::new(
+            "hello".to_string(),
+        )))
+        .expect("send user message");
+    recv_until_model_turn_done(handle.event_channel());
+
+    let snapshot = snapshot(&handle);
+    assert_eq!(snapshot.status(), SessionStatus::Idle);
+    assert_eq!(snapshot.messages().len(), 3);
+    assert!(matches!(
+        &snapshot.messages()[1],
+        Message::User { message, .. } if message.message() == "hello"
+    ));
+    assert!(matches!(
+        &snapshot.messages()[2],
+        Message::Assistant { content, .. } if content == "hello"
+    ));
+
+    handle
+        .command_channel()
+        .send(SessionCommand::Shutdown)
+        .expect("send shutdown");
+}
+
+#[test]
+fn session_snapshot_contains_tool_feedback_thread_state() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("create tokio runtime");
+    let provider = DummyProvider::new([
+        LlmResponse {
+            content: String::new(),
+            reasoning: None,
+            tool_calls: Some(vec![tool_call("call_1", "read_file")]),
+            usage: None,
+            stop_reason: Some("tool_calls".to_string()),
+        },
+        llm_response("done"),
+    ]);
+    let model = LlmModel::new(Arc::new(provider), "dummy-model");
+
+    let handle = Session::start(
+        "You are a test assistant.".to_string(),
+        Vec::new(),
+        model,
+        runtime.handle().clone(),
+    );
+
+    handle
+        .command_channel()
+        .send(SessionCommand::AddUserMessage(UserPrompt::new(
+            "use tools".to_string(),
+        )))
+        .expect("send user message");
+    recv_until_model_turn_done(handle.event_channel());
+
+    let awaiting_snapshot = snapshot(&handle);
+    assert_eq!(
+        awaiting_snapshot.status(),
+        SessionStatus::AwaitingHostFeedback
+    );
+    assert_eq!(awaiting_snapshot.messages().len(), 3);
+    assert!(matches!(
+        &awaiting_snapshot.messages()[2],
+        Message::Assistant { tool_calls, .. }
+            if tool_calls.len() == 1 && tool_calls[0].id == "call_1"
+    ));
+
+    handle
+        .command_channel()
+        .send(SessionCommand::AddToolResults(vec![ToolResult::new(
+            "call_1".to_string(),
+            "file contents".to_string(),
+        )]))
+        .expect("send tool result");
+    recv_until_model_turn_done(handle.event_channel());
+
+    let done_snapshot = snapshot(&handle);
+    assert_eq!(done_snapshot.status(), SessionStatus::Idle);
+    assert_eq!(done_snapshot.messages().len(), 5);
+    assert!(matches!(
+        &done_snapshot.messages()[3],
+        Message::User {
+            tool_call_results,
+            ..
+        } if tool_call_results.len() == 1
+            && tool_call_results[0].id() == "call_1"
+            && tool_call_results[0].content() == "file contents"
+    ));
+
+    handle
+        .command_channel()
+        .send(SessionCommand::Shutdown)
+        .expect("send shutdown");
+}
+
 fn llm_response(content: &str) -> LlmResponse {
     LlmResponse {
         content: content.to_string(),
@@ -263,6 +376,15 @@ fn tool_call(id: &str, name: &str) -> ToolCallRequest {
         name: name.to_string(),
         arguments: "{}".to_string(),
     }
+}
+
+fn snapshot(handle: &agent_loop::SessionHandle) -> agent_loop::SessionSnapshot {
+    let (tx, rx) = mpsc::sync_channel(1);
+    handle
+        .command_channel()
+        .send(SessionCommand::Snapshot { reply: tx })
+        .expect("request snapshot");
+    rx.recv().expect("receive snapshot")
 }
 
 fn recv_until_model_turn_done(receiver: &mpsc::Receiver<SessionEvent>) -> Vec<SessionEvent> {
