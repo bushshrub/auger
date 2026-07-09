@@ -1,5 +1,6 @@
 //! The various states that the session can be in
 
+use crate::events::ToolCallRequest;
 use crate::tool_call_batch::{Resolving, ToolCallBatch, ToolCallBatchError};
 use either::Either;
 use provider::thread::{ClankerTurn, ToolResultsPending, UserTurn};
@@ -197,8 +198,13 @@ impl SessionState<AwaitingHostFeedback> {
         }
     }
 
-    pub fn requested_tool_calls(&self) -> Vec<provider::ToolCallRequest> {
-        self.state.tool_call_batch.requested()
+    pub fn requested_tool_calls(&self) -> Vec<ToolCallRequest> {
+        self.state
+            .tool_call_batch
+            .requested()
+            .into_iter()
+            .map(ToolCallRequest::from_provider)
+            .collect()
     }
 
     /// Adds multiple tool results.

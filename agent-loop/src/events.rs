@@ -1,4 +1,34 @@
-use provider::{TokenUsage, ToolCallRequest};
+use provider::{TokenUsage, ToolCallRequest as ProviderToolCallRequest};
+
+/// A complete tool call request emitted by the minimal loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallRequest {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+impl ToolCallRequest {
+    pub(crate) fn from_provider(request: ProviderToolCallRequest) -> Self {
+        Self {
+            id: request.id,
+            name: request.name,
+            arguments: request.arguments,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn arguments(&self) -> &str {
+        &self.arguments
+    }
+}
 
 /// Events that can be emitted by the minimal loop during
 /// a session.
