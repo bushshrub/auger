@@ -547,7 +547,7 @@ fn handle_interrupt(state: SessionStateEnum) -> SessionStateEnum {
         SessionStateEnum::LlmTurnRunning {
             state,
             partial_response,
-        } => match state.abandon_llm_turn(partial_response) {
+        } => match state.user_interrupt_llm_turn(partial_response) {
             Either::Left(state) => state.into(),
             Either::Right(state) => state.into(),
         },

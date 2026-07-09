@@ -225,6 +225,26 @@ impl SessionState<LlmTurnRunning> {
 
         (state, partial)
     }
+
+    /// Interrupt a user-cancelled model turn, preserving partial output.
+    pub fn user_interrupt_llm_turn(
+        self,
+        partial_response: Vec<StreamEvent>,
+    ) -> Either<SessionState<Idle>, SessionState<AwaitingInterruptedUserMessage>> {
+        if partial_response.is_empty() {
+            return Either::Left(SessionState {
+                id: self.id,
+                state: Idle {
+                    thread: self.state.thread.abandon_clanker_turn(),
+                },
+            });
+        }
+
+        match self.add_llm_response(ClankerMessage::from(LlmResponse::from(partial_response))) {
+            Either::Left(state) => Either::Left(state),
+            Either::Right(state) => Either::Right(state.interrupt_pending_tool_calls()),
+        }
+    }
 }
 
 /// The state after the LLM response has fully generated,
@@ -373,5 +393,48 @@ impl SessionState<ResponseError> {
                 thread: self.state.thread.add_user_message(prompt),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_interrupt_marks_partial_tool_calls_interrupted_on_next_user_message() {
+        let state = SessionState::<Idle>::new("system".to_string())
+            .add_user_message(UserPrompt::new("use a tool".to_string()));
+
+        let interrupted = state.user_interrupt_llm_turn(vec![StreamEvent::ToolCallComplete {
+            id: "call_1".to_string(),
+            name: "read_file".to_string(),
+            arguments: "{}".to_string(),
+        }]);
+
+        let Either::Right(state) = interrupted else {
+            panic!("partial tool calls should wait for interrupted user message");
+        };
+
+        let state = state.add_user_message(UserPrompt::new("continue".to_string()));
+        let request = state.create_request(Vec::new());
+
+        assert!(matches!(
+            &request.messages()[2],
+            Message::Assistant { tool_calls, .. }
+                if tool_calls.len() == 1
+                    && tool_calls[0].id == "call_1"
+                    && tool_calls[0].name == "read_file"
+                    && tool_calls[0].arguments == "{}"
+        ));
+        assert!(matches!(
+            &request.messages()[3],
+            Message::User {
+                message,
+                tool_call_results,
+            } if message.message() == "continue"
+                && tool_call_results.len() == 1
+                && tool_call_results[0].id() == "call_1"
+                && tool_call_results[0].content() == "aborted"
+        ));
     }
 }
