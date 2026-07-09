@@ -9,9 +9,11 @@ provider = { path = "../provider" }
 either = "1.16.0"
 uuid = { version = "1.23.4", features = ["v4"] }
 tracing.workspace = true
-tokio = { workspace = true, features = ["rt", "sync", "macros"] }
 futures.workspace = true
 thiserror.workspace = true
+tokio-util = "0.7.18"
+tokio = { workspace = true, features = ["rt", "sync", "macros"] }
 
 [dev-dependencies]
 provider-dummy = { path = "../provider-dummy" }
+tokio = { workspace = true, features = ["rt-multi-thread"] }

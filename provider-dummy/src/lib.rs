@@ -1,4 +1,4 @@
-use futures::stream;
+use futures::{StreamExt, stream};
 use provider::{
     LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, ToolCallRequest,
 };
@@ -20,6 +20,7 @@ struct DummyProviderState {
 pub enum DummyResponse {
     Response(LlmResponse),
     Stream(Vec<Result<StreamEvent, LlmError>>),
+    PendingStream(Vec<Result<StreamEvent, LlmError>>),
 }
 
 impl From<LlmResponse> for DummyResponse {
@@ -64,7 +65,7 @@ impl LlmProvider for DummyProvider {
     async fn complete(&self, _model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError> {
         match self.next_response(request)? {
             DummyResponse::Response(response) => Ok(response),
-            DummyResponse::Stream(_) => Err(LlmError {
+            DummyResponse::Stream(_) | DummyResponse::PendingStream(_) => Err(LlmError {
                 message: "dummy provider queued a stream response for complete".to_string(),
             }),
         }
@@ -76,6 +77,9 @@ impl LlmProvider for DummyProvider {
                 Ok(Box::pin(stream::iter(response_to_stream_events(response))))
             }
             DummyResponse::Stream(events) => Ok(Box::pin(stream::iter(events))),
+            DummyResponse::PendingStream(events) => {
+                Ok(Box::pin(stream::iter(events).chain(stream::pending())))
+            }
         }
     }
 }

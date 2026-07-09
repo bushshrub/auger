@@ -11,9 +11,7 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn session_loop_accepts_multiple_happy_path_user_turns() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("create tokio runtime");
+    let runtime = test_runtime();
     let provider = DummyProvider::new([
         llm_response("first response"),
         llm_response("second response"),
@@ -72,9 +70,7 @@ fn session_loop_accepts_multiple_happy_path_user_turns() {
 
 #[test]
 fn session_loop_emits_model_turn_events() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("create tokio runtime");
+    let runtime = test_runtime();
     let provider = DummyProvider::new([LlmResponse {
         content: "hello".to_string(),
         reasoning: Some("thinking".to_string()),
@@ -135,9 +131,7 @@ fn session_loop_emits_model_turn_events() {
 
 #[test]
 fn session_loop_does_not_complete_model_turn_after_stream_open_error() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("create tokio runtime");
+    let runtime = test_runtime();
     let provider = DummyProvider::new([]);
     let model = LlmModel::new(Arc::new(provider), "dummy-model");
 
@@ -174,9 +168,7 @@ fn session_loop_does_not_complete_model_turn_after_stream_open_error() {
 
 #[test]
 fn session_loop_preserves_partial_response_after_mid_stream_error() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("create tokio runtime");
+    let runtime = test_runtime();
     let provider = DummyProvider::new_responses([
         DummyResponse::Stream(vec![
             Ok(StreamEvent::TextDelta("partial".to_string())),
@@ -253,10 +245,60 @@ fn session_loop_preserves_partial_response_after_mid_stream_error() {
 }
 
 #[test]
+fn session_loop_interrupts_an_active_model_stream() {
+    let runtime = test_runtime();
+    let provider = DummyProvider::new_responses([DummyResponse::PendingStream(vec![Ok(
+        StreamEvent::TextDelta("partial".to_string()),
+    )])]);
+    let model = LlmModel::new(Arc::new(provider), "dummy-model");
+
+    let handle = Session::start(
+        "You are a test assistant.".to_string(),
+        Vec::new(),
+        model,
+        runtime.handle().clone(),
+    );
+
+    handle
+        .command_channel()
+        .send(SessionCommand::AddUserMessage(UserPrompt::new(
+            "hello".to_string(),
+        )))
+        .expect("send user message");
+
+    recv_until_content_delta(handle.event_channel(), "partial");
+
+    let running_snapshot = snapshot(&handle);
+    assert_eq!(running_snapshot.status(), SessionStatus::LlmTurnRunning);
+
+    handle
+        .command_channel()
+        .send(SessionCommand::Interrupt)
+        .expect("interrupt model stream");
+
+    let events = recv_until_interrupted_idle(handle.event_channel());
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::ModelTurnDone(_)))
+    );
+
+    let interrupted_snapshot = snapshot(&handle);
+    assert_eq!(interrupted_snapshot.status(), SessionStatus::Idle);
+    assert!(matches!(
+        &interrupted_snapshot.messages()[2],
+        Message::Assistant { content, .. } if content == "partial"
+    ));
+
+    handle
+        .command_channel()
+        .send(SessionCommand::Shutdown)
+        .expect("send shutdown");
+}
+
+#[test]
 fn session_loop_waits_until_all_tool_results_are_provided() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("create tokio runtime");
+    let runtime = test_runtime();
     let provider = DummyProvider::new([
         LlmResponse {
             content: String::new(),
@@ -370,9 +412,7 @@ fn session_loop_waits_until_all_tool_results_are_provided() {
 
 #[test]
 fn session_snapshot_contains_loop_owned_thread_state() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("create tokio runtime");
+    let runtime = test_runtime();
     let provider = DummyProvider::new([llm_response("hello")]);
     let model = LlmModel::new(Arc::new(provider), "dummy-model");
 
@@ -411,9 +451,7 @@ fn session_snapshot_contains_loop_owned_thread_state() {
 
 #[test]
 fn session_snapshot_contains_tool_feedback_thread_state() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("create tokio runtime");
+    let runtime = test_runtime();
     let provider = DummyProvider::new([
         LlmResponse {
             content: String::new(),
@@ -505,7 +543,47 @@ fn snapshot(handle: &agent_loop::SessionHandle) -> agent_loop::SessionSnapshot {
         .command_channel()
         .send(SessionCommand::Snapshot { reply: tx })
         .expect("request snapshot");
-    rx.recv().expect("receive snapshot")
+    rx.recv_timeout(Duration::from_secs(2))
+        .expect("receive snapshot")
+}
+
+fn test_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .expect("create tokio runtime")
+}
+
+fn recv_until_content_delta(receiver: &mpsc::Receiver<SessionEvent>, expected: &str) {
+    loop {
+        let event = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("receive session event");
+        if matches!(
+            event,
+            SessionEvent::LlmDelta(LlmDelta::AssistantContent(ref content))
+                if content == expected
+        ) {
+            return;
+        }
+    }
+}
+
+fn recv_until_interrupted_idle(receiver: &mpsc::Receiver<SessionEvent>) -> Vec<SessionEvent> {
+    let mut events = Vec::new();
+    let mut interrupted = false;
+    loop {
+        let event = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("receive session event");
+        interrupted |= matches!(event, SessionEvent::Interrupted);
+        let settled =
+            interrupted && matches!(event, SessionEvent::StateChanged(SessionStatus::Idle));
+        events.push(event);
+        if settled {
+            return events;
+        }
+    }
 }
 
 fn recv_until_model_turn_done(receiver: &mpsc::Receiver<SessionEvent>) -> Vec<SessionEvent> {

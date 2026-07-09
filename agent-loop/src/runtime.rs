@@ -1,15 +1,17 @@
-use crate::events::{LlmDelta, ModelTurnOutcome, SessionError, SessionEvent, SessionStatus};
+use crate::events::{ModelTurnOutcome, SessionError, SessionEvent, SessionStatus};
+use crate::model_stream::{ModelStreamOutcome, ModelStreamTerminal, stream_model};
 use crate::session_state::{
     AwaitingHostFeedback, AwaitingInterruptedUserMessage, Idle, LlmTurnRunning, ResponseError,
     SessionState,
 };
 use either::Either;
-use futures::StreamExt;
 use provider::{LlmModel, Message, StreamEvent, ToolDefinition, ToolResult, UserPrompt};
+use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::time::SystemTime;
 use std::{fmt, thread};
 use tokio::runtime::Handle;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -34,7 +36,10 @@ pub struct Session {
     model: LlmModel,
     runtime: Handle,
     state: SessionStateEnum,
-    command_rx: mpsc::Receiver<SessionCommand>,
+    inbox_tx: mpsc::Sender<LoopMessage>,
+    inbox_rx: mpsc::Receiver<LoopMessage>,
+    deferred_commands: VecDeque<SessionCommand>,
+    shutdown_requested: bool,
     event_tx: mpsc::Sender<SessionEvent>,
     // TODO: eventually this should just be on the thread.
     tools: Vec<ToolDefinition>,
@@ -46,9 +51,30 @@ pub struct SessionHandle {
     /// ID of the session this handle is a handle to
     id: SessionId,
     /// Channel to send commands through.
-    command_tx: mpsc::Sender<SessionCommand>,
+    command_tx: SessionCommandSender,
     /// Channel to receive events through.
     event_rx: mpsc::Receiver<SessionEvent>,
+}
+
+/// Sender for commands handled by a running session.
+#[derive(Clone, Debug)]
+pub struct SessionCommandSender {
+    inbox_tx: mpsc::Sender<LoopMessage>,
+}
+
+impl SessionCommandSender {
+    /// Send a command to the session loop.
+    pub fn send(&self, command: SessionCommand) -> Result<(), mpsc::SendError<SessionCommand>> {
+        match self.inbox_tx.send(LoopMessage::HostCommand(command)) {
+            Ok(()) => Ok(()),
+            Err(mpsc::SendError(LoopMessage::HostCommand(command))) => {
+                Err(mpsc::SendError(command))
+            }
+            Err(mpsc::SendError(LoopMessage::ModelStreamFinished(_))) => {
+                unreachable!("command sender returned an internal loop message")
+            }
+        }
+    }
 }
 
 impl SessionHandle {
@@ -56,7 +82,7 @@ impl SessionHandle {
         self.id
     }
 
-    pub fn command_channel(&self) -> &mpsc::Sender<SessionCommand> {
+    pub fn command_channel(&self) -> &SessionCommandSender {
         &self.command_tx
     }
 
@@ -102,6 +128,7 @@ impl SessionSnapshot {
 }
 
 /// A command that can be sent to the session
+#[derive(Debug)]
 pub enum SessionCommand {
     /// Add a user message. The host is expected to send this whenever
     /// the user sends a message while the session is idle.
@@ -128,7 +155,8 @@ impl Session {
     /// Start a new session with the given system prompt and tools.
     /// The session starts running in an OS thread.
     /// The tokio runtime handle must be passed in for the session to
-    /// stream responses from the model using async.
+    /// stream responses from the model using async. The runtime must remain
+    /// active for the lifetime of the session.
     pub fn start(
         system_prompt: String,
         tools: Vec<ToolDefinition>,
@@ -136,7 +164,7 @@ impl Session {
         runtime: Handle,
     ) -> SessionHandle {
         let id = SessionId::new();
-        let (command_tx, command_rx) = mpsc::channel();
+        let (inbox_tx, inbox_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
         let sess_state = SessionState::<Idle>::new(system_prompt);
@@ -144,7 +172,10 @@ impl Session {
             id,
             model,
             runtime,
-            command_rx,
+            inbox_tx: inbox_tx.clone(),
+            inbox_rx,
+            deferred_commands: VecDeque::new(),
+            shutdown_requested: false,
             event_tx,
             tools,
             state: sess_state.into(),
@@ -156,7 +187,7 @@ impl Session {
 
         SessionHandle {
             id,
-            command_tx,
+            command_tx: SessionCommandSender { inbox_tx },
             event_rx,
         }
     }
@@ -171,65 +202,56 @@ impl Session {
             .send(SessionEvent::StateChanged(SessionStatus::Idle));
 
         loop {
-            let command = match self.command_rx.recv() {
-                Ok(command) => command,
+            let message = match self.next_message() {
+                Ok(message) => message,
                 Err(_) => break,
             };
 
-            match command {
-                SessionCommand::Shutdown => {
-                    let _ = self.event_tx.send(SessionEvent::Shutdown);
-                    break;
+            match message {
+                LoopMessage::ModelStreamFinished(outcome) => {
+                    if self.shutdown_requested {
+                        let _ = self.event_tx.send(SessionEvent::Shutdown);
+                        break;
+                    }
+                    self.finish_model_stream(outcome);
                 }
-                SessionCommand::Snapshot { reply } => {
+                LoopMessage::HostCommand(command) if self.should_defer(&command) => {
+                    self.deferred_commands.push_back(command);
+                }
+                LoopMessage::HostCommand(SessionCommand::Shutdown) => {
+                    if self.model_stream_active() {
+                        self.shutdown_requested = true;
+                        self.active_model_turn_mut()
+                            .expect("active model turn disappeared")
+                            .cancellation_token
+                            .cancel();
+                    } else {
+                        let _ = self.event_tx.send(SessionEvent::Shutdown);
+                        break;
+                    }
+                }
+                LoopMessage::HostCommand(SessionCommand::Snapshot { reply }) => {
                     let snapshot = self.snapshot();
                     let _ = reply.send(snapshot);
                 }
-                SessionCommand::Interrupt => {
+                LoopMessage::HostCommand(SessionCommand::Interrupt) => {
+                    if let Some(active_turn) = self.active_model_turn_mut() {
+                        if !active_turn.interrupt_requested {
+                            active_turn.interrupt_requested = true;
+                            active_turn.cancellation_token.cancel();
+                        }
+                        continue;
+                    }
+
                     let state = std::mem::replace(&mut self.state, SessionStateEnum::Poisoned);
                     self.state = handle_interrupt(state);
                     let _ = self.event_tx.send(SessionEvent::Interrupted);
-                    match &self.state {
-                        SessionStateEnum::Idle(_) => {
-                            let _ = self
-                                .event_tx
-                                .send(SessionEvent::StateChanged(SessionStatus::Idle));
-                        }
-                        SessionStateEnum::AwaitingHostFeedback(_) => {
-                            let _ = self.event_tx.send(SessionEvent::StateChanged(
-                                SessionStatus::AwaitingHostFeedback,
-                            ));
-                        }
-                        SessionStateEnum::AwaitingInterruptedUserMessage(_) => {
-                            let _ = self.event_tx.send(SessionEvent::StateChanged(
-                                SessionStatus::AwaitingInterruptedUserMessage,
-                            ));
-                        }
-                        SessionStateEnum::ResponseError(_) => {
-                            let _ = self
-                                .event_tx
-                                .send(SessionEvent::StateChanged(SessionStatus::ResponseError));
-                        }
-                        SessionStateEnum::LlmTurnRunning { .. } => {
-                            unreachable!(
-                                "interrupting an LLM turn should settle into idle or host feedback"
-                            );
-                        }
-                        SessionStateEnum::Poisoned => {
-                            let message = "session entered poisoned state while handling interrupt"
-                                .to_string();
-                            error!(message = %message);
-                            let _ = self
-                                .event_tx
-                                .send(SessionEvent::Error(SessionError::Internal(message)));
-                        }
-                    }
+                    self.emit_current_status();
                 }
-                // Any other commands require LLM response.
-                command => {
+                LoopMessage::HostCommand(command) => {
                     let state = std::mem::replace(&mut self.state, SessionStateEnum::Poisoned);
                     self.state = handle_event(state, command, &self.event_tx);
-                    self.stream_llm_response();
+                    self.start_model_stream();
                 }
             }
         }
@@ -237,146 +259,183 @@ impl Session {
         info!(id = %self.id, "Session stopped");
     }
 
-    fn stream_llm_response(&mut self) {
+    fn next_message(&mut self) -> Result<LoopMessage, mpsc::RecvError> {
+        if !self.model_stream_active()
+            && let Some(command) = self.deferred_commands.pop_front()
+        {
+            return Ok(LoopMessage::HostCommand(command));
+        }
+
+        self.inbox_rx.recv()
+    }
+
+    /// Whether the given session command should wait for the current model
+    /// stream to finish before processing.
+    fn should_defer(&self, command: &SessionCommand) -> bool {
+        self.model_stream_active()
+            && !matches!(
+                command,
+                SessionCommand::Shutdown
+                    | SessionCommand::Interrupt
+                    | SessionCommand::Snapshot { .. }
+            )
+    }
+
+    /// Start the stream from the model async.
+    fn start_model_stream(&mut self) {
+        let SessionStateEnum::LlmTurnRunning { state, active_turn } = &mut self.state else {
+            return;
+        };
+        if active_turn.is_some() {
+            return;
+        }
+
+        let request = state.create_request(self.tools.clone());
+        let cancellation_token = CancellationToken::new();
+        *active_turn = Some(ActiveModelTurn {
+            cancellation_token: cancellation_token.clone(),
+            interrupt_requested: false,
+        });
+
+        let model = self.model.clone();
+        let event_tx = self.event_tx.clone();
+        let inbox_tx = self.inbox_tx.clone();
+        self.runtime.spawn(async move {
+            let outcome = stream_model(model, request, cancellation_token, event_tx).await;
+            let _ = inbox_tx.send(LoopMessage::ModelStreamFinished(outcome));
+        });
+    }
+
+    fn finish_model_stream(&mut self, outcome: ModelStreamOutcome) {
         let state = std::mem::replace(&mut self.state, SessionStateEnum::Poisoned);
+        let (state, interrupted) = match state {
+            SessionStateEnum::LlmTurnRunning { state, active_turn } => {
+                let active_turn =
+                    active_turn.expect("model stream finished without an active turn");
+                let ModelStreamOutcome {
+                    terminal,
+                    partial_response,
+                } = outcome;
+                let interrupted = active_turn.interrupt_requested
+                    || matches!(terminal, ModelStreamTerminal::Cancelled);
 
-        self.state = match state {
-            SessionStateEnum::LlmTurnRunning {
-                state,
-                mut partial_response,
-            } => {
-                let request = state.create_request(self.tools.clone());
-                let stream_result = self.runtime.block_on(async {
-                    let mut stream = match self.model.stream(request).await {
-                        Ok(stream) => stream,
-                        Err(err) => {
-                            return Err(ModelStreamFailure {
-                                error: SessionError::Model(err.to_string()),
-                                partial_response,
-                            });
-                        }
-                    };
-
-                    while let Some(event) = stream.next().await {
-                        match event {
-                            Ok(event) => {
-                                let done = matches!(event, StreamEvent::Done { .. });
-                                match &event {
-                                    StreamEvent::TextDelta(delta) => {
-                                        let _ = self.event_tx.send(SessionEvent::LlmDelta(
-                                            LlmDelta::AssistantContent(delta.clone()),
-                                        ));
-                                    }
-                                    StreamEvent::ReasoningDelta(delta) => {
-                                        let _ = self.event_tx.send(SessionEvent::LlmDelta(
-                                            LlmDelta::AssistantReasoning(delta.clone()),
-                                        ));
-                                    }
-                                    StreamEvent::ToolCall {
-                                        id,
-                                        name,
-                                        arguments,
-                                    }
-                                    | StreamEvent::ToolCallComplete {
-                                        id,
-                                        name,
-                                        arguments,
-                                    } => {
-                                        let _ = self.event_tx.send(SessionEvent::LlmDelta(
-                                            LlmDelta::ToolCall {
-                                                id: id.clone(),
-                                                name: name.clone(),
-                                                arguments: arguments.clone(),
-                                            },
-                                        ));
-                                    }
-                                    StreamEvent::Done { .. } => {}
-                                }
-                                partial_response.push(event);
-                                if done {
-                                    break;
+                let state = if interrupted {
+                    match state.user_interrupt_llm_turn(partial_response) {
+                        Either::Left(state) => state.into(),
+                        Either::Right(state) => state.into(),
+                    }
+                } else {
+                    match terminal {
+                        ModelStreamTerminal::Complete => {
+                            let mut usage = None;
+                            let mut stop_reason = None;
+                            for event in &partial_response {
+                                if let StreamEvent::Done {
+                                    usage: event_usage,
+                                    stop_reason: event_stop_reason,
+                                } = event
+                                {
+                                    usage = event_usage.clone();
+                                    stop_reason = event_stop_reason.clone();
                                 }
                             }
-                            Err(err) => {
-                                return Err(ModelStreamFailure {
-                                    error: SessionError::Model(err.to_string()),
-                                    partial_response,
+
+                            let next_state: SessionStateEnum =
+                                match state.abandon_llm_turn(partial_response) {
+                                    Either::Left(state) => state.into(),
+                                    Either::Right(state) => state.into(),
+                                };
+                            match &next_state {
+                                SessionStateEnum::AwaitingHostFeedback(state) => {
+                                    let _ = self.event_tx.send(SessionEvent::ModelTurnDone(
+                                        ModelTurnOutcome::NeedsToolResults {
+                                            tool_calls: state.requested_tool_calls(),
+                                        },
+                                    ));
+                                    let _ = self.event_tx.send(SessionEvent::StateChanged(
+                                        SessionStatus::AwaitingHostFeedback,
+                                    ));
+                                }
+                                _ => {
+                                    let _ = self.event_tx.send(SessionEvent::ModelTurnDone(
+                                        ModelTurnOutcome::AssistantMessageComplete {
+                                            usage,
+                                            stop_reason,
+                                        },
+                                    ));
+                                    let _ = self
+                                        .event_tx
+                                        .send(SessionEvent::StateChanged(SessionStatus::Idle));
+                                }
+                            }
+                            next_state
+                        }
+                        ModelStreamTerminal::Failed(error) => {
+                            let (next_state, partial) = state.interrupt_llm_turn(partial_response);
+                            if partial.is_empty() {
+                                let _ = self.event_tx.send(SessionEvent::Error(error));
+                            } else {
+                                let _ = self.event_tx.send(SessionEvent::ModelTurnInterrupted {
+                                    partial_response: partial,
+                                    error,
                                 });
                             }
+                            let next_state: SessionStateEnum = next_state.into();
+                            let _ = self
+                                .event_tx
+                                .send(SessionEvent::StateChanged(SessionStatus::ResponseError));
+                            next_state
                         }
+                        ModelStreamTerminal::Cancelled => unreachable!(
+                            "cancelled streams should settle through the interrupt path"
+                        ),
                     }
-
-                    Ok(partial_response)
-                });
-
-                match stream_result {
-                    Ok(partial_response) => {
-                        let mut usage = None;
-                        let mut stop_reason = None;
-                        for event in &partial_response {
-                            if let StreamEvent::Done {
-                                usage: event_usage,
-                                stop_reason: event_stop_reason,
-                            } = event
-                            {
-                                usage = event_usage.clone();
-                                stop_reason = event_stop_reason.clone();
-                            }
-                        }
-
-                        let next_state: SessionStateEnum =
-                            match state.abandon_llm_turn(partial_response) {
-                                Either::Left(state) => state.into(),
-                                Either::Right(state) => state.into(),
-                            };
-                        match &next_state {
-                            SessionStateEnum::AwaitingHostFeedback(state) => {
-                                let _ = self.event_tx.send(SessionEvent::ModelTurnDone(
-                                    ModelTurnOutcome::NeedsToolResults {
-                                        tool_calls: state.requested_tool_calls(),
-                                    },
-                                ));
-                                let _ = self.event_tx.send(SessionEvent::StateChanged(
-                                    SessionStatus::AwaitingHostFeedback,
-                                ));
-                            }
-                            _ => {
-                                let _ = self.event_tx.send(SessionEvent::ModelTurnDone(
-                                    ModelTurnOutcome::AssistantMessageComplete {
-                                        usage,
-                                        stop_reason,
-                                    },
-                                ));
-                                let _ = self
-                                    .event_tx
-                                    .send(SessionEvent::StateChanged(SessionStatus::Idle));
-                            }
-                        }
-                        next_state
-                    }
-                    Err(ModelStreamFailure {
-                        error,
-                        partial_response,
-                    }) => {
-                        let (next_state, partial) = state.interrupt_llm_turn(partial_response);
-                        if partial.is_empty() {
-                            let _ = self.event_tx.send(SessionEvent::Error(error));
-                        } else {
-                            let _ = self.event_tx.send(SessionEvent::ModelTurnInterrupted {
-                                partial_response: partial,
-                                error,
-                            });
-                        }
-                        let next_state: SessionStateEnum = next_state.into();
-                        let _ = self
-                            .event_tx
-                            .send(SessionEvent::StateChanged(SessionStatus::ResponseError));
-                        next_state
-                    }
-                }
+                };
+                (state, interrupted)
             }
-            state => state,
+            state => (state, false),
         };
+        self.state = state;
+
+        if interrupted {
+            let _ = self.event_tx.send(SessionEvent::Interrupted);
+            self.emit_current_status();
+        }
+    }
+
+    fn model_stream_active(&self) -> bool {
+        matches!(
+            self.state,
+            SessionStateEnum::LlmTurnRunning {
+                active_turn: Some(_),
+                ..
+            }
+        )
+    }
+
+    fn active_model_turn_mut(&mut self) -> Option<&mut ActiveModelTurn> {
+        match &mut self.state {
+            SessionStateEnum::LlmTurnRunning { active_turn, .. } => active_turn.as_mut(),
+            _ => None,
+        }
+    }
+
+    /// Emit the current state as an event
+    fn emit_current_status(&self) {
+        match self.state {
+            SessionStateEnum::Poisoned => {
+                let message = "session entered poisoned state while handling interrupt".to_string();
+                error!(message = %message);
+                let _ = self
+                    .event_tx
+                    .send(SessionEvent::Error(SessionError::Internal(message)));
+            }
+            _ => {
+                let _ = self
+                    .event_tx
+                    .send(SessionEvent::StateChanged(self.state.status()));
+            }
+        }
     }
 
     /// Take a snapshot of the current session state.
@@ -393,11 +452,11 @@ impl Session {
 
 // forced type erasure unfortunately...
 #[derive(Debug)]
-pub(crate) enum SessionStateEnum {
+enum SessionStateEnum {
     Idle(SessionState<Idle>),
     LlmTurnRunning {
         state: SessionState<LlmTurnRunning>,
-        partial_response: Vec<StreamEvent>,
+        active_turn: Option<ActiveModelTurn>,
     },
     AwaitingHostFeedback(SessionState<AwaitingHostFeedback>),
     AwaitingInterruptedUserMessage(SessionState<AwaitingInterruptedUserMessage>),
@@ -442,7 +501,7 @@ impl From<SessionState<LlmTurnRunning>> for SessionStateEnum {
     fn from(state: SessionState<LlmTurnRunning>) -> Self {
         SessionStateEnum::LlmTurnRunning {
             state,
-            partial_response: Vec::new(),
+            active_turn: None,
         }
     }
 }
@@ -546,11 +605,16 @@ fn handle_interrupt(state: SessionStateEnum) -> SessionStateEnum {
 
         SessionStateEnum::LlmTurnRunning {
             state,
-            partial_response,
-        } => match state.user_interrupt_llm_turn(partial_response) {
+            active_turn: None,
+        } => match state.user_interrupt_llm_turn(Vec::new()) {
             Either::Left(state) => state.into(),
             Either::Right(state) => state.into(),
         },
+
+        SessionStateEnum::LlmTurnRunning {
+            active_turn: Some(_),
+            ..
+        } => unreachable!("active model turns must be cancelled before settling an interrupt"),
 
         SessionStateEnum::AwaitingHostFeedback(state) => {
             state.interrupt_pending_tool_calls().into()
@@ -563,7 +627,13 @@ fn handle_interrupt(state: SessionStateEnum) -> SessionStateEnum {
     }
 }
 
-struct ModelStreamFailure {
-    error: SessionError,
-    partial_response: Vec<StreamEvent>,
+#[derive(Debug)]
+struct ActiveModelTurn {
+    cancellation_token: CancellationToken,
+    interrupt_requested: bool,
+}
+
+enum LoopMessage {
+    HostCommand(SessionCommand),
+    ModelStreamFinished(ModelStreamOutcome),
 }

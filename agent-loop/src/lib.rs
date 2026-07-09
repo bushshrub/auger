@@ -27,6 +27,7 @@
 //! ```
 
 mod events;
+mod model_stream;
 mod runtime;
 pub(crate) mod session_state;
 pub(crate) mod tool_call_batch;
@@ -35,4 +36,4 @@ pub use events::{
     LlmDelta, ModelTurnOutcome, PartialModelResponse, SessionError, SessionEvent, SessionStatus,
     ToolCallRequest, Usage,
 };
-pub use runtime::{Session, SessionCommand, SessionHandle, SessionSnapshot};
+pub use runtime::{Session, SessionCommand, SessionCommandSender, SessionHandle, SessionSnapshot};
