@@ -5,7 +5,10 @@ stateDiagram-v2
 
     LlmTurnRunning --> AwaitingHostFeedback: ModelToolCallBatchReady
     LlmTurnRunning --> Idle: FinalAssistantResponse
+    LlmTurnRunning --> ResponseError: ModelStreamError
     LlmTurnRunning --> InterruptingLlmTurn: Interrupt
+
+    ResponseError --> LlmTurnRunning: SubmitInput
 
     AwaitingHostFeedback --> LlmTurnRunning: SubmitHostFeedback
     AwaitingHostFeedback --> InterruptingHostFeedbackWait: Interrupt
@@ -15,4 +18,5 @@ stateDiagram-v2
 
     Idle --> Shutdown: Shutdown
     LlmTurnRunning --> Shutdown: Shutdown
+    ResponseError --> Shutdown: Shutdown
     AwaitingHostFeedback --> Shutdown: Shutdown
