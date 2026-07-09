@@ -19,12 +19,16 @@
 //!     Handle::current(),
 //! );
 //!
-//! let _ = handle.events().send(SessionCommand::AddUserMessage(
+//! let _ = handle.command_channel().send(SessionCommand::AddUserMessage(
 //!     UserPrompt::new("Inspect the repository.".to_string()),
 //! ));
+//!
+//! let events = handle.event_channel().recv().expect("receive events");
 //! ```
 
+mod events;
 mod runtime;
 pub(crate) mod session_state;
 
+pub use events::{LlmDelta, ModelTurnOutcome, SessionError, SessionEvent, SessionStatus, Usage};
 pub use runtime::{Session, SessionCommand, SessionHandle};
