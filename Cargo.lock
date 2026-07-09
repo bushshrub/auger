@@ -27,6 +27,7 @@ dependencies = [
  "futures",
  "provider",
  "provider-dummy",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",

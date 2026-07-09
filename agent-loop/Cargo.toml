@@ -11,6 +11,7 @@ uuid = { version = "1.23.4", features = ["v4"] }
 tracing.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 futures.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 provider-dummy = { path = "../provider-dummy" }

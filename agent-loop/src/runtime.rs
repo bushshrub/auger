@@ -392,32 +392,25 @@ fn handle_event(
         (
             SessionStateEnum::AwaitingHostFeedback(state),
             SessionCommand::AddToolResults(results),
-        ) => {
-            if let Err(err) = state.validate_tool_results(&results) {
+        ) => match state.add_tool_results(results) {
+            Ok(Either::Left(state)) => {
+                let _ = event_tx.send(SessionEvent::StateChanged(
+                    SessionStatus::AwaitingHostFeedback,
+                ));
+                state.into()
+            }
+            Ok(Either::Right(state)) => {
+                let _ = event_tx.send(SessionEvent::StateChanged(SessionStatus::LlmTurnRunning));
+                state.into()
+            }
+            Err((state, err)) => {
                 warn!(error = %err, "Invalid tool result");
                 let _ = event_tx.send(SessionEvent::Error(SessionError::InvalidToolResult(
                     err.to_string(),
                 )));
-                return state.into();
+                state.into()
             }
-
-            match state.add_tool_results(results) {
-                Ok(Either::Left(state)) => {
-                    let _ = event_tx.send(SessionEvent::StateChanged(
-                        SessionStatus::AwaitingHostFeedback,
-                    ));
-                    state.into()
-                }
-                Ok(Either::Right(state)) => {
-                    let _ =
-                        event_tx.send(SessionEvent::StateChanged(SessionStatus::LlmTurnRunning));
-                    state.into()
-                }
-                Err(err) => {
-                    unreachable!("tool results were prevalidated: {err}");
-                }
-            }
-        }
+        },
 
         (
             SessionStateEnum::AwaitingHostFeedback(state),

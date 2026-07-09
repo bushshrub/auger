@@ -1,7 +1,8 @@
 //! The various states that the session can be in
 
+use crate::tool_call_batch::{Resolving, ToolCallBatch, ToolCallBatchError};
 use either::Either;
-use provider::thread::{AddToolResultError, ClankerTurn, ToolResultsPending, UserTurn};
+use provider::thread::{ClankerTurn, ToolResultsPending, UserTurn};
 use provider::{
     ClankerMessage, LlmRequest, LlmResponse, LlmThread, StreamEvent, ToolDefinition, ToolResult,
     UserPrompt,
@@ -53,6 +54,7 @@ impl fmt::Debug for SessionState<AwaitingHostFeedback> {
         f.debug_struct("SessionState<AwaitingHostFeedback>")
             .field("id", &self.id)
             .field("thread", &self.state.thread)
+            .field("tool_call_batch", &self.state.tool_call_batch)
             .finish()
     }
 }
@@ -126,7 +128,10 @@ impl SessionState<LlmTurnRunning> {
             }),
             Either::Right(thread) => Either::Right(SessionState {
                 id: self.id,
-                state: AwaitingHostFeedback { thread },
+                state: AwaitingHostFeedback {
+                    tool_call_batch: ToolCallBatch::new(thread.get_pending_tool_calls()),
+                    thread,
+                },
             }),
         }
     }
@@ -156,6 +161,7 @@ impl SessionState<LlmTurnRunning> {
 /// and then provide the results for the tool calls.
 pub(crate) struct AwaitingHostFeedback {
     thread: LlmThread<ToolResultsPending>,
+    tool_call_batch: ToolCallBatch<Resolving>,
 }
 
 impl State for AwaitingHostFeedback {}
@@ -166,54 +172,63 @@ impl SessionState<AwaitingHostFeedback> {
             id: self.id,
             state: AwaitingHostFeedback {
                 thread: self.state.thread.add_steering_message(prompt),
+                tool_call_batch: self.state.tool_call_batch,
             },
         }
-    }
-
-    /// Add a single tool result. Self-transitions if there are still
-    /// more tool results to deal with, otherwise moves into a state which
-    /// indicates it is time for the LLM to respond.
-    /// Errors if the tool result passed in wasn't requested.
-    pub fn add_tool_result(
-        self,
-        result: ToolResult,
-    ) -> Result<Either<Self, SessionState<LlmTurnRunning>>, AddToolResultError> {
-        match self.state.thread.add_tool_result(result)? {
-            Either::Left(thread) => Ok(Either::Left(SessionState {
-                id: self.id,
-                state: AwaitingHostFeedback { thread },
-            })),
-            Either::Right(thread) => Ok(Either::Right(SessionState {
-                id: self.id,
-                state: LlmTurnRunning { thread },
-            })),
-        }
-    }
-
-    /// Validate that all tool results correspond to pending tool calls.
-    pub fn validate_tool_results(&self, results: &[ToolResult]) -> Result<(), AddToolResultError> {
-        for result in results {
-            self.state.thread.validate_tool_result(result)?;
-        }
-
-        Ok(())
     }
 
     /// Adds multiple tool results.
     pub fn add_tool_results(
         self,
         results: Vec<ToolResult>,
-    ) -> Result<Either<Self, SessionState<LlmTurnRunning>>, AddToolResultError> {
-        let mut state = self;
-        for result in results {
-            state = match state.add_tool_result(result) {
-                Ok(Either::Left(s)) => s,
-                // todo: this disposes invalid tool results at the end, is that okay?
-                Ok(Either::Right(s)) => return Ok(Either::Right(s)),
-                Err(e) => return Err(e),
-            };
+    ) -> Result<Either<Self, SessionState<LlmTurnRunning>>, (Self, ToolCallBatchError)> {
+        let SessionState {
+            id,
+            state:
+                AwaitingHostFeedback {
+                    thread,
+                    tool_call_batch,
+                },
+        } = self;
+
+        match tool_call_batch.resolve_many(results) {
+            Ok(Either::Left(tool_call_batch)) => Ok(Either::Left(SessionState {
+                id,
+                state: AwaitingHostFeedback {
+                    thread,
+                    tool_call_batch,
+                },
+            })),
+            Ok(Either::Right(tool_call_batch)) => {
+                let mut thread = thread;
+                for result in tool_call_batch.into_results() {
+                    thread = match thread.add_tool_result(result) {
+                        Ok(Either::Left(next)) => next,
+                        Ok(Either::Right(thread)) => {
+                            return Ok(Either::Right(SessionState {
+                                id,
+                                state: LlmTurnRunning { thread },
+                            }));
+                        }
+                        Err(err) => {
+                            unreachable!("tool batch accepted an invalid result: {err}");
+                        }
+                    };
+                }
+
+                unreachable!("complete tool batch did not complete the provider thread")
+            }
+            Err((tool_call_batch, err)) => Err((
+                SessionState {
+                    id,
+                    state: AwaitingHostFeedback {
+                        thread,
+                        tool_call_batch,
+                    },
+                },
+                err,
+            )),
         }
-        Ok(Either::Left(state))
     }
 
     /// Abort every pending tool call and wait for the next user message.

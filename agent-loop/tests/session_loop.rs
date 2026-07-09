@@ -1,7 +1,7 @@
 use agent_loop::{
     LlmDelta, ModelTurnOutcome, Session, SessionCommand, SessionEvent, SessionStatus,
 };
-use provider::{LlmModel, LlmResponse, Message, UserPrompt};
+use provider::{LlmModel, LlmResponse, Message, ToolCallRequest, ToolResult, UserPrompt};
 use provider_dummy::DummyProvider;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -131,6 +131,119 @@ fn session_loop_emits_model_turn_events() {
         .expect("send shutdown");
 }
 
+#[test]
+fn session_loop_waits_until_all_tool_results_are_provided() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("create tokio runtime");
+    let provider = DummyProvider::new([
+        LlmResponse {
+            content: String::new(),
+            reasoning: None,
+            tool_calls: Some(vec![
+                tool_call("call_1", "read_file"),
+                tool_call("call_2", "list_files"),
+            ]),
+            usage: None,
+            stop_reason: Some("tool_calls".to_string()),
+        },
+        llm_response("done"),
+    ]);
+    let model = LlmModel::new(Arc::new(provider.clone()), "dummy-model");
+
+    let handle = Session::start(
+        "You are a test assistant.".to_string(),
+        Vec::new(),
+        model,
+        runtime.handle().clone(),
+    );
+
+    handle
+        .command_channel()
+        .send(SessionCommand::AddUserMessage(UserPrompt::new(
+            "use tools".to_string(),
+        )))
+        .expect("send user message");
+
+    let events = recv_until_model_turn_done(handle.event_channel());
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            SessionEvent::ModelTurnDone(ModelTurnOutcome::NeedsToolResults)
+        )
+    }));
+
+    let event = handle
+        .event_channel()
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive initial awaiting feedback status");
+    assert!(matches!(
+        event,
+        SessionEvent::StateChanged(SessionStatus::AwaitingHostFeedback)
+    ));
+
+    handle
+        .command_channel()
+        .send(SessionCommand::AddToolResults(vec![ToolResult::new(
+            "call_1".to_string(),
+            "first result".to_string(),
+        )]))
+        .expect("send first tool result");
+
+    let event = handle
+        .event_channel()
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive awaiting feedback status");
+    assert!(matches!(
+        event,
+        SessionEvent::StateChanged(SessionStatus::AwaitingHostFeedback)
+    ));
+    assert_eq!(provider.requests().len(), 1);
+
+    handle
+        .command_channel()
+        .send(SessionCommand::AddToolResults(vec![ToolResult::new(
+            "call_1".to_string(),
+            "duplicate result".to_string(),
+        )]))
+        .expect("send duplicate tool result");
+
+    let event = handle
+        .event_channel()
+        .recv_timeout(Duration::from_secs(2))
+        .expect("receive invalid tool result error");
+    assert!(matches!(
+        event,
+        SessionEvent::Error(agent_loop::SessionError::InvalidToolResult(_))
+    ));
+    assert_eq!(provider.requests().len(), 1);
+
+    handle
+        .command_channel()
+        .send(SessionCommand::AddToolResults(vec![ToolResult::new(
+            "call_2".to_string(),
+            "second result".to_string(),
+        )]))
+        .expect("send second tool result");
+
+    let requests = wait_for_request_count(&provider, 2);
+    assert_eq!(requests[1].messages().len(), 4);
+    assert!(matches!(
+        &requests[1].messages()[3],
+        Message::User {
+            tool_call_results,
+            ..
+        } if tool_call_results.len() == 2
+            && tool_call_results[0].id() == "call_1"
+            && tool_call_results[1].id() == "call_2"
+    ));
+
+    handle
+        .command_channel()
+        .send(SessionCommand::Shutdown)
+        .expect("send shutdown");
+}
+
 fn llm_response(content: &str) -> LlmResponse {
     LlmResponse {
         content: content.to_string(),
@@ -138,6 +251,14 @@ fn llm_response(content: &str) -> LlmResponse {
         tool_calls: None,
         usage: None,
         stop_reason: Some("stop".to_string()),
+    }
+}
+
+fn tool_call(id: &str, name: &str) -> ToolCallRequest {
+    ToolCallRequest {
+        id: id.to_string(),
+        name: name.to_string(),
+        arguments: "{}".to_string(),
     }
 }
 
