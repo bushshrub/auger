@@ -1,8 +1,10 @@
 use agent_loop::{
     LlmDelta, ModelTurnOutcome, Session, SessionCommand, SessionEvent, SessionStatus,
 };
-use provider::{LlmModel, LlmResponse, Message, ToolCallRequest, ToolResult, UserPrompt};
-use provider_dummy::DummyProvider;
+use provider::{
+    LlmError, LlmModel, LlmResponse, Message, StreamEvent, ToolCallRequest, ToolResult, UserPrompt,
+};
+use provider_dummy::{DummyProvider, DummyResponse};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -124,6 +126,125 @@ fn session_loop_emits_model_turn_events() {
             }) if stop_reason.as_deref() == Some("stop")
         )
     }));
+
+    handle
+        .command_channel()
+        .send(SessionCommand::Shutdown)
+        .expect("send shutdown");
+}
+
+#[test]
+fn session_loop_does_not_complete_model_turn_after_stream_open_error() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("create tokio runtime");
+    let provider = DummyProvider::new([]);
+    let model = LlmModel::new(Arc::new(provider), "dummy-model");
+
+    let handle = Session::start(
+        "You are a test assistant.".to_string(),
+        Vec::new(),
+        model,
+        runtime.handle().clone(),
+    );
+
+    handle
+        .command_channel()
+        .send(SessionCommand::AddUserMessage(UserPrompt::new(
+            "hello".to_string(),
+        )))
+        .expect("send user message");
+
+    let events = recv_until_response_error_after_error(handle.event_channel());
+    assert!(events.iter().any(|event| matches!(
+        event,
+        SessionEvent::Error(agent_loop::SessionError::Model(_))
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::ModelTurnDone(_)))
+    );
+
+    handle
+        .command_channel()
+        .send(SessionCommand::Shutdown)
+        .expect("send shutdown");
+}
+
+#[test]
+fn session_loop_preserves_partial_response_after_mid_stream_error() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("create tokio runtime");
+    let provider = DummyProvider::new_responses([
+        DummyResponse::Stream(vec![
+            Ok(StreamEvent::TextDelta("partial".to_string())),
+            Err(LlmError {
+                message: "stream failed".to_string(),
+            }),
+        ]),
+        DummyResponse::Response(llm_response("recovered")),
+    ]);
+    let model = LlmModel::new(Arc::new(provider.clone()), "dummy-model");
+
+    let handle = Session::start(
+        "You are a test assistant.".to_string(),
+        Vec::new(),
+        model,
+        runtime.handle().clone(),
+    );
+
+    handle
+        .command_channel()
+        .send(SessionCommand::AddUserMessage(UserPrompt::new(
+            "hello".to_string(),
+        )))
+        .expect("send user message");
+
+    let events = recv_until_response_error_after_error(handle.event_channel());
+    assert!(events.iter().any(|event| matches!(
+        event,
+        SessionEvent::ModelTurnInterrupted {
+            partial_response,
+            ..
+        } if partial_response.content() == "partial"
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::ModelTurnDone(_)))
+    );
+
+    let snapshot = snapshot(&handle);
+    assert_eq!(snapshot.status(), SessionStatus::ResponseError);
+    assert!(matches!(
+        &snapshot.messages()[2],
+        Message::Assistant {
+            content,
+            tool_calls,
+            ..
+        } if content == "partial" && tool_calls.is_empty()
+    ));
+
+    handle
+        .command_channel()
+        .send(SessionCommand::AddUserMessage(UserPrompt::new(
+            "continue".to_string(),
+        )))
+        .expect("send recovery message");
+    recv_until_model_turn_done(handle.event_channel());
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(matches!(
+        &requests[1].messages()[2],
+        Message::Assistant { content, .. } if content == "partial"
+    ));
+    assert!(matches!(
+        &requests[1].messages()[3],
+        Message::User { message, .. } if message.message() == "continue"
+    ));
 
     handle
         .command_channel()
@@ -396,6 +517,31 @@ fn recv_until_model_turn_done(receiver: &mpsc::Receiver<SessionEvent>) -> Vec<Se
         let done = matches!(event, SessionEvent::ModelTurnDone(_));
         events.push(event);
         if done {
+            return events;
+        }
+    }
+}
+
+fn recv_until_response_error_after_error(
+    receiver: &mpsc::Receiver<SessionEvent>,
+) -> Vec<SessionEvent> {
+    let mut events = Vec::new();
+    let mut saw_error = false;
+    loop {
+        let event = receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("receive session event");
+        saw_error |= matches!(
+            event,
+            SessionEvent::Error(_) | SessionEvent::ModelTurnInterrupted { .. }
+        );
+        let settled = saw_error
+            && matches!(
+                event,
+                SessionEvent::StateChanged(SessionStatus::ResponseError)
+            );
+        events.push(event);
+        if settled {
             return events;
         }
     }

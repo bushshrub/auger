@@ -13,11 +13,27 @@ pub struct DummyProvider {
 #[derive(Debug, Default)]
 struct DummyProviderState {
     requests: Vec<LlmRequest>,
-    responses: VecDeque<LlmResponse>,
+    responses: VecDeque<DummyResponse>,
+}
+
+#[derive(Debug, Clone)]
+pub enum DummyResponse {
+    Response(LlmResponse),
+    Stream(Vec<Result<StreamEvent, LlmError>>),
+}
+
+impl From<LlmResponse> for DummyResponse {
+    fn from(response: LlmResponse) -> Self {
+        Self::Response(response)
+    }
 }
 
 impl DummyProvider {
     pub fn new(responses: impl IntoIterator<Item = LlmResponse>) -> Self {
+        Self::new_responses(responses.into_iter().map(DummyResponse::from))
+    }
+
+    pub fn new_responses(responses: impl IntoIterator<Item = DummyResponse>) -> Self {
         Self {
             state: Arc::new(Mutex::new(DummyProviderState {
                 requests: Vec::new(),
@@ -34,7 +50,7 @@ impl DummyProvider {
             .clone()
     }
 
-    fn next_response(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
+    fn next_response(&self, request: LlmRequest) -> Result<DummyResponse, LlmError> {
         let mut state = self.state.lock().expect("dummy provider mutex poisoned");
         state.requests.push(request);
         state.responses.pop_front().ok_or_else(|| LlmError {
@@ -46,12 +62,21 @@ impl DummyProvider {
 #[async_trait::async_trait]
 impl LlmProvider for DummyProvider {
     async fn complete(&self, _model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError> {
-        self.next_response(request)
+        match self.next_response(request)? {
+            DummyResponse::Response(response) => Ok(response),
+            DummyResponse::Stream(_) => Err(LlmError {
+                message: "dummy provider queued a stream response for complete".to_string(),
+            }),
+        }
     }
 
     async fn stream(&self, _model: &str, request: LlmRequest) -> Result<LlmStream, LlmError> {
-        let response = self.next_response(request)?;
-        Ok(Box::pin(stream::iter(response_to_stream_events(response))))
+        match self.next_response(request)? {
+            DummyResponse::Response(response) => {
+                Ok(Box::pin(stream::iter(response_to_stream_events(response))))
+            }
+            DummyResponse::Stream(events) => Ok(Box::pin(stream::iter(events))),
+        }
     }
 }
 
