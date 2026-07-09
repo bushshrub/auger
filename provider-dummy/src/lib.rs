@@ -13,17 +13,11 @@ pub struct DummyProvider {
 #[derive(Debug, Default)]
 struct DummyProviderState {
     requests: Vec<LlmRequest>,
-    responses: VecDeque<Result<LlmResponse, LlmError>>,
+    responses: VecDeque<LlmResponse>,
 }
 
 impl DummyProvider {
     pub fn new(responses: impl IntoIterator<Item = LlmResponse>) -> Self {
-        Self::with_results(responses.into_iter().map(Ok))
-    }
-
-    pub fn with_results(
-        responses: impl IntoIterator<Item = Result<LlmResponse, LlmError>>,
-    ) -> Self {
         Self {
             state: Arc::new(Mutex::new(DummyProviderState {
                 requests: Vec::new(),
@@ -43,10 +37,8 @@ impl DummyProvider {
     fn next_response(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
         let mut state = self.state.lock().expect("dummy provider mutex poisoned");
         state.requests.push(request);
-        state.responses.pop_front().unwrap_or_else(|| {
-            Err(LlmError {
-                message: "dummy provider has no queued response".to_string(),
-            })
+        state.responses.pop_front().ok_or_else(|| LlmError {
+            message: "dummy provider has no queued response".to_string(),
         })
     }
 }

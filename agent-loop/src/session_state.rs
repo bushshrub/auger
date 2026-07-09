@@ -147,19 +147,6 @@ impl SessionState<LlmTurnRunning> {
 
         self.add_llm_response(ClankerMessage::from(LlmResponse::from(partial_response)))
     }
-
-    pub fn abandon_and_add_user_message(self, prompt: UserPrompt) -> SessionState<LlmTurnRunning> {
-        SessionState {
-            id: self.id,
-            state: LlmTurnRunning {
-                thread: self
-                    .state
-                    .thread
-                    .abandon_clanker_turn()
-                    .add_user_message(prompt),
-            },
-        }
-    }
 }
 
 /// The state after the LLM response has fully generated,
@@ -174,10 +161,6 @@ pub(crate) struct AwaitingHostFeedback {
 impl State for AwaitingHostFeedback {}
 
 impl SessionState<AwaitingHostFeedback> {
-    pub fn pending_tool_calls(&self) -> Vec<provider::ToolCallRequest> {
-        self.state.thread.get_pending_tool_calls()
-    }
-
     pub fn add_steering_prompt(self, prompt: UserPrompt) -> SessionState<AwaitingHostFeedback> {
         SessionState {
             id: self.id,

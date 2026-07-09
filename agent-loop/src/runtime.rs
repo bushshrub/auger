@@ -3,10 +3,7 @@ use crate::session_state::{
 };
 use either::Either;
 use futures::StreamExt;
-use provider::{
-    ClankerMessage, LlmError, LlmModel, LlmResponse, StreamEvent, ToolCallRequest, ToolDefinition,
-    ToolResult, UserPrompt,
-};
+use provider::{LlmModel, StreamEvent, ToolDefinition, ToolResult, UserPrompt};
 use std::sync::mpsc;
 use std::time::SystemTime;
 use std::{fmt, thread};
@@ -44,8 +41,8 @@ pub struct Session {
 pub struct SessionHandle {
     /// ID of the session this handle is a handle to
     id: SessionId,
-    commands: mpsc::Sender<SessionCommand>,
-    events: mpsc::Receiver<SessionEvent>,
+    /// Channel to send events through
+    events: mpsc::Sender<SessionCommand>,
 }
 
 impl SessionHandle {
@@ -53,11 +50,7 @@ impl SessionHandle {
         self.id
     }
 
-    pub fn commands(&self) -> &mpsc::Sender<SessionCommand> {
-        &self.commands
-    }
-
-    pub fn events(&self) -> &mpsc::Receiver<SessionEvent> {
+    pub fn events(&self) -> &mpsc::Sender<SessionCommand> {
         &self.events
     }
 }
@@ -77,16 +70,14 @@ pub struct SessionSnapshot {
 pub enum SessionCommand {
     /// Add a user message. The host is expected to send this whenever
     /// the user sends a message while the session is idle.
-    SubmitInput(UserPrompt),
+    AddUserMessage(UserPrompt),
     /// Add a bunch of tool results.
     /// The host should send this when it has finished executing the tool calls
     /// requested by the model
-    SubmitHostFeedback(Vec<ToolResult>),
+    AddToolResults(Vec<ToolResult>),
     /// Adds a steering prompt. This prompt rides
     /// back with any tool results.
     AddSteeringPrompt(UserPrompt),
-    /// Retry the current response after a streaming failure.
-    RetryResponse,
     /// Request a snapshot of the current session state
     Snapshot {
         /// Channel for the session loop to send the snapshot back on.
@@ -96,16 +87,6 @@ pub enum SessionCommand {
     Interrupt,
     /// Request to terminate the session.
     Shutdown,
-}
-
-#[derive(Debug, Clone)]
-pub enum SessionEvent {
-    StreamingStarted,
-    StreamEvent(StreamEvent),
-    FinalAssistantResponse(ClankerMessage),
-    ModelToolCallBatchReady(Vec<ToolCallRequest>),
-    Interrupted,
-    StreamFailed(LlmError),
 }
 
 impl Session {
@@ -120,7 +101,6 @@ impl Session {
         runtime: Handle,
     ) -> SessionHandle {
         let id = SessionId::new();
-        let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
         let sess_state = SessionState::<Idle>::new(system_prompt);
@@ -133,24 +113,19 @@ impl Session {
         };
 
         thread::spawn(move || {
-            session.run(command_rx, event_tx);
+            session.run(event_rx);
         });
 
         SessionHandle {
             id,
-            commands: command_tx,
-            events: event_rx,
+            events: event_tx,
         }
     }
 
     /// Run the session. This will block until the session is complete.
     /// Commands should be sent via the sending half of the channel,
     /// which is in SessionHandle.
-    fn run(
-        &mut self,
-        command_recv: mpsc::Receiver<SessionCommand>,
-        event_tx: mpsc::Sender<SessionEvent>,
-    ) {
+    fn run(&mut self, command_recv: mpsc::Receiver<SessionCommand>) {
         info!(id = %self.id, "Starting session");
 
         loop {
@@ -168,13 +143,12 @@ impl Session {
                 SessionCommand::Interrupt => {
                     let state = std::mem::replace(&mut self.state, SessionStateEnum::Poisoned);
                     self.state = handle_interrupt(state);
-                    let _ = event_tx.send(SessionEvent::Interrupted);
                 }
                 // Any other commands require LLM response.
                 command => {
                     let state = std::mem::replace(&mut self.state, SessionStateEnum::Poisoned);
                     self.state = handle_event(state, command);
-                    self.stream_llm_response(&event_tx);
+                    self.stream_llm_response();
                 }
             }
         }
@@ -182,7 +156,7 @@ impl Session {
         info!(id = %self.id, "Session stopped");
     }
 
-    fn stream_llm_response(&mut self, event_tx: &mpsc::Sender<SessionEvent>) {
+    fn stream_llm_response(&mut self) {
         let state = std::mem::replace(&mut self.state, SessionStateEnum::Poisoned);
 
         self.state = match state {
@@ -191,39 +165,31 @@ impl Session {
                 mut partial_response,
             } => {
                 let request = state.create_request(self.tools.clone());
-                let _ = event_tx.send(SessionEvent::StreamingStarted);
-                let stream_result = self.runtime.block_on(async {
+                let partial_response = self.runtime.block_on(async {
                     let mut stream = match self.model.stream(request).await {
                         Ok(stream) => stream,
-                        Err(err) => return Err((partial_response, err)),
+                        Err(_) => return partial_response,
                     };
 
                     while let Some(event) = stream.next().await {
                         match event {
                             Ok(event) => {
                                 let done = matches!(event, StreamEvent::Done { .. });
-                                let _ = event_tx.send(SessionEvent::StreamEvent(event.clone()));
                                 partial_response.push(event);
                                 if done {
                                     break;
                                 }
                             }
-                            Err(err) => return Err((partial_response, err)),
+                            Err(_) => return partial_response,
                         }
                     }
 
-                    Ok(partial_response)
+                    partial_response
                 });
 
-                match stream_result {
-                    Ok(partial_response) => commit_llm_response(state, partial_response, event_tx),
-                    Err((partial_response, err)) => {
-                        let _ = event_tx.send(SessionEvent::StreamFailed(err));
-                        SessionStateEnum::LlmTurnRunning {
-                            state,
-                            partial_response,
-                        }
-                    }
+                match state.abandon_llm_turn(partial_response) {
+                    Either::Left(state) => state.into(),
+                    Either::Right(state) => state.into(),
                 }
             }
             state => state,
@@ -283,18 +249,18 @@ impl From<SessionState<AwaitingInterruptedUserMessage>> for SessionStateEnum {
 
 fn handle_event(state: SessionStateEnum, event: SessionCommand) -> SessionStateEnum {
     match (state, event) {
-        (SessionStateEnum::Idle(state), SessionCommand::SubmitInput(prompt)) => {
+        (SessionStateEnum::Idle(state), SessionCommand::AddUserMessage(prompt)) => {
             state.add_user_message(prompt).into()
         }
 
         (
             SessionStateEnum::AwaitingInterruptedUserMessage(state),
-            SessionCommand::SubmitInput(prompt),
+            SessionCommand::AddUserMessage(prompt),
         ) => state.add_user_message(prompt).into(),
 
         (
             SessionStateEnum::AwaitingHostFeedback(state),
-            SessionCommand::SubmitHostFeedback(results),
+            SessionCommand::AddToolResults(results),
         ) => {
             if let Err(err) = state.validate_tool_results(&results) {
                 warn!(error = %err, "Invalid tool result");
@@ -311,21 +277,6 @@ fn handle_event(state: SessionStateEnum, event: SessionCommand) -> SessionStateE
         }
 
         (
-            SessionStateEnum::LlmTurnRunning {
-                state,
-                partial_response,
-            },
-            SessionCommand::RetryResponse,
-        ) => SessionStateEnum::LlmTurnRunning {
-            state,
-            partial_response,
-        },
-
-        (SessionStateEnum::LlmTurnRunning { state, .. }, SessionCommand::SubmitInput(prompt)) => {
-            state.abandon_and_add_user_message(prompt).into()
-        }
-
-        (
             SessionStateEnum::AwaitingHostFeedback(state),
             SessionCommand::AddSteeringPrompt(prompt),
         ) => state.add_steering_prompt(prompt).into(),
@@ -333,26 +284,6 @@ fn handle_event(state: SessionStateEnum, event: SessionCommand) -> SessionStateE
         (state, _event) => {
             // invalid event for current state; eventually emit/log an error
             state
-        }
-    }
-}
-
-fn commit_llm_response(
-    state: SessionState<LlmTurnRunning>,
-    partial_response: Vec<StreamEvent>,
-    event_tx: &mpsc::Sender<SessionEvent>,
-) -> SessionStateEnum {
-    let message = ClankerMessage::from(LlmResponse::from(partial_response));
-    match state.add_llm_response(message.clone()) {
-        Either::Left(state) => {
-            let _ = event_tx.send(SessionEvent::FinalAssistantResponse(message));
-            state.into()
-        }
-        Either::Right(state) => {
-            let _ = event_tx.send(SessionEvent::ModelToolCallBatchReady(
-                state.pending_tool_calls(),
-            ));
-            state.into()
         }
     }
 }

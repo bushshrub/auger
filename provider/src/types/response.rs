@@ -41,25 +41,10 @@ pub enum StreamEvent {
     },
 }
 
-#[derive(Debug, Clone)]
 pub struct ClankerMessage {
     reasoning: Option<String>,
     pub(crate) tool_calls: Vec<ToolCallRequest>,
     content: String,
-}
-
-impl ClankerMessage {
-    pub fn tool_calls(&self) -> &[ToolCallRequest] {
-        &self.tool_calls
-    }
-
-    pub fn content(&self) -> &str {
-        &self.content
-    }
-
-    pub fn reasoning(&self) -> Option<&str> {
-        self.reasoning.as_deref()
-    }
 }
 
 impl From<LlmResponse> for ClankerMessage {

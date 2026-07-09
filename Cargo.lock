@@ -6,13 +6,11 @@ version = 4
 name = "agent-core"
 version = "0.1.0"
 dependencies = [
- "agent-loop",
  "agent-tools",
  "builtin-tools",
  "either",
  "futures",
  "provider",
- "provider-dummy",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
