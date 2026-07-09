@@ -1,6 +1,7 @@
 use crate::events::{LlmDelta, ModelTurnOutcome, SessionError, SessionEvent, SessionStatus};
 use crate::session_state::{
-    AwaitingHostFeedback, AwaitingInterruptedUserMessage, Idle, LlmTurnRunning, SessionState,
+    AwaitingHostFeedback, AwaitingInterruptedUserMessage, Idle, LlmTurnRunning, ResponseError,
+    SessionState,
 };
 use either::Either;
 use futures::StreamExt;
@@ -204,6 +205,11 @@ impl Session {
                                 SessionStatus::AwaitingInterruptedUserMessage,
                             ));
                         }
+                        SessionStateEnum::ResponseError(_) => {
+                            let _ = self
+                                .event_tx
+                                .send(SessionEvent::StateChanged(SessionStatus::ResponseError));
+                        }
                         SessionStateEnum::LlmTurnRunning { .. } => {
                             unreachable!(
                                 "interrupting an LLM turn should settle into idle or host feedback"
@@ -240,14 +246,14 @@ impl Session {
                 mut partial_response,
             } => {
                 let request = state.create_request(self.tools.clone());
-                let partial_response = self.runtime.block_on(async {
+                let stream_result = self.runtime.block_on(async {
                     let mut stream = match self.model.stream(request).await {
                         Ok(stream) => stream,
                         Err(err) => {
-                            let _ = self
-                                .event_tx
-                                .send(SessionEvent::Error(SessionError::Model(err.to_string())));
-                            return partial_response;
+                            return Err(ModelStreamFailure {
+                                error: SessionError::Model(err.to_string()),
+                                partial_response,
+                            });
                         }
                     };
 
@@ -292,55 +298,82 @@ impl Session {
                                 }
                             }
                             Err(err) => {
-                                let _ = self.event_tx.send(SessionEvent::Error(
-                                    SessionError::Model(err.to_string()),
-                                ));
-                                return partial_response;
+                                return Err(ModelStreamFailure {
+                                    error: SessionError::Model(err.to_string()),
+                                    partial_response,
+                                });
                             }
                         }
                     }
 
-                    partial_response
+                    Ok(partial_response)
                 });
 
-                let mut usage = None;
-                let mut stop_reason = None;
-                for event in &partial_response {
-                    if let StreamEvent::Done {
-                        usage: event_usage,
-                        stop_reason: event_stop_reason,
-                    } = event
-                    {
-                        usage = event_usage.clone();
-                        stop_reason = event_stop_reason.clone();
-                    }
-                }
+                match stream_result {
+                    Ok(partial_response) => {
+                        let mut usage = None;
+                        let mut stop_reason = None;
+                        for event in &partial_response {
+                            if let StreamEvent::Done {
+                                usage: event_usage,
+                                stop_reason: event_stop_reason,
+                            } = event
+                            {
+                                usage = event_usage.clone();
+                                stop_reason = event_stop_reason.clone();
+                            }
+                        }
 
-                let next_state: SessionStateEnum = match state.abandon_llm_turn(partial_response) {
-                    Either::Left(state) => state.into(),
-                    Either::Right(state) => state.into(),
-                };
-                match &next_state {
-                    SessionStateEnum::AwaitingHostFeedback(state) => {
-                        let _ = self.event_tx.send(SessionEvent::ModelTurnDone(
-                            ModelTurnOutcome::NeedsToolResults {
-                                tool_calls: state.requested_tool_calls(),
-                            },
-                        ));
-                        let _ = self.event_tx.send(SessionEvent::StateChanged(
-                            SessionStatus::AwaitingHostFeedback,
-                        ));
+                        let next_state: SessionStateEnum =
+                            match state.abandon_llm_turn(partial_response) {
+                                Either::Left(state) => state.into(),
+                                Either::Right(state) => state.into(),
+                            };
+                        match &next_state {
+                            SessionStateEnum::AwaitingHostFeedback(state) => {
+                                let _ = self.event_tx.send(SessionEvent::ModelTurnDone(
+                                    ModelTurnOutcome::NeedsToolResults {
+                                        tool_calls: state.requested_tool_calls(),
+                                    },
+                                ));
+                                let _ = self.event_tx.send(SessionEvent::StateChanged(
+                                    SessionStatus::AwaitingHostFeedback,
+                                ));
+                            }
+                            _ => {
+                                let _ = self.event_tx.send(SessionEvent::ModelTurnDone(
+                                    ModelTurnOutcome::AssistantMessageComplete {
+                                        usage,
+                                        stop_reason,
+                                    },
+                                ));
+                                let _ = self
+                                    .event_tx
+                                    .send(SessionEvent::StateChanged(SessionStatus::Idle));
+                            }
+                        }
+                        next_state
                     }
-                    _ => {
-                        let _ = self.event_tx.send(SessionEvent::ModelTurnDone(
-                            ModelTurnOutcome::AssistantMessageComplete { usage, stop_reason },
-                        ));
+                    Err(ModelStreamFailure {
+                        error,
+                        partial_response,
+                    }) => {
+                        let (next_state, partial) = state.interrupt_llm_turn(partial_response);
+                        if partial.is_empty() {
+                            let _ = self.event_tx.send(SessionEvent::Error(error));
+                        } else {
+                            let _ = self.event_tx.send(SessionEvent::ModelTurnInterrupted {
+                                partial_response: partial,
+                                error,
+                            });
+                        }
+                        let next_state: SessionStateEnum = next_state.into();
                         let _ = self
                             .event_tx
-                            .send(SessionEvent::StateChanged(SessionStatus::Idle));
+                            .send(SessionEvent::StateChanged(SessionStatus::ResponseError));
+                        next_state
                     }
                 }
-                next_state
             }
             state => state,
         };
@@ -368,6 +401,7 @@ pub(crate) enum SessionStateEnum {
     },
     AwaitingHostFeedback(SessionState<AwaitingHostFeedback>),
     AwaitingInterruptedUserMessage(SessionState<AwaitingInterruptedUserMessage>),
+    ResponseError(SessionState<ResponseError>),
     /// This is a bad state. This happens if the event or interrupt handling fails.
     Poisoned,
 }
@@ -381,6 +415,7 @@ impl SessionStateEnum {
             SessionStateEnum::AwaitingInterruptedUserMessage(_) => {
                 SessionStatus::AwaitingInterruptedUserMessage
             }
+            SessionStateEnum::ResponseError(_) => SessionStatus::ResponseError,
             SessionStateEnum::Poisoned => SessionStatus::AwaitingInterruptedUserMessage,
         }
     }
@@ -391,6 +426,7 @@ impl SessionStateEnum {
             SessionStateEnum::LlmTurnRunning { state, .. } => state.messages(),
             SessionStateEnum::AwaitingHostFeedback(state) => state.messages(),
             SessionStateEnum::AwaitingInterruptedUserMessage(state) => state.messages(),
+            SessionStateEnum::ResponseError(state) => state.messages(),
             SessionStateEnum::Poisoned => Vec::new(),
         }
     }
@@ -423,6 +459,12 @@ impl From<SessionState<AwaitingInterruptedUserMessage>> for SessionStateEnum {
     }
 }
 
+impl From<SessionState<ResponseError>> for SessionStateEnum {
+    fn from(state: SessionState<ResponseError>) -> Self {
+        SessionStateEnum::ResponseError(state)
+    }
+}
+
 fn handle_event(
     state: SessionStateEnum,
     event: SessionCommand,
@@ -438,6 +480,11 @@ fn handle_event(
             SessionStateEnum::AwaitingInterruptedUserMessage(state),
             SessionCommand::AddUserMessage(prompt),
         ) => {
+            let _ = event_tx.send(SessionEvent::StateChanged(SessionStatus::LlmTurnRunning));
+            state.add_user_message(prompt).into()
+        }
+
+        (SessionStateEnum::ResponseError(state), SessionCommand::AddUserMessage(prompt)) => {
             let _ = event_tx.send(SessionEvent::StateChanged(SessionStatus::LlmTurnRunning));
             state.add_user_message(prompt).into()
         }
@@ -510,7 +557,13 @@ fn handle_interrupt(state: SessionStateEnum) -> SessionStateEnum {
         }
 
         SessionStateEnum::AwaitingInterruptedUserMessage(state) => state.into(),
+        SessionStateEnum::ResponseError(state) => state.into(),
 
         SessionStateEnum::Poisoned => SessionStateEnum::Poisoned,
     }
+}
+
+struct ModelStreamFailure {
+    error: SessionError,
+    partial_response: Vec<StreamEvent>,
 }

@@ -1,5 +1,30 @@
 use provider::{TokenUsage, ToolCallRequest as ProviderToolCallRequest};
 
+/// Partial assistant output from a model turn that did not complete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartialModelResponse {
+    content: String,
+    reasoning: Option<String>,
+}
+
+impl PartialModelResponse {
+    pub(crate) fn new(content: String, reasoning: Option<String>) -> Self {
+        Self { content, reasoning }
+    }
+
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    pub fn reasoning(&self) -> Option<&str> {
+        self.reasoning.as_deref()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.content.is_empty() && self.reasoning.as_deref().unwrap_or_default().is_empty()
+    }
+}
+
 /// A complete tool call request emitted by the minimal loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCallRequest {
@@ -40,6 +65,11 @@ pub enum SessionEvent {
     LlmDelta(LlmDelta),
     /// Emitted when the LLM has finished streaming
     ModelTurnDone(ModelTurnOutcome),
+    /// Emitted when the LLM streamed partial output but failed before completion.
+    ModelTurnInterrupted {
+        partial_response: PartialModelResponse,
+        error: SessionError,
+    },
     /// Indicates that the session was interrupted by the user
     Interrupted,
     /// Indicates the session encountered some kind of error
@@ -88,6 +118,8 @@ pub enum SessionStatus {
     AwaitingHostFeedback,
     /// Session was interrupted and is waiting for a user message to continue
     AwaitingInterruptedUserMessage,
+    /// Session saw a model response error and is waiting for a user message to continue
+    ResponseError,
 }
 
 /// Errors emitted by the minimal loop.

@@ -1,6 +1,6 @@
 //! The various states that the session can be in
 
-use crate::events::ToolCallRequest;
+use crate::events::{PartialModelResponse, ToolCallRequest};
 use crate::tool_call_batch::{Resolving, ToolCallBatch, ToolCallBatchError};
 use either::Either;
 use provider::thread::{ClankerTurn, ToolResultsPending, UserTurn};
@@ -25,6 +25,7 @@ mod private {
 
     impl Sealed for AwaitingHostFeedback {}
     impl Sealed for AwaitingInterruptedUserMessage {}
+    impl Sealed for ResponseError {}
 }
 
 pub(crate) struct SessionState<S: State> {
@@ -71,6 +72,15 @@ impl fmt::Debug for SessionState<AwaitingHostFeedback> {
 impl fmt::Debug for SessionState<AwaitingInterruptedUserMessage> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SessionState<AwaitingInterruptedUserMessage>")
+            .field("id", &self.id)
+            .field("thread", &self.state.thread)
+            .finish()
+    }
+}
+
+impl fmt::Debug for SessionState<ResponseError> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionState<ResponseError>")
             .field("id", &self.id)
             .field("thread", &self.state.thread)
             .finish()
@@ -168,6 +178,52 @@ impl SessionState<LlmTurnRunning> {
         }
 
         self.add_llm_response(ClankerMessage::from(LlmResponse::from(partial_response)))
+    }
+
+    /// Discard a failed model turn without committing partial model output.
+    pub fn fail_llm_turn(self) -> SessionState<ResponseError> {
+        SessionState {
+            id: self.id,
+            state: ResponseError {
+                thread: self.state.thread.abandon_clanker_turn(),
+            },
+        }
+    }
+
+    /// Commit useful partial assistant output from an interrupted model turn.
+    pub fn interrupt_llm_turn(
+        self,
+        partial_response: Vec<StreamEvent>,
+    ) -> (SessionState<ResponseError>, PartialModelResponse) {
+        let response = LlmResponse::from(partial_response);
+        let partial =
+            PartialModelResponse::new(response.content.clone(), response.reasoning.clone());
+
+        if partial.is_empty() {
+            return (self.fail_llm_turn(), partial);
+        }
+
+        let response = LlmResponse {
+            content: response.content,
+            reasoning: response.reasoning,
+            tool_calls: None,
+            usage: None,
+            stop_reason: None,
+        };
+
+        let state = match self.add_llm_response(ClankerMessage::from(response)) {
+            Either::Left(state) => SessionState {
+                id: state.id,
+                state: ResponseError {
+                    thread: state.state.thread,
+                },
+            },
+            Either::Right(_) => {
+                unreachable!("interrupted model turns do not commit tool calls")
+            }
+        };
+
+        (state, partial)
     }
 }
 
@@ -290,6 +346,31 @@ impl SessionState<AwaitingInterruptedUserMessage> {
             id: self.id,
             state: LlmTurnRunning {
                 thread: self.state.thread.abort_pending_tool_calls(prompt),
+            },
+        }
+    }
+}
+
+/// The state after a model response failed.
+///
+/// The loop has abandoned the active model turn, optionally preserving partial
+/// assistant output, and waits for the next user message to continue.
+pub(crate) struct ResponseError {
+    thread: LlmThread<UserTurn>,
+}
+
+impl State for ResponseError {
+    fn messages(&self) -> &[Message] {
+        self.thread.messages()
+    }
+}
+
+impl SessionState<ResponseError> {
+    pub fn add_user_message(self, prompt: UserPrompt) -> SessionState<LlmTurnRunning> {
+        SessionState {
+            id: self.id,
+            state: LlmTurnRunning {
+                thread: self.state.thread.add_user_message(prompt),
             },
         }
     }
