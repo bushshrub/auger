@@ -268,6 +268,6 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
         }
         .boxed();
 
-        Ok(stream)
+        Ok(LlmStream::new(stream))
     }
 }

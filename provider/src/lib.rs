@@ -16,6 +16,6 @@ pub use types::*;
 pub trait LlmProvider: Send + Sync {
     /// Get a non-streaming response from the clanker
     async fn complete(&self, model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError>;
-    /// Let the clanker yap over a stream
+    /// Let the clanker yap over an abortable stream.
     async fn stream(&self, model: &str, request: LlmRequest) -> Result<LlmStream, LlmError>;
 }

@@ -17,9 +17,7 @@ pub(crate) enum ModelStreamTerminal {
 }
 
 /// Stream the output of a model and push into events, with
-/// cancellation mediated by the CancellationToken
-///
-/// TODO: should be added to provider crate to support cancellation.
+/// cancellation mediated by the provider stream's abort operation.
 pub(crate) async fn stream_model(
     model: LlmModel,
     request: LlmRequest,
@@ -48,6 +46,7 @@ pub(crate) async fn stream_model(
         let event = tokio::select! {
             biased;
             _ = cancellation_token.cancelled() => {
+                stream.as_mut().get_mut().abort();
                 return cancelled(partial_response);
             }
             event = stream.next() => event,

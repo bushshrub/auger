@@ -3,6 +3,7 @@ use crate::types::ToolCallRequest;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
+use std::task::{Context, Poll};
 use thiserror::Error;
 
 /// Token usage details
@@ -144,4 +145,32 @@ impl std::fmt::Display for LlmError {
 }
 
 /// Stream of events from the LLM. You can either get StreamEvents, or Errors.
-pub type LlmStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, LlmError>> + Send>>;
+pub struct LlmStream {
+    inner: Option<Pin<Box<dyn Stream<Item = Result<StreamEvent, LlmError>> + Send>>>,
+}
+
+impl LlmStream {
+    pub fn new(stream: impl Stream<Item = Result<StreamEvent, LlmError>> + Send + 'static) -> Self {
+        Self {
+            inner: Some(Box::pin(stream)),
+        }
+    }
+
+    /// Abort the stream and release the provider's underlying stream.
+    pub fn abort(&mut self) {
+        self.inner = None;
+    }
+}
+
+impl Stream for LlmStream {
+    type Item = Result<StreamEvent, LlmError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.inner.as_mut() {
+            Some(stream) => stream.as_mut().poll_next(cx),
+            None => Poll::Ready(None),
+        }
+    }
+}
+
+impl Unpin for LlmStream {}

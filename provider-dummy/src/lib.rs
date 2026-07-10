@@ -73,13 +73,13 @@ impl LlmProvider for DummyProvider {
 
     async fn stream(&self, _model: &str, request: LlmRequest) -> Result<LlmStream, LlmError> {
         match self.next_response(request)? {
-            DummyResponse::Response(response) => {
-                Ok(Box::pin(stream::iter(response_to_stream_events(response))))
-            }
-            DummyResponse::Stream(events) => Ok(Box::pin(stream::iter(events))),
-            DummyResponse::PendingStream(events) => {
-                Ok(Box::pin(stream::iter(events).chain(stream::pending())))
-            }
+            DummyResponse::Response(response) => Ok(LlmStream::new(stream::iter(
+                response_to_stream_events(response),
+            ))),
+            DummyResponse::Stream(events) => Ok(LlmStream::new(stream::iter(events))),
+            DummyResponse::PendingStream(events) => Ok(LlmStream::new(
+                stream::iter(events).chain(stream::pending()),
+            )),
         }
     }
 }

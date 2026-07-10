@@ -553,6 +553,6 @@ impl LlmProvider for OpenAiResponsesProvider {
         }
         .boxed();
 
-        Ok(s)
+        Ok(LlmStream::new(s))
     }
 }

@@ -387,6 +387,6 @@ impl LlmProvider for AnthropicProvider {
         }
         .boxed();
 
-        Ok(s)
+        Ok(LlmStream::new(s))
     }
 }
