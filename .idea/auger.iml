@@ -12,10 +12,10 @@
       <sourceFolder url="file://$MODULE_DIR$/tool-call-healer/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/auger-tui/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/builtin-tools/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/agent-loop/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/agent-loop/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/provider-dummy/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/agent-core/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/auger-driver/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/auger-driver/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
