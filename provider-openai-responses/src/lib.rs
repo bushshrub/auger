@@ -510,7 +510,7 @@ impl LlmProvider for OpenAiResponsesProvider {
                                             yield Ok(StreamEvent::ToolCall {
                                                 id: acc.call_id.clone(),
                                                 name: acc.name.clone(),
-                                                arguments: acc.arguments.clone(),
+                                                arguments: delta,
                                             });
                                         }
                                     }

@@ -236,13 +236,15 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
                                 if let Some(name) = tc["function"]["name"].as_str() {
                                     acc.name = name.to_string();
                                 }
+                                let mut arg_delta = "";
                                 if let Some(args) = tc["function"]["arguments"].as_str() {
                                     acc.arguments.push_str(args);
+                                    arg_delta = args;
                                 }
                                 yield Ok(StreamEvent::ToolCall {
                                     id: acc.id.clone(),
                                     name: acc.name.clone(),
-                                    arguments: acc.arguments.clone(),
+                                    arguments: arg_delta.to_string(),
                                 });
                             }
                         }

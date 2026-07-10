@@ -326,13 +326,12 @@ impl LlmProvider for AnthropicProvider {
                                                 .filter(|t| !t.is_empty())
                                                 .map(|t| Ok(StreamEvent::ReasoningDelta(t.to_string()))),
                                             "tool_use" => {
-                                                if let Some(partial) = delta["partial_json"].as_str() {
-                                                    block.args.push_str(partial);
-                                                }
+                                                let partial = delta["partial_json"].as_str().unwrap_or("");
+                                                block.args.push_str(partial);
                                                 Some(Ok(StreamEvent::ToolCall {
                                                     id: block.id.clone().unwrap_or_default(),
                                                     name: block.name.clone().unwrap_or_default(),
-                                                    arguments: block.args.clone(),
+                                                    arguments: partial.to_string(),
                                                 }))
                                             }
                                             _ => None,
