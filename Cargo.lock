@@ -6,8 +6,8 @@ version = 4
 name = "agent-core"
 version = "0.1.0"
 dependencies = [
- "agent-loop",
  "agent-tools",
+ "auger-driver",
  "builtin-tools",
  "either",
  "futures",
@@ -17,21 +17,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "agent-loop"
-version = "0.1.0"
-dependencies = [
- "either",
- "futures",
- "provider",
- "provider-dummy",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
  "tracing",
  "uuid",
 ]
@@ -183,6 +168,21 @@ name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
+
+[[package]]
+name = "auger-driver"
+version = "0.1.0"
+dependencies = [
+ "either",
+ "futures",
+ "provider",
+ "provider-dummy",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "auger-tui"

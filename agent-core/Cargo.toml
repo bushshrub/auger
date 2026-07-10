@@ -15,7 +15,7 @@ tracing.workspace = true
 thiserror.workspace = true
 either = "1.16.0"
 uuid = { version = "1.23.3", features = ["serde", "v4"] }
-agent-loop = { version = "0.1.0", path = "../auger-driver" }
+auger-driver = { version = "0.1.0", path = "../auger-driver" }
 
 [dev-dependencies]
 provider-dummy = { path = "../provider-dummy" }
