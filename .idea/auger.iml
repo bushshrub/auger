@@ -15,6 +15,7 @@
       <sourceFolder url="file://$MODULE_DIR$/agent-loop/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/agent-loop/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/provider-dummy/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/agent-core/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
