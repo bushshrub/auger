@@ -1,0 +1,88 @@
+use std::sync::Arc;
+
+use auger_driver::{Agent, StreamResult};
+use either::Either;
+use provider::{
+    LlmModel, LlmResponse, ToolCallRequest, ToolDefinition, ToolResult, UserPrompt,
+};
+use provider_dummy::DummyProvider;
+
+#[tokio::test]
+async fn completes_one_tool_call_iteration() {
+    let provider = DummyProvider::new([
+        LlmResponse {
+            content: String::new(),
+            reasoning: None,
+            tool_calls: Some(vec![ToolCallRequest {
+                id: "call-1".to_string(),
+                name: "read_file".to_string(),
+                arguments: "{\"path\":\"README.md\"}".to_string(),
+            }]),
+            usage: None,
+            stop_reason: Some("tool_calls".to_string()),
+        },
+        LlmResponse {
+            content: "The file has been read.".to_string(),
+            reasoning: None,
+            tool_calls: None,
+            usage: None,
+            stop_reason: Some("stop".to_string()),
+        },
+    ]);
+
+    let model = LlmModel::new(Arc::new(provider.clone()), "dummy");
+    let tools = vec![ToolDefinition {
+        name: "read_file".to_string(),
+        description: Some("Read a file from the workspace.".to_string()),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" }
+            },
+            "required": ["path"]
+        }),
+    }];
+
+    let agent = Agent::new(
+        model,
+        "You are a coding agent.".to_string(),
+        tools,
+    );
+
+    let result = agent
+        .add_message(UserPrompt::new("Read README.md.".to_string()))
+        .create_stream()
+        .await;
+
+    let tool_agent = match result {
+        StreamResult::WaitingForToolResponses(agent) => agent,
+        _ => panic!("expected the first stream to request tool responses"),
+    };
+
+    let resolving_batch = tool_agent.get_batch();
+    let resolved_batch = match resolving_batch
+        .add_result(
+            "call-1",
+            ToolResult::new("call-1".to_string(), "README contents".to_string()),
+        )
+        .expect("tool call ID should be valid")
+    {
+        Either::Right(batch) => batch,
+        Either::Left(_) => panic!("expected the single-call batch to be complete"),
+    };
+
+    let result = tool_agent
+        .add_all_tool_responses(resolved_batch)
+        .create_stream()
+        .await;
+
+    match result {
+        StreamResult::WaitingForUserMessage(_) => {}
+        _ => panic!("expected the second stream to complete without more tools"),
+    }
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].tools().len(), 1);
+    assert_eq!(requests[1].tools().len(), 1);
+}

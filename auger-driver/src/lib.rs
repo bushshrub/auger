@@ -82,6 +82,11 @@
 //! }
 //! ```
 
-mod agent;
-pub mod states;
-pub mod tool_batch;
+pub(crate) mod agent;
+pub(crate) mod states;
+pub(crate) mod tool_batch;
+
+pub use agent::Agent;
+pub use states::interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
+pub use states::streaming::{LlmStreaming as LlmStreamingFuture, StreamResult};
+pub use tool_batch::{AddToolResponseIssue, Resolved, Resolving, ToolBatch, ToolBatchState};

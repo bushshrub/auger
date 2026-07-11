@@ -1,7 +1,7 @@
 use tokio_util::sync::CancellationToken;
 use provider::{LlmModel, LlmThread, ToolDefinition, UserPrompt};
 use provider::thread::{ClankerTurn, UserTurn};
-use crate::states::streaming::{LlmStreaming, StreamResult};
+use crate::states::streaming::LlmStreaming as LlmStreamingFuture;
 /// Synchronous state machine for the auger driver.
 pub struct Agent<S: State> {
     pub(crate) model: LlmModel,
@@ -74,10 +74,10 @@ impl Agent<ReadyToStream> {
 
     /// Creates an interruptible LLM stream future.
     ///
-    pub fn create_stream(self) -> LlmStreaming {
+    pub fn create_stream(self) -> LlmStreamingFuture {
         let cancellation = CancellationToken::new();
 
-        LlmStreaming::new(
+        LlmStreamingFuture::new(
             self.model,
             self.tools,
             self.state.thread,

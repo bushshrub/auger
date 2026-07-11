@@ -17,4 +17,5 @@ getset = "0.1.7"
 
 [dev-dependencies]
 provider-dummy = { path = "../provider-dummy" }
+serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
