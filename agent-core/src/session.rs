@@ -3,9 +3,10 @@ use crate::events::{LoopEvent, SessionCommand, SessionEvent};
 use crate::tools::auto_approval::AutoApprovalPolicy;
 use crate::tools::tool_registry::ToolRegistry;
 use agent_tools::Tool;
-use auger_driver::{Agent, AgentStatus, Resolved, Resolving, ToolBatch};
+use auger_driver::{Agent, AgentStatus, AgentStream, Resolved, Resolving, ToolBatch};
 use provider::LlmModel;
 use provider::UserPrompt;
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::mpsc;
 use tokio::runtime::Handle;
@@ -64,9 +65,6 @@ impl SessionHandle {
                 LoopEvent::AgentToolResults(_, _) => {
                     unreachable!("the session handle only sends commands")
                 }
-                LoopEvent::UserToolResult { .. } => {
-                    unreachable!("the session handle only sends commands")
-                }
             })
     }
 
@@ -92,6 +90,11 @@ impl SessionHandle {
         })
     }
 
+    /// Interrupt the current model stream or tool execution.
+    pub fn interrupt(&self) -> Result<(), mpsc::SendError<SessionCommand>> {
+        self.send_command(SessionCommand::Interrupt)
+    }
+
     fn send_command(&self, command: SessionCommand) -> Result<(), mpsc::SendError<SessionCommand>> {
         self.loop_event_tx
             .send(LoopEvent::Cmd(command))
@@ -110,7 +113,7 @@ impl SessionHandle {
 pub struct Session {
     id: SessionId,
     agent: Option<Agent>,
-    activity: Activity,
+    active_operation: Option<ActiveOperation>,
     pending_batch: Option<ToolBatch<Resolving>>,
     /// Receiver to receive session commands and agent events from
     inbox: mpsc::Receiver<LoopEvent>,
@@ -119,13 +122,12 @@ pub struct Session {
     event_tx: mpsc::Sender<SessionEvent>,
     tool_registry: std::sync::Arc<ToolRegistry>,
     auto_approval: std::sync::Arc<AutoApprovalPolicy>,
-    pending_tool_decisions: Vec<(String, bool)>,
+    pending_tool_decisions: HashMap<String, bool>,
 }
 
-pub(crate) enum Activity {
-    Idle,
+enum ActiveOperation {
     Streaming(CancellationToken),
-    ExecutingTools,
+    ExecutingTools(CancellationToken),
 }
 
 impl Session {
@@ -152,14 +154,14 @@ impl Session {
         let session = Self {
             id: SessionId::new(),
             agent: Some(Agent::new(model, system_prompt, tool_defs)),
-            activity: Activity::Idle,
+            active_operation: None,
             pending_batch: None,
             inbox: cmd_rx,
             loop_event_tx: cmd_tx.clone(),
             event_tx,
             tool_registry,
             auto_approval: std::sync::Arc::new(AutoApprovalPolicy::new(auto_approved_tools)),
-            pending_tool_decisions: Vec::new(),
+            pending_tool_decisions: HashMap::new(),
         };
         let handle = SessionHandle::new(session.id, cmd_tx, event_rx);
 
@@ -177,7 +179,7 @@ impl Session {
             match event {
                 LoopEvent::Cmd(command) => match command {
                     SessionCommand::SendMessage(message) => {
-                        if !matches!(self.activity, Activity::Idle) {
+                        if self.active_operation.is_some() {
                             continue;
                         }
                         let Some(agent) = self.agent.take() else {
@@ -194,139 +196,59 @@ impl Session {
                                 continue;
                             }
                         };
-                        let cancellation = stream.interrupt_handle();
-                        self.activity = Activity::Streaming(cancellation);
-                        let loop_event_tx = self.loop_event_tx.clone();
-                        rt.spawn(async move {
-                            info!(session_id = %self.id, "Starting stream");
-                            let result = stream.await;
-                            info!(session_id = %self.id, "Stream completed");
-                            let _ = loop_event_tx.send(LoopEvent::StreamCompletion(result));
-                        });
+                        self.start_stream(&rt, stream);
                     }
                     SessionCommand::Interrupt => {
-                        if let Activity::Streaming(cancellation) = &self.activity {
-                            info!(session_id = %self.id, "Interrupting current stream");
-                            cancellation.cancel();
-                        } else {
-                            warn!(session_id = %self.id, "Received interrupt command while not streaming");
+                        self.pending_tool_decisions.clear();
+                        match &self.active_operation {
+                            Some(ActiveOperation::Streaming(cancellation)) => {
+                                info!(session_id = %self.id, "Interrupting current stream");
+                                cancellation.cancel();
+                            }
+                            Some(ActiveOperation::ExecutingTools(cancellation)) => {
+                                info!(session_id = %self.id, "Interrupting tool execution");
+                                cancellation.cancel();
+                            }
+                            None => {
+                                warn!(session_id = %self.id, "Received interrupt command while idle");
+                            }
                         }
                     }
                     SessionCommand::ToolDecision { id, approved } => {
-                        self.handle_tool_decision(rt.clone(), id, approved);
-                    }
-                },
-                LoopEvent::UserToolResult {
-                    agent,
-                    batch,
-                    result,
-                } => match batch.add_result(result.id().to_string(), result) {
-                    Ok(either::Either::Left(batch)) => {
-                        self.agent = Some(agent);
-                        self.pending_batch = Some(batch);
-                        self.activity = Activity::Idle;
-                    }
-                    Ok(either::Either::Right(resolved)) => {
-                        self.start_stream_after_tools(rt.clone(), agent, resolved);
-                    }
-                    Err(error) => {
-                        warn!(session_id = %self.id, %error, "Ignoring stale tool result")
+                        self.handle_tool_decision(&rt, id, approved);
                     }
                 },
                 LoopEvent::AgentToolResults(agent, batch) => {
-                    let event_tx = self.event_tx.clone();
-                    let stream = match agent.submit_tool_results(batch, move |event| {
-                        let _ = event_tx.send(SessionEvent::StreamEvent(event));
-                    }) {
-                        Ok(stream) => stream,
-                        Err(error) => {
-                            self.agent = Some(error.agent());
-                            self.activity = Activity::Idle;
-                            continue;
-                        }
-                    };
-                    let cancellation = stream.interrupt_handle();
-                    self.activity = Activity::Streaming(cancellation);
-                    let loop_event_tx = self.loop_event_tx.clone();
-                    rt.spawn(async move {
-                        info!(session_id = %self.id, "Starting stream after tool results");
-                        let result = stream.await;
-                        let _ = loop_event_tx.send(LoopEvent::StreamCompletion(result));
-                    });
+                    self.submit_tool_results_and_start_stream(&rt, agent, batch);
                 }
                 LoopEvent::StreamCompletion(agent) => match agent.status() {
                     AgentStatus::WaitingForUserMessage => {
                         info!(session_id = %self.id, "Session is awaiting user message");
                         self.agent = Some(agent);
-                        self.activity = Activity::Idle;
+                        self.active_operation = None;
                     }
                     AgentStatus::WaitingForToolResponses => {
                         debug!(session_id = %self.id, "LLM has requested tool calls");
                         let batch = agent
                             .pending_tools()
                             .expect("tool responses must be pending");
-                        let approved = self
-                            .auto_approval
-                            .approves_all(batch.requested().map(|call| call.name.as_str()));
-                        if approved {
-                            info!(session_id = %self.id, "All tool results can be ran automatically");
-                            let loop_event_tx = self.loop_event_tx.clone();
-                            let registry = self.tool_registry.clone();
-                            self.activity = Activity::ExecutingTools;
-                            rt.spawn(async move {
-                                let calls = batch.requested().cloned().collect::<Vec<_>>();
-                                let results =
-                                    futures::future::join_all(calls.into_iter().map(|call| {
-                                        let registry = registry.clone();
-                                        async move {
-                                            info!(
-                                                tool_call_id = %call.id,
-                                                tool_name = %call.name,
-                                                "Invoking tool"
-                                            );
-                                            let result = match registry.invoke(call.clone()).await {
-                                                Ok(result) => provider::ToolResult::new(
-                                                    call.id.clone(),
-                                                    result.to_string(),
-                                                ),
-                                                Err(error) => provider::ToolResult::new(
-                                                    call.id.clone(),
-                                                    error.to_string(),
-                                                ),
-                                            };
-                                            info!(
-                                                tool_call_id = %call.id,
-                                                tool_name = %call.name,
-                                                "Tool invocation finished"
-                                            );
-                                            result
-                                        }
-                                    }))
-                                    .await;
-
-                                let resolved: ToolBatch<Resolved> = batch
-                                    .resolve_all(results)
-                                    .expect("auto-approved batch must resolve");
-                                let _ = loop_event_tx
-                                    .send(LoopEvent::AgentToolResults(agent, resolved));
-                            });
-                        } else {
-                            self.agent = Some(agent);
-                            self.pending_batch = Some(batch);
-                            self.activity = Activity::Idle;
-                            let decisions = std::mem::take(&mut self.pending_tool_decisions);
-                            for (id, approved) in decisions {
-                                self.handle_tool_decision(rt.clone(), id, approved);
+                        for call in batch.requested() {
+                            if self.auto_approval.is_approved(&call.name) {
+                                self.pending_tool_decisions.insert(call.id.clone(), true);
                             }
                         }
+                        self.agent = Some(agent);
+                        self.pending_batch = Some(batch);
+                        self.active_operation = None;
+                        self.dispatch_tools_if_decided(&rt);
                     }
                     AgentStatus::Interrupted => {
                         self.agent = Some(agent);
-                        self.activity = Activity::Idle;
+                        self.active_operation = None;
                     }
                     AgentStatus::Failed => {
                         self.agent = Some(agent);
-                        self.activity = Activity::Idle;
+                        self.active_operation = None;
                     }
                 },
             }
@@ -336,62 +258,82 @@ impl Session {
         let _ = self.event_tx.send(SessionEvent::Closed);
     }
 
-    fn handle_tool_decision(&mut self, rt: Handle, id: String, approved: bool) {
+    fn handle_tool_decision(&mut self, rt: &Handle, id: String, approved: bool) {
         let waiting_for_tools = self
             .agent
             .as_ref()
             .is_some_and(|agent| agent.status() == AgentStatus::WaitingForToolResponses);
         if !waiting_for_tools || self.pending_batch.is_none() {
-            self.pending_tool_decisions.push((id, approved));
+            self.pending_tool_decisions.insert(id, approved);
             return;
         }
-        let agent = self.agent.take().expect("agent state was checked");
-        let batch = self.pending_batch.take().expect("tool batch was checked");
-
-        if approved {
-            let Some(call) = batch.requested().find(|call| call.id == id).cloned() else {
-                self.agent = Some(agent);
-                self.pending_batch = Some(batch);
-                return;
-            };
-            let registry = self.tool_registry.clone();
-            let loop_event_tx = self.loop_event_tx.clone();
-            self.activity = Activity::ExecutingTools;
-            rt.spawn(async move {
-                let content = match registry.invoke(call.clone()).await {
-                    Ok(result) => result.to_string(),
-                    Err(error) => error.to_string(),
-                };
-                let _ = loop_event_tx.send(LoopEvent::UserToolResult {
-                    agent,
-                    batch,
-                    result: provider::ToolResult::new(call.id, content),
-                });
-            });
-        } else {
-            if !batch.requested().any(|call| call.id == id) {
-                self.agent = Some(agent);
-                self.pending_batch = Some(batch);
-                return;
-            }
-            let result =
-                provider::ToolResult::new(id.clone(), "Tool call denied by user".to_string());
-            match batch.add_result(id, result) {
-                Ok(either::Either::Left(batch)) => {
-                    self.agent = Some(agent);
-                    self.pending_batch = Some(batch);
-                }
-                Ok(either::Either::Right(resolved)) => {
-                    self.start_stream_after_tools(rt, agent, resolved)
-                }
-                Err(error) => {
-                    warn!(session_id = %self.id, %error, "Ignoring invalid tool decision");
-                }
-            }
+        if !self
+            .pending_batch
+            .as_ref()
+            .is_some_and(|batch| batch.requested().any(|call| call.id == id))
+        {
+            warn!(session_id = %self.id, tool_call_id = %id, "Ignoring decision for unknown tool call");
+            return;
         }
+        self.pending_tool_decisions.insert(id, approved);
+        self.dispatch_tools_if_decided(rt);
     }
 
-    fn start_stream_after_tools(&mut self, rt: Handle, agent: Agent, batch: ToolBatch<Resolved>) {
+    fn dispatch_tools_if_decided(&mut self, rt: &Handle) {
+        let Some(batch) = self.pending_batch.as_ref() else {
+            return;
+        };
+        if !batch
+            .requested()
+            .all(|call| self.pending_tool_decisions.contains_key(&call.id))
+        {
+            return;
+        }
+
+        let agent = self.agent.take().expect("agent must be waiting for tools");
+        let batch = self.pending_batch.take().expect("tool batch was checked");
+        let decisions = std::mem::take(&mut self.pending_tool_decisions);
+        let calls = batch.requested().cloned().collect::<Vec<_>>();
+        let registry = self.tool_registry.clone();
+        let loop_event_tx = self.loop_event_tx.clone();
+        let cancellation = CancellationToken::new();
+        self.active_operation = Some(ActiveOperation::ExecutingTools(cancellation.clone()));
+        rt.spawn(async move {
+            let executions = futures::future::join_all(calls.into_iter().map(|call| {
+                let registry = registry.clone();
+                let approved = decisions[&call.id];
+                async move {
+                    if !approved {
+                        return provider::ToolResult::new(
+                            call.id,
+                            "Tool call denied by user".to_string(),
+                        );
+                    }
+                    info!(tool_call_id = %call.id, tool_name = %call.name, "Invoking tool");
+                    let result = match registry.invoke(call.clone()).await {
+                        Ok(result) => provider::ToolResult::new(call.id.clone(), result.to_string()),
+                        Err(error) => provider::ToolResult::new(call.id.clone(), error.to_string()),
+                    };
+                    info!(tool_call_id = %call.id, tool_name = %call.name, "Tool invocation finished");
+                    result
+                }
+            }));
+            let resolved = tokio::select! {
+                results = executions => batch
+                    .resolve_all(results)
+                    .expect("every tool call must have a result"),
+                () = cancellation.cancelled() => batch.interrupt_remaining(),
+            };
+            let _ = loop_event_tx.send(LoopEvent::AgentToolResults(agent, resolved));
+        });
+    }
+
+    fn submit_tool_results_and_start_stream(
+        &mut self,
+        rt: &Handle,
+        agent: Agent,
+        batch: ToolBatch<Resolved>,
+    ) {
         let event_tx = self.event_tx.clone();
         let stream = match agent.submit_tool_results(batch, move |event| {
             let _ = event_tx.send(SessionEvent::StreamEvent(event));
@@ -399,15 +341,21 @@ impl Session {
             Ok(stream) => stream,
             Err(error) => {
                 self.agent = Some(error.agent());
-                self.activity = Activity::Idle;
+                self.active_operation = None;
                 return;
             }
         };
-        let cancellation = stream.interrupt_handle();
-        self.activity = Activity::Streaming(cancellation);
+        self.start_stream(rt, stream);
+    }
+
+    fn start_stream(&mut self, rt: &Handle, stream: AgentStream) {
+        self.active_operation = Some(ActiveOperation::Streaming(stream.interrupt_handle()));
         let loop_event_tx = self.loop_event_tx.clone();
+        let session_id = self.id;
         rt.spawn(async move {
+            info!(%session_id, "Starting stream");
             let result = stream.await;
+            info!(%session_id, "Stream completed");
             let _ = loop_event_tx.send(LoopEvent::StreamCompletion(result));
         });
     }

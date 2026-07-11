@@ -28,10 +28,5 @@ pub enum SessionEvent {
 pub(crate) enum LoopEvent {
     Cmd(SessionCommand),
     StreamCompletion(Agent),
-    UserToolResult {
-        agent: Agent,
-        batch: auger_driver::ToolBatch<auger_driver::Resolving>,
-        result: provider::ToolResult,
-    },
     AgentToolResults(Agent, auger_driver::ToolBatch<Resolved>),
 }

@@ -14,8 +14,4 @@ impl AutoApprovalPolicy {
     pub(crate) fn is_approved(&self, tool_name: &str) -> bool {
         self.approved_tools.contains(tool_name)
     }
-
-    pub(crate) fn approves_all<'a>(&self, mut tool_names: impl Iterator<Item = &'a str>) -> bool {
-        tool_names.all(|name| self.is_approved(name))
-    }
 }
