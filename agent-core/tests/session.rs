@@ -129,3 +129,108 @@ fn session_runs_two_agentic_iterations_with_auto_approved_tool() {
         assert_eq!(provider_handle.requests().len(), 2);
     });
 }
+
+#[test]
+fn session_lets_user_approve_one_tool_and_deny_another() {
+    let provider = DummyProvider::new_responses([
+        DummyResponse::Stream(vec![
+            Ok(StreamEvent::ToolCallComplete {
+                id: "call-approve".to_string(),
+                name: "dummy".to_string(),
+                arguments: r#"{"message":"approved"}"#.to_string(),
+            }),
+            Ok(StreamEvent::ToolCallComplete {
+                id: "call-deny".to_string(),
+                name: "dummy".to_string(),
+                arguments: r#"{"message":"denied"}"#.to_string(),
+            }),
+            Ok(StreamEvent::Done {
+                usage: None,
+                stop_reason: Some("tool_calls".to_string()),
+            }),
+        ]),
+        DummyResponse::Stream(vec![
+            Ok(StreamEvent::TextDelta("finished".to_string())),
+            Ok(StreamEvent::Done {
+                usage: None,
+                stop_reason: Some("stop".to_string()),
+            }),
+        ]),
+    ]);
+    let provider_handle = provider.clone();
+    let model = LlmModel::new(Arc::new(provider), "dummy");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+
+    runtime.block_on(async move {
+        let handle = Session::start_with_tools(
+            model,
+            SystemPrompt::new("You are a test agent.".to_string()),
+            tokio::runtime::Handle::current(),
+            vec![Box::new(builtin_tools::Dummy)],
+            Vec::new(),
+        );
+        tokio::task::spawn_blocking(move || {
+            handle
+                .send_message(UserPrompt::new("Use both tools.".to_string()))
+                .expect("session should accept the message");
+
+            loop {
+                match handle
+                    .recv_event()
+                    .expect("session event channel should stay open")
+                {
+                    SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
+                    SessionEvent::Closed => panic!("session closed before approval"),
+                    SessionEvent::StreamEvent(_) => {}
+                }
+            }
+
+            handle
+                .deny_tool_call("call-deny")
+                .expect("session should accept denial");
+            handle
+                .approve_tool_call("call-approve")
+                .expect("session should accept approval");
+
+            let mut text = String::new();
+            loop {
+                match handle
+                    .recv_event()
+                    .expect("session event channel should stay open")
+                {
+                    SessionEvent::StreamEvent(StreamEvent::TextDelta(delta)) => {
+                        text.push_str(&delta)
+                    }
+                    SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
+                    SessionEvent::Closed => panic!("session closed before second stream completed"),
+                    SessionEvent::StreamEvent(_) => {}
+                }
+            }
+
+            assert_eq!(text, "finished");
+            let requests = provider_handle.requests();
+            assert_eq!(requests.len(), 2);
+            let results = requests[1]
+                .messages()
+                .iter()
+                .find_map(|message| match message {
+                    provider::Message::User {
+                        tool_call_results, ..
+                    } if !tool_call_results.is_empty() => Some(tool_call_results),
+                    _ => None,
+                })
+                .expect("second request should contain tool results");
+            assert!(results.iter().any(|result| {
+                result.id() == "call-approve" && result.content().contains("approved")
+            }));
+            assert!(results.iter().any(|result| {
+                result.id() == "call-deny" && result.content().contains("denied")
+            }));
+        })
+        .await
+        .expect("session interaction task should complete");
+    });
+}

@@ -10,11 +10,9 @@ pub enum SessionCommand {
     SendMessage(UserPrompt),
     /// Interrupt the current activity on the stream
     Interrupt,
-    ApproveToolCall {
+    ToolDecision {
         id: String,
-    },
-    DenyToolCall {
-        id: String,
+        approved: bool,
     },
 }
 
@@ -30,6 +28,11 @@ pub enum SessionEvent {
 pub(crate) enum LoopEvent {
     Cmd(SessionCommand),
     StreamCompletion(StreamResult),
+    UserToolResult {
+        agent: Agent<WaitingForToolResponses>,
+        batch: auger_driver::ToolBatch<auger_driver::Resolving>,
+        result: provider::ToolResult,
+    },
     AgentToolResults(
         Agent<WaitingForToolResponses>,
         auger_driver::ToolBatch<Resolved>,
