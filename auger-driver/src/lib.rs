@@ -83,10 +83,12 @@
 //! ```
 
 pub(crate) mod agent;
-pub(crate) mod states;
+pub(crate) mod interrupt_states;
+pub(crate) mod streaming;
 pub(crate) mod tool_batch;
+pub(crate) mod waiting_for_tools;
 
 pub use agent::Agent;
-pub use states::interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
-pub use states::streaming::{LlmStreaming as LlmStreamingFuture, StreamResult};
+pub use interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
+pub use streaming::{LlmStreaming as LlmStreamingFuture, StreamResult};
 pub use tool_batch::{AddToolResponseIssue, Resolved, Resolving, ToolBatch, ToolBatchState};

@@ -8,8 +8,8 @@ use crate::agent::{Agent, State, WaitingForUserMessage};
 use tokio_util::sync::CancellationToken;
 use provider::{LlmModel, LlmThread, ToolDefinition};
 use provider::thread::ClankerTurn;
-use crate::states::interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
-use crate::states::waiting_for_tools::WaitingForToolResponses;
+use crate::interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
+use crate::waiting_for_tools::WaitingForToolResponses;
 
 
 /// Future which when awaited, streams the LLM response.

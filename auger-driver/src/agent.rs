@@ -1,7 +1,7 @@
 use tokio_util::sync::CancellationToken;
 use provider::{LlmModel, LlmThread, ToolDefinition, UserPrompt};
 use provider::thread::{ClankerTurn, UserTurn};
-use crate::states::streaming::LlmStreaming as LlmStreamingFuture;
+use crate::streaming::LlmStreaming as LlmStreamingFuture;
 /// Synchronous state machine for the auger driver.
 pub struct Agent<S: State> {
     pub(crate) model: LlmModel,
