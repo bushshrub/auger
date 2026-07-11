@@ -6,7 +6,7 @@
 use provider::{LlmThread, UserPrompt};
 use getset::Getters;
 use provider::thread::ClankerTurn;
-use crate::driver::{Agent, ReadyToStream, State};
+use crate::agent::{Agent, ReadyToStream, State};
 
 /// The LLM stream was interrupted midway.
 #[derive(Getters)]

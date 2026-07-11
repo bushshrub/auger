@@ -4,7 +4,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use crate::driver::{Agent, State, WaitingForUserMessage};
+use crate::agent::{Agent, State, WaitingForUserMessage};
 use tokio_util::sync::CancellationToken;
 use provider::{LlmModel, LlmThread, ToolDefinition};
 use provider::thread::ClankerTurn;

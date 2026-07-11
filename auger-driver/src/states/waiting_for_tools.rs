@@ -1,6 +1,6 @@
 use provider::LlmThread;
 use provider::thread::ToolResultsPending;
-use crate::driver::{Agent, ReadyToStream, State};
+use crate::agent::{Agent, ReadyToStream, State};
 use crate::tool_batch::{Resolved, Resolving, ToolBatch};
 
 /// The LLM has requested tool calls and the driver
