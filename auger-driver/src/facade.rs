@@ -146,6 +146,26 @@ impl Agent {
             )),
         }
     }
+
+    /// Continue after a failed response with a new user message.
+    pub fn continue_after_failure(
+        self,
+        message: UserPrompt,
+        on_event: impl Fn(StreamEvent) + Send + Sync + 'static,
+    ) -> Result<AgentStream, InvalidTransition> {
+        match self.inner {
+            AgentInner::Failed(agent) => Ok(AgentStream::new(
+                agent
+                    .add_message_to_continue(message)
+                    .add_event_callback(on_event)
+                    .create_stream(),
+            )),
+            other => Err(InvalidTransition::new(
+                Self { inner: other },
+                AgentStatus::Failed,
+            )),
+        }
+    }
 }
 
 impl From<StreamResult> for Agent {

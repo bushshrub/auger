@@ -123,6 +123,7 @@ pub struct Session {
     tool_registry: std::sync::Arc<ToolRegistry>,
     auto_approval: std::sync::Arc<AutoApprovalPolicy>,
     pending_tool_decisions: HashMap<String, bool>,
+    pending_message_after_interrupt: Option<UserPrompt>,
 }
 
 enum ActiveOperation {
@@ -162,6 +163,7 @@ impl Session {
             tool_registry,
             auto_approval: std::sync::Arc::new(AutoApprovalPolicy::new(auto_approved_tools)),
             pending_tool_decisions: HashMap::new(),
+            pending_message_after_interrupt: None,
         };
         let handle = SessionHandle::new(session.id, cmd_tx, event_rx);
 
@@ -179,24 +181,21 @@ impl Session {
             match event {
                 LoopEvent::Cmd(command) => match command {
                     SessionCommand::SendMessage(message) => {
+                        if self.active_operation.as_ref().is_some_and(|operation| {
+                            matches!(operation, ActiveOperation::Streaming(token) if token.is_cancelled())
+                        }) {
+                            if self.pending_message_after_interrupt.is_none() {
+                                self.pending_message_after_interrupt = Some(message);
+                            }
+                            continue;
+                        }
                         if self.active_operation.is_some() {
                             continue;
                         }
                         let Some(agent) = self.agent.take() else {
                             continue;
                         };
-
-                        let event_tx = self.event_tx.clone();
-                        let stream = match agent.send_message(message, move |event| {
-                            let _ = event_tx.send(SessionEvent::StreamEvent(event));
-                        }) {
-                            Ok(stream) => stream,
-                            Err(error) => {
-                                self.agent = Some(error.agent());
-                                continue;
-                            }
-                        };
-                        self.start_stream(&rt, stream);
+                        self.send_message_and_start_stream(&rt, agent, message);
                     }
                     SessionCommand::Interrupt => {
                         self.pending_tool_decisions.clear();
@@ -243,8 +242,12 @@ impl Session {
                         self.dispatch_tools_if_decided(&rt);
                     }
                     AgentStatus::Interrupted => {
-                        self.agent = Some(agent);
                         self.active_operation = None;
+                        if let Some(message) = self.pending_message_after_interrupt.take() {
+                            self.send_message_and_start_stream(&rt, agent, message);
+                        } else {
+                            self.agent = Some(agent);
+                        }
                     }
                     AgentStatus::Failed => {
                         self.agent = Some(agent);
@@ -259,6 +262,19 @@ impl Session {
     }
 
     fn handle_tool_decision(&mut self, rt: &Handle, id: String, approved: bool) {
+        if self.active_operation.as_ref().is_some_and(|operation| {
+            matches!(operation, ActiveOperation::Streaming(token) if token.is_cancelled())
+        }) {
+            return;
+        }
+        if self.agent.as_ref().is_some_and(|agent| {
+            matches!(
+                agent.status(),
+                AgentStatus::Interrupted | AgentStatus::Failed
+            )
+        }) {
+            return;
+        }
         let waiting_for_tools = self
             .agent
             .as_ref()
@@ -358,5 +374,26 @@ impl Session {
             info!(%session_id, "Stream completed");
             let _ = loop_event_tx.send(LoopEvent::StreamCompletion(result));
         });
+    }
+
+    fn send_message_and_start_stream(&mut self, rt: &Handle, agent: Agent, message: UserPrompt) {
+        let status = agent.status();
+        let event_tx = self.event_tx.clone();
+        let callback = move |event| {
+            let _ = event_tx.send(SessionEvent::StreamEvent(event));
+        };
+        let stream = match status {
+            AgentStatus::WaitingForUserMessage => agent.send_message(message, callback),
+            AgentStatus::Interrupted => agent.continue_after_interruption(message, true, callback),
+            AgentStatus::Failed => agent.continue_after_failure(message, callback),
+            AgentStatus::WaitingForToolResponses => {
+                self.agent = Some(agent);
+                return;
+            }
+        };
+        match stream {
+            Ok(stream) => self.start_stream(rt, stream),
+            Err(error) => self.agent = Some(error.agent()),
+        }
     }
 }

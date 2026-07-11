@@ -72,6 +72,20 @@ impl LlmStreamingFailed {
 }
 
 impl TypedAgent<LlmStreamingFailed> {
+    /// Add a new user message after abandoning the failed partial response.
+    pub fn add_message_to_continue(self, msg: UserPrompt) -> TypedAgent<ReadyToStream> {
+        let thread = self
+            .state
+            .thread
+            .abandon_clanker_turn()
+            .add_user_message(msg);
+        TypedAgent {
+            model: self.model,
+            tools: self.tools,
+            state: ReadyToStream::new(thread),
+        }
+    }
+
     /// Retry the response without the partial response
     pub fn retry(self) -> TypedAgent<ReadyToStream> {
         TypedAgent {

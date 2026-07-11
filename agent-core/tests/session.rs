@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use agent_core::{Session, SessionEvent, SystemPrompt};
-use provider::{LlmModel, StreamEvent, UserPrompt};
+use provider::{LlmError, LlmModel, Message, StreamEvent, UserPrompt};
 use provider_dummy::{DummyProvider, DummyResponse};
 
 #[test]
@@ -232,5 +232,118 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
         })
         .await
         .expect("session interaction task should complete");
+    });
+}
+
+#[test]
+fn session_accepts_message_after_interrupt_and_keeps_partial_response() {
+    let provider = DummyProvider::new_responses([
+        DummyResponse::PendingStream(vec![Ok(StreamEvent::TextDelta("partial".to_string()))]),
+        DummyResponse::Stream(vec![Ok(StreamEvent::Done {
+            usage: None,
+            stop_reason: Some("stop".to_string()),
+        })]),
+    ]);
+    let provider_handle = provider.clone();
+    let model = LlmModel::new(Arc::new(provider), "dummy");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let handle = Session::start(
+            model,
+            SystemPrompt::new("system".to_string()),
+            tokio::runtime::Handle::current(),
+        );
+        tokio::task::spawn_blocking(move || {
+            handle
+                .send_message(UserPrompt::new("first".to_string()))
+                .unwrap();
+            assert!(matches!(
+                handle.recv_event().unwrap(),
+                SessionEvent::StreamEvent(StreamEvent::TextDelta(_))
+            ));
+
+            handle.interrupt().unwrap();
+            handle
+                .send_message(UserPrompt::new("continue".to_string()))
+                .unwrap();
+            while !matches!(
+                handle.recv_event().unwrap(),
+                SessionEvent::StreamEvent(StreamEvent::Done { .. })
+            ) {}
+
+            let requests = provider_handle.requests();
+            assert!(matches!(
+                requests[1].messages(),
+                [Message::System(_), Message::User { .. }, Message::Assistant { content, .. }, Message::User { .. }]
+                    if content == "partial"
+            ));
+        })
+        .await
+        .unwrap();
+    });
+}
+
+#[test]
+fn session_accepts_message_after_stream_failure() {
+    let provider = DummyProvider::new_responses([
+        DummyResponse::Stream(vec![
+            Ok(StreamEvent::TextDelta("partial".to_string())),
+            Err(LlmError {
+                message: "failed".to_string(),
+            }),
+        ]),
+        DummyResponse::Stream(vec![Ok(StreamEvent::Done {
+            usage: None,
+            stop_reason: Some("stop".to_string()),
+        })]),
+    ]);
+    let provider_handle = provider.clone();
+    let model = LlmModel::new(Arc::new(provider), "dummy");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let handle = Session::start(
+            model,
+            SystemPrompt::new("system".to_string()),
+            tokio::runtime::Handle::current(),
+        );
+        tokio::task::spawn_blocking(move || {
+            handle
+                .send_message(UserPrompt::new("first".to_string()))
+                .unwrap();
+            assert!(matches!(
+                handle.recv_event().unwrap(),
+                SessionEvent::StreamEvent(StreamEvent::TextDelta(_))
+            ));
+            while provider_handle.requests().len() < 2 {
+                handle
+                    .send_message(UserPrompt::new("recover".to_string()))
+                    .unwrap();
+                std::thread::yield_now();
+            }
+            while !matches!(
+                handle.recv_event().unwrap(),
+                SessionEvent::StreamEvent(StreamEvent::Done { .. })
+            ) {}
+
+            let requests = provider_handle.requests();
+            assert!(matches!(
+                requests[1].messages(),
+                [
+                    Message::System(_),
+                    Message::User { .. },
+                    Message::User { .. }
+                ]
+            ));
+        })
+        .await
+        .unwrap();
     });
 }
