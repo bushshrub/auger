@@ -1,8 +1,7 @@
 //! Events and command types for a session
 
-use auger_driver::StreamResult;
+use auger_driver::{Agent, Resolved, StreamResult, WaitingForToolResponses};
 use provider::UserPrompt;
-use crate::tools::tool_call_batch::ToolCallId;
 
 /// User sent commands to the session
 #[derive(Clone, Debug)]
@@ -12,11 +11,11 @@ pub enum SessionCommand {
     /// Interrupt the current activity on the stream
     Interrupt,
     ApproveToolCall {
-        id: ToolCallId,
+        id: String,
     },
     DenyToolCall {
-        id: ToolCallId
-    }
+        id: String,
+    },
 }
 
 /// Events that occur during the session
@@ -30,5 +29,9 @@ pub enum SessionEvent {
 
 pub(crate) enum LoopEvent {
     Cmd(SessionCommand),
-    StreamCompletion(StreamResult)
+    StreamCompletion(StreamResult),
+    AgentToolResults(
+        Agent<WaitingForToolResponses>,
+        auger_driver::ToolBatch<Resolved>,
+    ),
 }

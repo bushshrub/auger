@@ -1,16 +1,19 @@
+use crate::SystemPrompt;
+use crate::events::{LoopEvent, SessionCommand, SessionEvent};
+use crate::tools::auto_approval::AutoApprovalPolicy;
+use crate::tools::tool_registry::ToolRegistry;
+use agent_tools::Tool;
+use auger_driver::{
+    Agent, LlmStreamingFailed, LlmStreamingInterrupted, Resolved, StreamResult, ToolBatch,
+    WaitingForToolResponses, WaitingForUserMessage,
+};
+use provider::LlmModel;
+use provider::UserPrompt;
 use std::fmt;
 use std::sync::mpsc;
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use auger_driver::{
-    Agent, LlmStreamingFailed, LlmStreamingInterrupted, StreamResult, WaitingForToolResponses,
-    WaitingForUserMessage,
-};
-use provider::LlmModel;
-use provider::UserPrompt;
-use crate::events::{LoopEvent, SessionCommand, SessionEvent};
-use crate::SystemPrompt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(uuid::Uuid);
@@ -53,15 +56,15 @@ impl SessionHandle {
     }
 
     /// Send a user message to the session.
-    pub fn send_message(
-        &self,
-        message: UserPrompt,
-    ) -> Result<(), mpsc::SendError<SessionCommand>> {
+    pub fn send_message(&self, message: UserPrompt) -> Result<(), mpsc::SendError<SessionCommand>> {
         self.loop_event_tx
             .send(LoopEvent::Cmd(SessionCommand::SendMessage(message)))
             .map_err(|error| match error.0 {
                 LoopEvent::Cmd(command) => mpsc::SendError(command),
                 LoopEvent::StreamCompletion(_) => {
+                    unreachable!("the session handle only sends commands")
+                }
+                LoopEvent::AgentToolResults(_, _) => {
                     unreachable!("the session handle only sends commands")
                 }
             })
@@ -81,11 +84,14 @@ pub struct Session {
     loop_event_tx: mpsc::Sender<LoopEvent>,
     /// Sender for the session to emit events through
     event_tx: mpsc::Sender<SessionEvent>,
+    tool_registry: std::sync::Arc<ToolRegistry>,
+    auto_approval: std::sync::Arc<AutoApprovalPolicy>,
 }
 
 pub(crate) enum AgentState {
     Idle(Agent<WaitingForUserMessage>),
     Streaming(CancellationToken),
+    ExecutingTools,
     WaitingForToolResponses(Agent<WaitingForToolResponses>),
     Interrupted(Agent<LlmStreamingInterrupted>),
     Failed(Agent<LlmStreamingFailed>),
@@ -93,8 +99,22 @@ pub(crate) enum AgentState {
 
 impl Session {
     pub fn start(model: LlmModel, system_prompt: SystemPrompt, rt: Handle) -> SessionHandle {
-        // TODO: pass tools
-        let tool_defs = Vec::new();
+        Self::start_with_tools(model, system_prompt, rt, Vec::new(), Vec::new())
+    }
+
+    pub fn start_with_tools(
+        model: LlmModel,
+        system_prompt: SystemPrompt,
+        rt: Handle,
+        tools: Vec<Box<dyn Tool>>,
+        auto_approved_tools: Vec<String>,
+    ) -> SessionHandle {
+        let mut tool_registry = ToolRegistry::new();
+        for tool in tools {
+            tool_registry.register(tool);
+        }
+        let tool_registry = std::sync::Arc::new(tool_registry);
+        let tool_defs = tool_registry.list_for_clanker();
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
@@ -104,6 +124,8 @@ impl Session {
             inbox: cmd_rx,
             loop_event_tx: cmd_tx.clone(),
             event_tx,
+            tool_registry,
+            auto_approval: std::sync::Arc::new(AutoApprovalPolicy::new(auto_approved_tools)),
         };
         let handle = SessionHandle::new(session.id, cmd_tx, event_rx);
 
@@ -161,12 +183,76 @@ impl Session {
                     SessionCommand::ApproveToolCall { .. } => {}
                     SessionCommand::DenyToolCall { .. } => {}
                 },
+                LoopEvent::AgentToolResults(agent, batch) => {
+                    let event_tx = self.event_tx.clone();
+                    let stream = agent
+                        .add_all_tool_responses(batch)
+                        .add_event_callback(move |event| {
+                            let _ = event_tx.send(SessionEvent::StreamEvent(event));
+                        })
+                        .create_stream();
+                    let cancellation = stream.interrupt_handle();
+                    self.agent = AgentState::Streaming(cancellation);
+                    let loop_event_tx = self.loop_event_tx.clone();
+                    rt.spawn(async move {
+                        info!(session_id = %self.id, "Starting stream after tool results");
+                        let result = stream.await;
+                        let _ = loop_event_tx.send(LoopEvent::StreamCompletion(result));
+                    });
+                }
                 LoopEvent::StreamCompletion(result) => match result {
                     StreamResult::WaitingForUserMessage(agent) => {
                         self.agent = AgentState::Idle(agent);
                     }
                     StreamResult::WaitingForToolResponses(agent) => {
-                        self.agent = AgentState::WaitingForToolResponses(agent);
+                        let batch = agent.get_batch();
+                        let approved = self
+                            .auto_approval
+                            .approves_all(batch.requested().map(|call| call.name.as_str()));
+                        if approved {
+                            let loop_event_tx = self.loop_event_tx.clone();
+                            let registry = self.tool_registry.clone();
+                            self.agent = AgentState::ExecutingTools;
+                            rt.spawn(async move {
+                                let calls = batch.requested().cloned().collect::<Vec<_>>();
+                                let results =
+                                    futures::future::join_all(calls.into_iter().map(|call| {
+                                        let registry = registry.clone();
+                                        async move {
+                                            info!(
+                                                tool_call_id = %call.id,
+                                                tool_name = %call.name,
+                                                "Invoking tool"
+                                            );
+                                            let result = match registry.invoke(call.clone()).await {
+                                                Ok(result) => provider::ToolResult::new(
+                                                    call.id.clone(),
+                                                    result.to_string(),
+                                                ),
+                                                Err(error) => provider::ToolResult::new(
+                                                    call.id.clone(),
+                                                    error.to_string(),
+                                                ),
+                                            };
+                                            info!(
+                                                tool_call_id = %call.id,
+                                                tool_name = %call.name,
+                                                "Tool invocation finished"
+                                            );
+                                            result
+                                        }
+                                    }))
+                                    .await;
+
+                                let resolved: ToolBatch<Resolved> = batch
+                                    .resolve_all(results)
+                                    .expect("auto-approved batch must resolve");
+                                let _ = loop_event_tx
+                                    .send(LoopEvent::AgentToolResults(agent, resolved));
+                            });
+                        } else {
+                            self.agent = AgentState::WaitingForToolResponses(agent);
+                        }
                     }
                     StreamResult::Interrupted(agent) => {
                         self.agent = AgentState::Interrupted(agent);

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
 use either::Either;
@@ -13,6 +13,8 @@ pub enum AddToolResponseIssue {
     NotRequested(String),
     #[error("The tool with id '{0}' already has a result in this batch")]
     AlreadyProvided(String),
+    #[error("Missing results for tool calls: {0:?}")]
+    Incomplete(Vec<String>),
 }
 
 /// The state of a tool batch.
@@ -77,6 +79,47 @@ impl ToolBatch<Resolving> {
         } else {
             Ok(Either::Left(self))
         }
+    }
+
+    /// Resolve every requested tool call into a completed batch.
+    pub fn resolve_all(
+        self,
+        results: impl IntoIterator<Item = ToolResult>,
+    ) -> Result<ToolBatch<Resolved>, AddToolResponseIssue> {
+        let results = results.into_iter().collect::<Vec<_>>();
+        let mut seen = HashSet::new();
+        for result in &results {
+            let id = result.id();
+            if !self.pending_calls.contains_key(id) {
+                return Err(AddToolResponseIssue::NotRequested(id.to_string()));
+            }
+            if !seen.insert(id.to_string()) {
+                return Err(AddToolResponseIssue::AlreadyProvided(id.to_string()));
+            }
+        }
+
+        if seen.len() != self.pending_calls.len() {
+            return Err(AddToolResponseIssue::Incomplete(
+                self.pending_calls
+                    .keys()
+                    .filter(|id| !seen.contains(*id))
+                    .cloned()
+                    .collect(),
+            ));
+        }
+
+        let mut batch = self;
+
+        for result in results {
+            batch = match batch.add_result(result.id().to_string(), result)? {
+                Either::Left(batch) => batch,
+                Either::Right(batch) => return Ok(batch),
+            };
+        }
+
+        Err(AddToolResponseIssue::Incomplete(
+            batch.pending_calls.into_keys().collect(),
+        ))
     }
 
     /// Mark all unresolved calls as interrupted without executing them.
