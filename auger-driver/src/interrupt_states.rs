@@ -32,7 +32,26 @@ impl TypedAgent<LlmStreamingInterrupted> {
         msg: UserPrompt,
         leave_partial_response: bool,
     ) -> TypedAgent<ReadyToStream> {
-        todo!()
+        let thread = if leave_partial_response {
+            let response = provider::LlmResponse::from(self.state.events);
+            let reply = provider::ClankerMessage::from(response);
+
+            match self.state.thread.add_clanker_reply(reply) {
+                either::Either::Left(thread) => thread.add_user_message(msg),
+                either::Either::Right(thread) => thread.abort_pending_tool_calls(msg),
+            }
+        } else {
+            self.state
+                .thread
+                .abandon_clanker_turn()
+                .add_user_message(msg)
+        };
+
+        TypedAgent {
+            model: self.model,
+            tools: self.tools,
+            state: ReadyToStream::new(thread),
+        }
     }
 }
 
@@ -55,6 +74,10 @@ impl LlmStreamingFailed {
 impl TypedAgent<LlmStreamingFailed> {
     /// Retry the response without the partial response
     pub fn retry(self) -> TypedAgent<ReadyToStream> {
-        todo!()
+        TypedAgent {
+            model: self.model,
+            tools: self.tools,
+            state: ReadyToStream::new(self.state.thread),
+        }
     }
 }

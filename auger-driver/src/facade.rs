@@ -63,6 +63,15 @@ impl Agent {
         }
     }
 
+    /// Events received before an interruption or stream failure.
+    pub fn partial_events(&self) -> Option<&[StreamEvent]> {
+        match &self.inner {
+            AgentInner::Interrupted(agent) => Some(agent.state.events()),
+            AgentInner::Failed(agent) => Some(agent.state.events()),
+            _ => None,
+        }
+    }
+
     pub fn send_message(
         self,
         message: UserPrompt,
@@ -97,6 +106,43 @@ impl Agent {
             other => Err(InvalidTransition::new(
                 Self { inner: other },
                 AgentStatus::WaitingForToolResponses,
+            )),
+        }
+    }
+
+    /// Continue after an interrupted response with a new user message.
+    pub fn continue_after_interruption(
+        self,
+        message: UserPrompt,
+        leave_partial_response: bool,
+        on_event: impl Fn(StreamEvent) + Send + Sync + 'static,
+    ) -> Result<AgentStream, InvalidTransition> {
+        match self.inner {
+            AgentInner::Interrupted(agent) => Ok(AgentStream::new(
+                agent
+                    .add_message_to_continue(message, leave_partial_response)
+                    .add_event_callback(on_event)
+                    .create_stream(),
+            )),
+            other => Err(InvalidTransition::new(
+                Self { inner: other },
+                AgentStatus::Interrupted,
+            )),
+        }
+    }
+
+    /// Retry a failed response from the beginning of the model turn.
+    pub fn retry_after_failure(
+        self,
+        on_event: impl Fn(StreamEvent) + Send + Sync + 'static,
+    ) -> Result<AgentStream, InvalidTransition> {
+        match self.inner {
+            AgentInner::Failed(agent) => Ok(AgentStream::new(
+                agent.retry().add_event_callback(on_event).create_stream(),
+            )),
+            other => Err(InvalidTransition::new(
+                Self { inner: other },
+                AgentStatus::Failed,
             )),
         }
     }
