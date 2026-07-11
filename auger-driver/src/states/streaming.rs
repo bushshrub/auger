@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use crate::driver::{Agent, State, WaitingForUserMessage};
 use tokio_util::sync::CancellationToken;
-use provider::{LlmModel, LlmThread};
+use provider::{LlmModel, LlmThread, ToolDefinition};
 use provider::thread::ClankerTurn;
 use crate::states::interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
 use crate::states::waiting_for_tools::WaitingForToolResponses;
@@ -22,11 +22,18 @@ pub struct LlmStreaming {
 impl LlmStreaming {
     pub(crate) fn new(
         model: LlmModel,
+        tools: Vec<ToolDefinition>,
         thread: LlmThread<ClankerTurn>,
         event_callback: Box<dyn Fn(provider::StreamEvent) + Send + Sync>,
         cancellation: CancellationToken,
     ) -> Self {
-        let inner = Box::pin(run_stream(model, thread, event_callback, cancellation.clone()));
+        let inner = Box::pin(run_stream(
+            model,
+            tools,
+            thread,
+            event_callback,
+            cancellation.clone(),
+        ));
 
         Self {
             cancellation,
@@ -50,19 +57,20 @@ impl Future for LlmStreaming {
 
 pub(crate) async fn run_stream(
     model: LlmModel,
+    tools: Vec<ToolDefinition>,
     thread: LlmThread<ClankerTurn>,
     event_callback: impl Fn(provider::StreamEvent) + Send + Sync + 'static,
     cancellation: CancellationToken,
 ) -> StreamResult {
     let mut events = Vec::new();
-    // TODO: There are no tool definitions.
-    let request = thread.create_request(Vec::new());
+    let request = thread.create_request(tools.clone());
     let mut stream = tokio::select! {
         result = model.stream(request) => match result {
             Ok(stream) => stream,
             Err(_) => {
                 return StreamResult::Failed(Agent {
                     model,
+                    tools,
                     state: LlmStreamingFailed::new(thread, events),
                 });
             }
@@ -70,6 +78,7 @@ pub(crate) async fn run_stream(
         _ = cancellation.cancelled() => {
             return StreamResult::Interrupted(Agent {
                 model,
+                tools,
                 state: LlmStreamingInterrupted::new(thread, events),
             });
         },
@@ -83,7 +92,8 @@ pub(crate) async fn run_stream(
 
                 return StreamResult::Interrupted(Agent {
                     model,
-                    state: LlmStreamingInterrupted::new(thread, events),
+                    tools,
+                state: LlmStreamingInterrupted::new(thread, events),
                 });
             }
         };
@@ -97,6 +107,7 @@ pub(crate) async fn run_stream(
                 // TODO: what errors can occur here?
                 return StreamResult::Failed(Agent {
                     model,
+                    tools,
                     state: LlmStreamingFailed::new(thread, events),
                 });
             }
@@ -110,10 +121,12 @@ pub(crate) async fn run_stream(
     match thread.add_clanker_reply(clanker_message) {
         either::Either::Left(thread) => StreamResult::WaitingForUserMessage(Agent {
             model,
+            tools,
             state: WaitingForUserMessage { thread },
         }),
         either::Either::Right(thread) => StreamResult::WaitingForToolResponses(Agent {
             model,
+            tools,
             state: WaitingForToolResponses { thread },
         }),
     }

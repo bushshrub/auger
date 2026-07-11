@@ -4,16 +4,18 @@
 //! conversation and returns the next valid state after each LLM turn.
 //!
 //! ```no_run
-//! use auger_driver::{Driver, StreamResult};
-//! use provider::{LlmModel, UserPrompt};
+//! use auger_driver::{Agent, StreamResult};
+//! use provider::{LlmModel, ToolDefinition, UserPrompt};
 //!
 //! async fn run_agent(model: LlmModel) {
-//!     let driver = Driver::new(
+//!     let tools: Vec<ToolDefinition> = load_tool_definitions();
+//!     let agent = Agent::new(
 //!         model,
 //!         "You are a helpful coding agent.".to_string(),
+//!         tools,
 //!     );
 //!
-//!     let mut result = driver
+//!     let mut result = agent
 //!         .add_message(UserPrompt::new(
 //!             "Inspect the repository.".to_string(),
 //!         ))
@@ -69,6 +71,10 @@
 //!     }
 //! }
 //!
+//! fn load_tool_definitions() -> Vec<ToolDefinition> {
+//!     todo!("construct the available tool definitions")
+//! }
+//!
 //! async fn execute_tools(
 //!     pending_tools: impl Sized,
 //! ) -> impl Sized {
@@ -78,3 +84,4 @@
 
 mod driver;
 pub mod states;
+pub mod tool_batch;

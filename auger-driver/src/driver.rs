@@ -1,10 +1,11 @@
 use tokio_util::sync::CancellationToken;
-use provider::{LlmModel, LlmThread, UserPrompt};
+use provider::{LlmModel, LlmThread, ToolDefinition, UserPrompt};
 use provider::thread::{ClankerTurn, UserTurn};
 use crate::states::streaming::{LlmStreaming, StreamResult};
 /// Synchronous state machine for the auger driver.
 pub struct Agent<S: State> {
     pub(crate) model: LlmModel,
+    pub(crate) tools: Vec<ToolDefinition>,
     pub(crate) state: S,
 }
 
@@ -23,17 +24,21 @@ impl State for WaitingForUserMessage {}
 impl Agent<WaitingForUserMessage> {
 
     /// Create a new agent with the given system prompt and model.
-    pub fn new(model: LlmModel, system_prompt: String) -> Self {
+    pub fn new(model: LlmModel, system_prompt: String, tools: Vec<ToolDefinition>) -> Self {
         let thread = LlmThread::new(system_prompt);
         let state = WaitingForUserMessage { thread };
-        Self { model, state }
+        Self { model, tools, state }
     }
 
     /// Add a user message to the driver and transition it to the [`ReadyToStream`] state.
     pub fn add_message(self, msg: UserPrompt) -> Agent<ReadyToStream> {
         let thread = self.state.thread.add_user_message(msg);
         let state = ReadyToStream { thread, event_callback: Box::new(|_| {}) };
-        Agent { model: self.model, state }
+        Agent {
+            model: self.model,
+            tools: self.tools,
+            state,
+        }
     }
 }
 
@@ -45,13 +50,26 @@ pub struct ReadyToStream {
 
 impl State for ReadyToStream {}
 
+impl ReadyToStream {
+    pub(crate) fn new(thread: LlmThread<ClankerTurn>) -> Self {
+        Self {
+            thread,
+            event_callback: Box::new(|_| {}),
+        }
+    }
+}
+
 impl Agent<ReadyToStream> {
     pub fn add_event_callback(
         self,
         cb: impl Fn(provider::StreamEvent) + Send + Sync + 'static,
     ) -> Self {
         let state = ReadyToStream { thread: self.state.thread, event_callback: Box::new(cb) };
-        Agent { model: self.model, state }
+        Agent {
+            model: self.model,
+            tools: self.tools,
+            state,
+        }
     }
 
     /// Creates an interruptible LLM stream future.
@@ -61,10 +79,10 @@ impl Agent<ReadyToStream> {
 
         LlmStreaming::new(
             self.model,
+            self.tools,
             self.state.thread,
             self.state.event_callback,
             cancellation,
         )
     }
 }
-
