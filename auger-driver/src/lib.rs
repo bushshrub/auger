@@ -4,7 +4,7 @@
 //! conversation and returns the next valid state after each LLM turn.
 //!
 //! ```no_run
-//! use auger_driver::{Agent, StreamResult};
+//! use auger_driver::{Agent, AgentStatus};
 //! use provider::{LlmModel, ToolDefinition, UserPrompt};
 //!
 //! async fn run_agent(model: LlmModel) {
@@ -15,59 +15,23 @@
 //!         tools,
 //!     );
 //!
-//!     let mut result = agent
-//!         .add_message(UserPrompt::new(
+//!     let agent = agent
+//!         .send_message(UserPrompt::new(
 //!             "Inspect the repository.".to_string(),
-//!         ))
-//!         .add_event_callback(|event| {
+//!         ), |event| {
 //!             println!("stream event: {event:?}");
 //!         })
-//!         .create_stream()
+//!         .expect("agent should accept a user message")
 //!         .await;
 //!
-//!     loop {
-//!         result = match result {
-//!             StreamResult::WaitingForUserMessage(driver) => {
-//!                 let message = UserPrompt::new("Continue.".to_string());
-//!
-//!                 driver
-//!                     .add_message(message)
-//!                     .create_stream()
-//!                     .await
-//!             }
-//!
-//!             StreamResult::WaitingForToolResponses(driver) => {
-//!                 let pending_tools = driver.get_batch();
-//!                 let tool_results = execute_tools(pending_tools).await;
-//!
-//!                 driver
-//!                     .add_all_tool_responses(tool_results)
-//!                     .create_stream()
-//!                     .await
-//!             }
-//!
-//!             StreamResult::Interrupted(driver) => {
-//!                 for event in driver.events() {
-//!                     println!("interrupted event: {event:?}");
-//!                 }
-//!
-//!                 driver
-//!                     .add_message_to_continue(
-//!                         UserPrompt::new("Please continue.".to_string()),
-//!                         true,
-//!                     )
-//!                     .create_stream()
-//!                     .await
-//!             }
-//!
-//!             StreamResult::Failed(driver) => {
-//!                 for event in driver.events() {
-//!                     println!("failed event: {event:?}");
-//!                 }
-//!
-//!                 driver.retry().create_stream().await
-//!             }
-//!         };
+//!     if agent.status() == AgentStatus::WaitingForToolResponses {
+//!         let pending_tools = agent.pending_tools().expect("tools should be pending");
+//!         let tool_results = execute_tools(pending_tools).await;
+//!         let agent = agent
+//!             .submit_tool_results(tool_results, |_| {})
+//!             .expect("agent should accept tool results")
+//!             .await;
+//!         assert_eq!(agent.status(), AgentStatus::WaitingForUserMessage);
 //!     }
 //! }
 //!
@@ -76,20 +40,18 @@
 //! }
 //!
 //! async fn execute_tools(
-//!     pending_tools: impl Sized,
-//! ) -> impl Sized {
+//!     pending_tools: auger_driver::ToolBatch<auger_driver::Resolving>,
+//! ) -> auger_driver::ToolBatch<auger_driver::Resolved> {
 //!     todo!("apply policy, execute tools, and return a resolved batch")
 //! }
 //! ```
 
 pub(crate) mod agent;
+mod facade;
 pub(crate) mod interrupt_states;
 pub(crate) mod streaming;
 pub(crate) mod tool_batch;
 pub(crate) mod waiting_for_tools;
 
-pub use agent::{Agent, WaitingForUserMessage, ReadyToStream};
-pub use interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
-pub use streaming::{LlmStreaming as LlmStreamingFuture, StreamResult};
-pub use waiting_for_tools::WaitingForToolResponses;
+pub use facade::{Agent, AgentStatus, AgentStream, InvalidTransition};
 pub use tool_batch::{AddToolResponseIssue, Resolved, Resolving, ToolBatch, ToolBatchState};

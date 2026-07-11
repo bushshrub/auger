@@ -1,20 +1,19 @@
 //! State when LLM is streaming the response back.
 //!
 
+use crate::agent::{TypedAgent, WaitingForUserMessage};
+use crate::interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
+use crate::waiting_for_tools::WaitingForToolResponses;
+use provider::thread::ClankerTurn;
+use provider::{LlmModel, LlmThread, ToolDefinition};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use crate::agent::{Agent, State, WaitingForUserMessage};
 use tokio_util::sync::CancellationToken;
-use provider::{LlmModel, LlmThread, ToolDefinition};
-use provider::thread::ClankerTurn;
-use crate::interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
-use crate::waiting_for_tools::WaitingForToolResponses;
-
 
 /// Future which when awaited, streams the LLM response.
 /// Once done, returns a StreamResult which gives the result state after streaming.
-pub struct LlmStreaming {
+pub(crate) struct LlmStreaming {
     cancellation: CancellationToken,
     inner: Pin<Box<dyn Future<Output = StreamResult> + Send>>,
 }
@@ -44,7 +43,6 @@ impl LlmStreaming {
     pub fn interrupt_handle(&self) -> CancellationToken {
         self.cancellation.clone()
     }
-
 }
 
 impl Future for LlmStreaming {
@@ -68,7 +66,7 @@ pub(crate) async fn run_stream(
         result = model.stream(request) => match result {
             Ok(stream) => stream,
             Err(_) => {
-                return StreamResult::Failed(Agent {
+                return StreamResult::Failed(TypedAgent {
                     model,
                     tools,
                     state: LlmStreamingFailed::new(thread, events),
@@ -76,7 +74,7 @@ pub(crate) async fn run_stream(
             }
         },
         _ = cancellation.cancelled() => {
-            return StreamResult::Interrupted(Agent {
+            return StreamResult::Interrupted(TypedAgent {
                 model,
                 tools,
                 state: LlmStreamingInterrupted::new(thread, events),
@@ -90,7 +88,7 @@ pub(crate) async fn run_stream(
             _ = cancellation.cancelled() => {
                 stream.abort();
 
-                return StreamResult::Interrupted(Agent {
+                return StreamResult::Interrupted(TypedAgent {
                     model,
                     tools,
                 state: LlmStreamingInterrupted::new(thread, events),
@@ -105,7 +103,7 @@ pub(crate) async fn run_stream(
             }
             Some(Err(_)) => {
                 // TODO: what errors can occur here?
-                return StreamResult::Failed(Agent {
+                return StreamResult::Failed(TypedAgent {
                     model,
                     tools,
                     state: LlmStreamingFailed::new(thread, events),
@@ -119,12 +117,12 @@ pub(crate) async fn run_stream(
     let clanker_message = provider::ClankerMessage::from(response);
 
     match thread.add_clanker_reply(clanker_message) {
-        either::Either::Left(thread) => StreamResult::WaitingForUserMessage(Agent {
+        either::Either::Left(thread) => StreamResult::WaitingForUserMessage(TypedAgent {
             model,
             tools,
             state: WaitingForUserMessage { thread },
         }),
-        either::Either::Right(thread) => StreamResult::WaitingForToolResponses(Agent {
+        either::Either::Right(thread) => StreamResult::WaitingForToolResponses(TypedAgent {
             model,
             tools,
             state: WaitingForToolResponses { thread },
@@ -132,17 +130,15 @@ pub(crate) async fn run_stream(
     }
 }
 
-
-
 /// The result of running the stream.
-pub enum StreamResult {
+pub(crate) enum StreamResult {
     /// The user interrupted the stream
-    Interrupted(Agent<LlmStreamingInterrupted>),
+    Interrupted(TypedAgent<LlmStreamingInterrupted>),
     /// An error occurred while trying to start the stream, or in the middle
     /// of streaming
-    Failed(Agent<LlmStreamingFailed>),
+    Failed(TypedAgent<LlmStreamingFailed>),
     /// Stream completed successfully and the LLM has called tools
-    WaitingForToolResponses(Agent<WaitingForToolResponses>),
+    WaitingForToolResponses(TypedAgent<WaitingForToolResponses>),
     /// Stream completed successfully and the LLM has not called any tools
-    WaitingForUserMessage(Agent<WaitingForUserMessage>)
+    WaitingForUserMessage(TypedAgent<WaitingForUserMessage>),
 }

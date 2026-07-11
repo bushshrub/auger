@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
-use auger_driver::{Agent, StreamResult};
+use auger_driver::{Agent, AgentStatus};
 use either::Either;
-use provider::{
-    LlmModel, LlmResponse, ToolCallRequest, ToolDefinition, ToolResult, UserPrompt,
-};
+use provider::{LlmModel, LlmResponse, ToolCallRequest, ToolDefinition, ToolResult, UserPrompt};
 use provider_dummy::DummyProvider;
 
 #[tokio::test]
@@ -43,23 +41,15 @@ async fn completes_one_tool_call_iteration() {
         }),
     }];
 
-    let agent = Agent::new(
-        model,
-        "You are a coding agent.".to_string(),
-        tools,
-    );
+    let agent = Agent::new(model, "You are a coding agent.".to_string(), tools);
 
-    let result = agent
-        .add_message(UserPrompt::new("Read README.md.".to_string()))
-        .create_stream()
+    let agent = agent
+        .send_message(UserPrompt::new("Read README.md.".to_string()), |_| {})
+        .expect("agent should accept a user message")
         .await;
 
-    let tool_agent = match result {
-        StreamResult::WaitingForToolResponses(agent) => agent,
-        _ => panic!("expected the first stream to request tool responses"),
-    };
-
-    let resolving_batch = tool_agent.get_batch();
+    assert_eq!(agent.status(), AgentStatus::WaitingForToolResponses);
+    let resolving_batch = agent.pending_tools().expect("tool calls should be pending");
     let resolved_batch = match resolving_batch
         .add_result(
             "call-1",
@@ -71,15 +61,12 @@ async fn completes_one_tool_call_iteration() {
         Either::Left(_) => panic!("expected the single-call batch to be complete"),
     };
 
-    let result = tool_agent
-        .add_all_tool_responses(resolved_batch)
-        .create_stream()
+    let agent = agent
+        .submit_tool_results(resolved_batch, |_| {})
+        .expect("agent should accept tool results")
         .await;
 
-    match result {
-        StreamResult::WaitingForUserMessage(_) => {}
-        _ => panic!("expected the second stream to complete without more tools"),
-    }
+    assert_eq!(agent.status(), AgentStatus::WaitingForUserMessage);
 
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);

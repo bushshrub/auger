@@ -1,6 +1,6 @@
 //! Events and command types for a session
 
-use auger_driver::{Agent, Resolved, StreamResult, WaitingForToolResponses};
+use auger_driver::{Agent, Resolved};
 use provider::UserPrompt;
 
 /// User sent commands to the session
@@ -27,14 +27,11 @@ pub enum SessionEvent {
 
 pub(crate) enum LoopEvent {
     Cmd(SessionCommand),
-    StreamCompletion(StreamResult),
+    StreamCompletion(Agent),
     UserToolResult {
-        agent: Agent<WaitingForToolResponses>,
+        agent: Agent,
         batch: auger_driver::ToolBatch<auger_driver::Resolving>,
         result: provider::ToolResult,
     },
-    AgentToolResults(
-        Agent<WaitingForToolResponses>,
-        auger_driver::ToolBatch<Resolved>,
-    ),
+    AgentToolResults(Agent, auger_driver::ToolBatch<Resolved>),
 }
