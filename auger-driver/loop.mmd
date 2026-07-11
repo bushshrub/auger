@@ -1,22 +1,17 @@
 stateDiagram-v2
-    [*] --> Idle
+    state "Waiting for user" as Waiting
+    state "LLM streaming" as Streaming
+    state "Waiting for tools" as Tools
+    state "Interrupted" as Interrupted
+    state "Error" as Error
 
-    Idle --> LlmTurnRunning: SubmitInput
+    [*] --> Waiting
 
-    LlmTurnRunning --> AwaitingHostFeedback: ModelToolCallBatchReady
-    LlmTurnRunning --> Idle: FinalAssistantResponse
-    LlmTurnRunning --> ResponseError: ModelStreamError
-    LlmTurnRunning --> InterruptingLlmTurn: Interrupt
-
-    ResponseError --> LlmTurnRunning: SubmitInput
-
-    AwaitingHostFeedback --> LlmTurnRunning: SubmitHostFeedback
-    AwaitingHostFeedback --> InterruptingHostFeedbackWait: Interrupt
-
-    InterruptingLlmTurn --> Idle: Interrupted
-    InterruptingHostFeedbackWait --> Idle: Interrupted
-
-    Idle --> Shutdown: Shutdown
-    LlmTurnRunning --> Shutdown: Shutdown
-    ResponseError --> Shutdown: Shutdown
-    AwaitingHostFeedback --> Shutdown: Shutdown
+    Waiting --> Streaming: User message
+    Streaming --> Waiting: Turn complete
+    Streaming --> Tools: Tool calls
+    Streaming --> Interrupted: Interrupt
+    Streaming --> Error: Stream failure
+    Tools --> Streaming: Tool results
+    Interrupted --> Streaming: User message
+    Error --> Streaming: User message
