@@ -88,7 +88,7 @@ pub(crate) mod streaming;
 pub(crate) mod tool_batch;
 pub(crate) mod waiting_for_tools;
 
-pub use agent::Agent;
+pub use agent::{Agent, WaitingForUserMessage, ReadyToStream};
 pub use interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
 pub use streaming::{LlmStreaming as LlmStreamingFuture, StreamResult};
 pub use tool_batch::{AddToolResponseIssue, Resolved, Resolving, ToolBatch, ToolBatchState};
