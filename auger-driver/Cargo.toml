@@ -13,6 +13,7 @@ futures.workspace = true
 thiserror.workspace = true
 tokio-util = "0.7.18"
 tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+getset = "0.1.7"
 
 [dev-dependencies]
 provider-dummy = { path = "../provider-dummy" }
