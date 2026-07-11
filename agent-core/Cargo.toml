@@ -16,6 +16,8 @@ thiserror.workspace = true
 either = "1.16.0"
 uuid = { version = "1.23.3", features = ["serde", "v4"] }
 auger-driver = { version = "0.1.0", path = "../auger-driver" }
+tokio-util = "0.7.18"
 
 [dev-dependencies]
 provider-dummy = { path = "../provider-dummy" }
+tracing-subscriber.workspace = true

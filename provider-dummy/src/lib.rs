@@ -4,6 +4,7 @@ use provider::{
 };
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use tracing::debug;
 
 #[derive(Clone, Debug, Default)]
 pub struct DummyProvider {
@@ -62,7 +63,8 @@ impl DummyProvider {
 
 #[async_trait::async_trait]
 impl LlmProvider for DummyProvider {
-    async fn complete(&self, _model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError> {
+    async fn complete(&self, model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError> {
+        debug!(model, "dummy provider complete called");
         match self.next_response(request)? {
             DummyResponse::Response(response) => Ok(response),
             DummyResponse::Stream(_) | DummyResponse::PendingStream(_) => Err(LlmError {
@@ -71,17 +73,40 @@ impl LlmProvider for DummyProvider {
         }
     }
 
-    async fn stream(&self, _model: &str, request: LlmRequest) -> Result<LlmStream, LlmError> {
+    async fn stream(&self, model: &str, request: LlmRequest) -> Result<LlmStream, LlmError> {
+        debug!(model, "dummy provider stream called");
         match self.next_response(request)? {
-            DummyResponse::Response(response) => Ok(LlmStream::new(stream::iter(
+            DummyResponse::Response(response) => Ok(LlmStream::new(finite_stream(
                 response_to_stream_events(response),
+                model,
             ))),
-            DummyResponse::Stream(events) => Ok(LlmStream::new(stream::iter(events))),
+            DummyResponse::Stream(events) => {
+                Ok(LlmStream::new(finite_stream(events, model)))
+            }
             DummyResponse::PendingStream(events) => Ok(LlmStream::new(
                 stream::iter(events).chain(stream::pending()),
             )),
         }
     }
+}
+
+fn finite_stream(
+    events: Vec<Result<StreamEvent, LlmError>>,
+    model: &str,
+) -> impl futures::Stream<Item = Result<StreamEvent, LlmError>> + Send + 'static {
+    let model = model.to_string();
+    stream::unfold(
+        (VecDeque::from(events), model),
+        |(mut events, model)| async move {
+            match events.pop_front() {
+                Some(event) => Some((event, (events, model))),
+                None => {
+                    debug!(model = %model, "dummy provider stream ended");
+                    None
+                }
+            }
+        },
+    )
 }
 
 fn response_to_stream_events(response: LlmResponse) -> Vec<Result<StreamEvent, LlmError>> {
