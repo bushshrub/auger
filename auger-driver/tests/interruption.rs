@@ -19,7 +19,8 @@ async fn continues_after_interruption_with_partial_response() {
     let model = LlmModel::new(Arc::new(provider.clone()), "dummy");
     let event_seen = Arc::new(tokio::sync::Notify::new());
 
-    let stream = Agent::new(model, "system", Vec::new())
+    let mut agent = Agent::new(model, "system", Vec::new());
+    let stream = agent
         .send_message(UserPrompt::new("first".to_string()), {
             let event_seen = Arc::clone(&event_seen);
             move |_| event_seen.notify_one()
@@ -29,13 +30,14 @@ async fn continues_after_interruption_with_partial_response() {
     let task = tokio::spawn(stream);
     event_seen.notified().await;
     interrupt.cancel();
-    let agent = task.await.unwrap();
+    agent.complete(task.await.unwrap());
 
     assert_eq!(agent.status(), AgentStatus::Interrupted);
-    let agent = agent
+    let completion = agent
         .continue_after_interruption(UserPrompt::new("continue".to_string()), true, |_| {})
         .unwrap()
         .await;
+    agent.complete(completion);
     assert_eq!(agent.status(), AgentStatus::WaitingForUserMessage);
 
     let requests = provider.requests();

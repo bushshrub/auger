@@ -41,12 +41,13 @@ async fn completes_one_tool_call_iteration() {
         }),
     }];
 
-    let agent = Agent::new(model, "You are a coding agent.".to_string(), tools);
+    let mut agent = Agent::new(model, "You are a coding agent.".to_string(), tools);
 
-    let agent = agent
+    let completion = agent
         .send_message(UserPrompt::new("Read README.md.".to_string()), |_| {})
         .expect("agent should accept a user message")
         .await;
+    agent.complete(completion);
 
     assert_eq!(agent.status(), AgentStatus::WaitingForToolResponses);
     let resolving_batch = agent.pending_tools().expect("tool calls should be pending");
@@ -61,10 +62,11 @@ async fn completes_one_tool_call_iteration() {
         Either::Left(_) => panic!("expected the single-call batch to be complete"),
     };
 
-    let agent = agent
+    let completion = agent
         .submit_tool_results(resolved_batch, |_| {})
         .expect("agent should accept tool results")
         .await;
+    agent.complete(completion);
 
     assert_eq!(agent.status(), AgentStatus::WaitingForUserMessage);
 

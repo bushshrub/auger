@@ -23,13 +23,16 @@ async fn retries_failed_stream_without_partial_response() {
     ]);
     let model = LlmModel::new(Arc::new(provider.clone()), "dummy");
 
-    let agent = Agent::new(model, "system", Vec::new())
+    let mut agent = Agent::new(model, "system", Vec::new());
+    let completion = agent
         .send_message(UserPrompt::new("first".to_string()), |_| {})
         .unwrap()
         .await;
+    agent.complete(completion);
     assert_eq!(agent.status(), AgentStatus::Failed);
 
-    let agent = agent.retry_after_failure(|_| {}).unwrap().await;
+    let completion = agent.retry_after_failure(|_| {}).unwrap().await;
+    agent.complete(completion);
     assert_eq!(agent.status(), AgentStatus::WaitingForUserMessage);
 
     let requests = provider.requests();
