@@ -9,13 +9,13 @@
 //!
 //! async fn run_agent(model: LlmModel) {
 //!     let tools: Vec<ToolDefinition> = load_tool_definitions();
-//!     let agent = Agent::new(
+//!     let mut agent = Agent::new(
 //!         model,
 //!         "You are a helpful coding agent.".to_string(),
 //!         tools,
 //!     );
 //!
-//!     let agent = agent
+//!     let completion = agent
 //!         .send_message(UserPrompt::new(
 //!             "Inspect the repository.".to_string(),
 //!         ), |event| {
@@ -23,14 +23,16 @@
 //!         })
 //!         .expect("agent should accept a user message")
 //!         .await;
+//!     agent.complete(completion);
 //!
 //!     if agent.status() == AgentStatus::WaitingForToolResponses {
 //!         let pending_tools = agent.pending_tools().expect("tools should be pending");
 //!         let tool_results = execute_tools(pending_tools).await;
-//!         let agent = agent
+//!         let completion = agent
 //!             .submit_tool_results(tool_results, |_| {})
 //!             .expect("agent should accept tool results")
 //!             .await;
+//!         agent.complete(completion);
 //!         assert_eq!(agent.status(), AgentStatus::WaitingForUserMessage);
 //!     }
 //! }
@@ -53,5 +55,5 @@ pub(crate) mod streaming;
 pub(crate) mod tool_batch;
 pub(crate) mod waiting_for_tools;
 
-pub use facade::{Agent, AgentStatus, AgentStream, InvalidTransition};
+pub use facade::{Agent, AgentCompletion, AgentStatus, AgentStream, InvalidTransition};
 pub use tool_batch::{AddToolResponseIssue, Resolved, Resolving, ToolBatch, ToolBatchState};
