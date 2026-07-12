@@ -145,8 +145,8 @@ pub struct Session {
 
 
     /// Receiver to receive session commands and agent events from
-    inbox: mpsc::Receiver<LoopMessage>,
-    loop_event_tx: mpsc::Sender<LoopMessage>,
+    cmd_rx: mpsc::Receiver<LoopMessage>,
+    harness_internal_event_tx: Sender<LoopMessage>,
     /// Sender for the session to emit events through
     event_tx: mpsc::Sender<SessionEvent>,
     tool_registry: Arc<ToolRegistry>,
@@ -176,8 +176,8 @@ impl Session {
 
         let session = Self {
             id: SessionId::new(),
-            inbox: cmd_rx,
-            loop_event_tx: cmd_tx.clone(),
+            cmd_rx,
+            harness_internal_event_tx: cmd_tx.clone(),
             event_tx,
             tool_registry,
             auto_approval_policy: Arc::new(AutoApprovalPolicy::new(auto_approved_tools)),
@@ -203,7 +203,7 @@ impl Session {
             tools,
         );
         let mut curr_state = HarnessState::WaitingForUserMessage { agent: init_agent };
-        for msg in self.inbox.iter() {
+        for msg in self.cmd_rx.iter() {
             match msg {
                 LoopMessage::Cmd(cmd) => {
                     match cmd {
@@ -212,7 +212,7 @@ impl Session {
                             curr_state = match curr_state {
                                 HarnessState::WaitingForUserMessage { agent } => {
                                     let new_agent = agent.add_message(prompt);
-                                    let inbox_tx = self.loop_event_tx.clone();
+                                    let inbox_tx = self.harness_internal_event_tx.clone();
                                     // todo: attach event handler function
                                     let stream_fut = new_agent.create_stream();
                                     let cancel = stream_fut.interrupt_handle();
@@ -303,7 +303,7 @@ impl Session {
                             let new_agent = agent.add_all_tool_responses(tool_batch);
                             let stream_fut = new_agent.create_stream();
                             let cancel = stream_fut.interrupt_handle();
-                            let inbox_tx = self.loop_event_tx.clone();
+                            let inbox_tx = self.harness_internal_event_tx.clone();
                             rt.spawn(async move {
                                 // TODO: Attach stream delta emit pipe.
                                 let res = stream_fut.await;
