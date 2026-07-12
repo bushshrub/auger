@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use auger_driver::{ReadyToStream, Resolved, TypedAgent, WaitingForToolResponses, WaitingForUserMessage};
 use provider::{LlmThread, UserPrompt};
 use provider::thread::UserTurn;
-use crate::tools::tool_decisions::UserToolDecisions;
+use crate::tools::tool_decisions::{Resolving, ToolAuthorization, UserToolDecisions};
 
 /// User sent commands to the session
 #[derive(Clone, Debug)]
@@ -48,8 +48,10 @@ pub(crate) enum HarnessState {
     Streaming { cancel: CancellationToken },
     /// LLM streaming came back and there are tool calls
     HasToolCalls { agent: TypedAgent<WaitingForToolResponses>},
+    /// All tools have a decision and we are ready to run tools
+    ReadyToRunTools { agent: TypedAgent<WaitingForToolResponses>, authorization: ToolAuthorization },
     /// Tool call execution is in progress
     WaitingForToolResults { cancel: CancellationToken },
     /// Session is waiting for consent for tool calls
-    NeedsUserConsent { agent: TypedAgent<WaitingForToolResponses>, user_tool_decisions: UserToolDecisions },
+    NeedToolConsent { agent: TypedAgent<WaitingForToolResponses>, user_tool_decisions: UserToolDecisions<Resolving> },
 }
