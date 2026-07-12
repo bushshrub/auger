@@ -10,7 +10,7 @@ use provider::{LlmThread, UserPrompt};
 
 /// The LLM stream was interrupted midway.
 #[derive(Getters)]
-pub(crate) struct LlmStreamingInterrupted {
+pub struct LlmStreamingInterrupted {
     thread: LlmThread<ClankerTurn>,
     #[getset(get = "pub")]
     events: Vec<provider::StreamEvent>,
@@ -57,7 +57,7 @@ impl TypedAgent<LlmStreamingInterrupted> {
 
 /// The LLM stream failed midway.
 #[derive(Getters)]
-pub(crate) struct LlmStreamingFailed {
+pub struct LlmStreamingFailed {
     thread: LlmThread<ClankerTurn>,
     #[getset(get = "pub")]
     events: Vec<provider::StreamEvent>,

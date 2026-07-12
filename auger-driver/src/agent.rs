@@ -1,5 +1,5 @@
-use getset::Getters;
 use crate::streaming::LlmStreaming as LlmStreamingFuture;
+use getset::Getters;
 use provider::thread::{ClankerTurn, UserTurn};
 use provider::{LlmModel, LlmThread, ToolDefinition, UserPrompt};
 use tokio_util::sync::CancellationToken;
@@ -13,7 +13,7 @@ pub struct TypedAgent<S: State> {
 }
 
 /// A state that the driver can be in.
-pub(crate) trait State {}
+pub trait State {}
 
 /// The driver is waiting for a user message.
 /// Providing a message will begin the LLM stream and
