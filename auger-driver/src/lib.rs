@@ -49,11 +49,13 @@
 //! ```
 
 pub(crate) mod agent;
-mod facade;
 pub(crate) mod interrupt_states;
 pub(crate) mod streaming;
 pub(crate) mod tool_batch;
 pub(crate) mod waiting_for_tools;
 
-pub use facade::{Agent, AgentCompletion, AgentStatus, AgentStream, InvalidTransition};
+
+pub use agent::{TypedAgent, WaitingForUserMessage, ReadyToStream};
+pub use waiting_for_tools::{WaitingForToolResponses};
+pub use streaming::{StreamResult, LlmStreaming};
 pub use tool_batch::{AddToolResponseIssue, Resolved, Resolving, ToolBatch, ToolBatchState};

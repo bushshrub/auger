@@ -1,11 +1,14 @@
+use getset::Getters;
 use crate::streaming::LlmStreaming as LlmStreamingFuture;
 use provider::thread::{ClankerTurn, UserTurn};
 use provider::{LlmModel, LlmThread, ToolDefinition, UserPrompt};
 use tokio_util::sync::CancellationToken;
 /// Synchronous state machine for the auger driver.
-pub(crate) struct TypedAgent<S: State> {
+#[derive(Getters)]
+pub struct TypedAgent<S: State> {
     pub(crate) model: LlmModel,
     pub(crate) tools: Vec<ToolDefinition>,
+    #[get = "pub"]
     pub(crate) state: S,
 }
 
@@ -15,7 +18,9 @@ pub(crate) trait State {}
 /// The driver is waiting for a user message.
 /// Providing a message will begin the LLM stream and
 /// transition it to the [`LlmStreaming`] state.
-pub(crate) struct WaitingForUserMessage {
+#[derive(Getters)]
+pub struct WaitingForUserMessage {
+    #[get = "pub"]
     pub(crate) thread: LlmThread<UserTurn>,
 }
 
@@ -49,7 +54,7 @@ impl TypedAgent<WaitingForUserMessage> {
 }
 
 /// The driver is ready to begin streaming the LLM response.
-pub(crate) struct ReadyToStream {
+pub struct ReadyToStream {
     thread: LlmThread<ClankerTurn>,
     event_callback: Box<dyn Fn(provider::StreamEvent) + Send + Sync>,
 }

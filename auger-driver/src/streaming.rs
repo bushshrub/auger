@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Future which when awaited, streams the LLM response.
 /// Once done, returns a StreamResult which gives the result state after streaming.
-pub(crate) struct LlmStreaming {
+pub struct LlmStreaming {
     cancellation: CancellationToken,
     inner: Pin<Box<dyn Future<Output = StreamResult> + Send>>,
 }
@@ -131,7 +131,7 @@ pub(crate) async fn run_stream(
 }
 
 /// The result of running the stream.
-pub(crate) enum StreamResult {
+pub enum StreamResult {
     /// The user interrupted the stream
     Interrupted(TypedAgent<LlmStreamingInterrupted>),
     /// An error occurred while trying to start the stream, or in the middle
