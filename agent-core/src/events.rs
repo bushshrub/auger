@@ -1,11 +1,12 @@
 //! Events and command types for a session
 
-use std::collections::HashSet;
-use tokio_util::sync::CancellationToken;
-use auger_driver::{ReadyToStream, Resolved, TypedAgent, WaitingForToolResponses, WaitingForUserMessage};
-use provider::{LlmThread, UserPrompt};
-use provider::thread::UserTurn;
 use crate::tools::tool_decisions::{Resolving, ToolAuthorization, UserToolDecisions};
+use auger_driver::{
+    LlmStreamingFailed, LlmStreamingInterrupted, ReadyToStream, TypedAgent,
+    WaitingForToolResponses, WaitingForUserMessage,
+};
+use provider::UserPrompt;
+use tokio_util::sync::CancellationToken;
 
 /// User sent commands to the session
 #[derive(Clone, Debug)]
@@ -35,23 +36,44 @@ pub(crate) enum LoopEvent {
     /// User commands
     Cmd(SessionCommand),
     /// Internal state transition
-    StateTransition(HarnessState)
+    StateTransition(HarnessState),
 }
 
 /// The current state that the harness is in, with additional data as needed
 pub(crate) enum HarnessState {
     /// The session is waiting for a user message
-    WaitingForUserMessage { agent: TypedAgent<WaitingForUserMessage> },
+    WaitingForUserMessage {
+        agent: TypedAgent<WaitingForUserMessage>,
+    },
     /// The session is ready to stream
     ReadyToStream { agent: TypedAgent<ReadyToStream> },
     /// LLM streaming is in progress
-    Streaming { cancel: CancellationToken },
+    Streaming {
+        cancel: CancellationToken,
+        pending_message: Option<UserPrompt>,
+    },
+    /// LLM streaming was interrupted, retaining the partial response.
+    StreamingInterrupted {
+        agent: TypedAgent<LlmStreamingInterrupted>,
+    },
+    /// LLM streaming failed, retaining the partial response.
+    StreamingFailed {
+        agent: TypedAgent<LlmStreamingFailed>,
+    },
     /// LLM streaming came back and there are tool calls
-    HasToolCalls { agent: TypedAgent<WaitingForToolResponses>},
+    HasToolCalls {
+        agent: TypedAgent<WaitingForToolResponses>,
+    },
     /// All tools have a decision and we are ready to run tools
-    ReadyToRunTools { agent: TypedAgent<WaitingForToolResponses>, authorization: ToolAuthorization },
+    ReadyToRunTools {
+        agent: TypedAgent<WaitingForToolResponses>,
+        authorization: ToolAuthorization,
+    },
     /// Tool call execution is in progress
     WaitingForToolResults { cancel: CancellationToken },
     /// Session is waiting for consent for tool calls
-    NeedToolConsent { agent: TypedAgent<WaitingForToolResponses>, user_tool_decisions: UserToolDecisions<Resolving> },
+    NeedToolConsent {
+        agent: TypedAgent<WaitingForToolResponses>,
+        user_tool_decisions: UserToolDecisions<Resolving>,
+    },
 }
