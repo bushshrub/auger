@@ -29,3 +29,4 @@ Currently, there are 3 provides:
 - Avoid emdash `—`, unicode arrow `→` or any unicode characters: `×`, `…` ; use ASCII equivalents instead: `-`, `->`, `x`, `...`
 - Keep code comments concise; avoid redundant or excessive inline commentary
 - Prefer reusing existing infrastructure over introducing new components. Avoid invasive changes that add whole new subsystems or risk breaking existing behaviour
+- Do NOT run rustfmt or cargo fmt. These cause extremely noisy diffs.

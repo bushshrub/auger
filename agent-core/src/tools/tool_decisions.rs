@@ -12,6 +12,23 @@ pub enum ToolAuthorization {
     PerTool(UserToolDecisions<Resolved>),
 }
 
+impl ToolAuthorization {
+    pub(crate) fn denial_reason(&self, id: &str) -> Option<String> {
+        match self {
+            Self::AllAutoApproved => None,
+            Self::PerTool(decisions) => match decisions.decided_tools.get(id) {
+                Some((true, _)) => None,
+                Some((false, reason)) => Some(
+                    reason
+                        .clone()
+                        .unwrap_or_else(|| "Denied by user".to_string()),
+                ),
+                None => unreachable!("resolved tool authorization is missing tool call {id}"),
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct UserToolDecisions<S> {
     undecided_tool_ids: HashSet<String>,
