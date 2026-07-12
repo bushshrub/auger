@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use auger_driver::{Agent, AgentStatus};
+use auger_driver::{StreamResult, TypedAgent, WaitingForUserMessage};
 use provider::{LlmModel, LlmResponse, Message, StreamEvent, UserPrompt};
 use provider_dummy::{DummyProvider, DummyResponse};
 
@@ -19,26 +19,27 @@ async fn continues_after_interruption_with_partial_response() {
     let model = LlmModel::new(Arc::new(provider.clone()), "dummy");
     let event_seen = Arc::new(tokio::sync::Notify::new());
 
-    let mut agent = Agent::new(model, "system", Vec::new());
-    let stream = agent
-        .send_message(UserPrompt::new("first".to_string()), {
+    let agent = TypedAgent::<WaitingForUserMessage>::new(model, "system".to_string(), Vec::new())
+        .add_message(UserPrompt::new("first".to_string()))
+        .add_event_callback({
             let event_seen = Arc::clone(&event_seen);
             move |_| event_seen.notify_one()
-        })
-        .unwrap();
+        });
+    let stream = agent.create_stream();
     let interrupt = stream.interrupt_handle();
     let task = tokio::spawn(stream);
     event_seen.notified().await;
     interrupt.cancel();
-    agent.complete(task.await.unwrap());
 
-    assert_eq!(agent.status(), AgentStatus::Interrupted);
-    let completion = agent
-        .continue_after_interruption(UserPrompt::new("continue".to_string()), true, |_| {})
-        .unwrap()
+    let agent = match task.await.expect("stream task should complete") {
+        StreamResult::Interrupted(agent) => agent,
+        _ => panic!("expected stream interruption"),
+    };
+    let agent = agent
+        .add_message_to_continue(UserPrompt::new("continue".to_string()), true)
+        .create_stream()
         .await;
-    agent.complete(completion);
-    assert_eq!(agent.status(), AgentStatus::WaitingForUserMessage);
+    assert!(matches!(agent, StreamResult::WaitingForUserMessage(_)));
 
     let requests = provider.requests();
     assert!(matches!(

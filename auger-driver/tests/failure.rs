@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use auger_driver::{Agent, AgentStatus};
+use auger_driver::{StreamResult, TypedAgent, WaitingForUserMessage};
 use provider::{LlmError, LlmModel, LlmResponse, Message, StreamEvent, UserPrompt};
 use provider_dummy::{DummyProvider, DummyResponse};
 
@@ -23,17 +23,14 @@ async fn retries_failed_stream_without_partial_response() {
     ]);
     let model = LlmModel::new(Arc::new(provider.clone()), "dummy");
 
-    let mut agent = Agent::new(model, "system", Vec::new());
-    let completion = agent
-        .send_message(UserPrompt::new("first".to_string()), |_| {})
-        .unwrap()
-        .await;
-    agent.complete(completion);
-    assert_eq!(agent.status(), AgentStatus::Failed);
-
-    let completion = agent.retry_after_failure(|_| {}).unwrap().await;
-    agent.complete(completion);
-    assert_eq!(agent.status(), AgentStatus::WaitingForUserMessage);
+    let agent = TypedAgent::<WaitingForUserMessage>::new(model, "system".to_string(), Vec::new())
+        .add_message(UserPrompt::new("first".to_string()));
+    let agent = match agent.create_stream().await {
+        StreamResult::Failed(agent) => agent.retry(),
+        _ => panic!("expected stream failure"),
+    };
+    let result = agent.create_stream().await;
+    assert!(matches!(result, StreamResult::WaitingForUserMessage(_)));
 
     let requests = provider.requests();
     assert!(matches!(

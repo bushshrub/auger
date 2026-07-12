@@ -4,36 +4,25 @@
 //! conversation and returns the next valid state after each LLM turn.
 //!
 //! ```no_run
-//! use auger_driver::{Agent, AgentStatus};
+//! use auger_driver::{StreamResult, TypedAgent, WaitingForUserMessage};
 //! use provider::{LlmModel, ToolDefinition, UserPrompt};
 //!
 //! async fn run_agent(model: LlmModel) {
 //!     let tools: Vec<ToolDefinition> = load_tool_definitions();
-//!     let mut agent = Agent::new(
+//!     let agent = TypedAgent::<WaitingForUserMessage>::new(
 //!         model,
 //!         "You are a helpful coding agent.".to_string(),
 //!         tools,
-//!     );
+//!     )
+//!     .add_message(UserPrompt::new("Inspect the repository.".to_string()));
 //!
-//!     let completion = agent
-//!         .send_message(UserPrompt::new(
-//!             "Inspect the repository.".to_string(),
-//!         ), |event| {
-//!             println!("stream event: {event:?}");
-//!         })
-//!         .expect("agent should accept a user message")
-//!         .await;
-//!     agent.complete(completion);
-//!
-//!     if agent.status() == AgentStatus::WaitingForToolResponses {
-//!         let pending_tools = agent.pending_tools().expect("tools should be pending");
-//!         let tool_results = execute_tools(pending_tools).await;
-//!         let completion = agent
-//!             .submit_tool_results(tool_results, |_| {})
-//!             .expect("agent should accept tool results")
-//!             .await;
-//!         agent.complete(completion);
-//!         assert_eq!(agent.status(), AgentStatus::WaitingForUserMessage);
+//!     match agent.create_stream().await {
+//!         StreamResult::WaitingForUserMessage(_) => {}
+//!         StreamResult::WaitingForToolResponses(agent) => {
+//!             let pending_tools = agent.get_batch();
+//!             let _ = (pending_tools, execute_tools);
+//!         }
+//!         StreamResult::Interrupted(_) | StreamResult::Failed(_) => {}
 //!     }
 //! }
 //!

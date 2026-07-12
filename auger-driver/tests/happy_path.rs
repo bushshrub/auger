@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use auger_driver::{Agent, AgentStatus};
+use auger_driver::{StreamResult, TypedAgent, WaitingForUserMessage};
 use either::Either;
 use provider::{LlmModel, LlmResponse, ToolCallRequest, ToolDefinition, ToolResult, UserPrompt};
 use provider_dummy::DummyProvider;
@@ -27,31 +27,27 @@ async fn completes_one_tool_call_iteration() {
             stop_reason: Some("stop".to_string()),
         },
     ]);
-
     let model = LlmModel::new(Arc::new(provider.clone()), "dummy");
     let tools = vec![ToolDefinition {
         name: "read_file".to_string(),
         description: Some("Read a file from the workspace.".to_string()),
         parameters: serde_json::json!({
             "type": "object",
-            "properties": {
-                "path": { "type": "string" }
-            },
+            "properties": { "path": { "type": "string" } },
             "required": ["path"]
         }),
     }];
 
-    let mut agent = Agent::new(model, "You are a coding agent.".to_string(), tools);
+    let agent = TypedAgent::<WaitingForUserMessage>::new(model, "system".to_string(), tools)
+        .add_message(UserPrompt::new("Read README.md.".to_string()));
+    let result = agent.create_stream().await;
+    let agent = match result {
+        StreamResult::WaitingForToolResponses(agent) => agent,
+        _ => panic!("expected tool calls"),
+    };
 
-    let completion = agent
-        .send_message(UserPrompt::new("Read README.md.".to_string()), |_| {})
-        .expect("agent should accept a user message")
-        .await;
-    agent.complete(completion);
-
-    assert_eq!(agent.status(), AgentStatus::WaitingForToolResponses);
-    let resolving_batch = agent.pending_tools().expect("tool calls should be pending");
-    let resolved_batch = match resolving_batch
+    let batch = agent.get_batch();
+    let batch = match batch
         .add_result(
             "call-1",
             ToolResult::new("call-1".to_string(), "README contents".to_string()),
@@ -62,13 +58,8 @@ async fn completes_one_tool_call_iteration() {
         Either::Left(_) => panic!("expected the single-call batch to be complete"),
     };
 
-    let completion = agent
-        .submit_tool_results(resolved_batch, |_| {})
-        .expect("agent should accept tool results")
-        .await;
-    agent.complete(completion);
-
-    assert_eq!(agent.status(), AgentStatus::WaitingForUserMessage);
+    let result = agent.add_all_tool_responses(batch).create_stream().await;
+    assert!(matches!(result, StreamResult::WaitingForUserMessage(_)));
 
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);

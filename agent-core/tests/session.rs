@@ -61,6 +61,90 @@ fn session_streams_all_provider_deltas() {
 }
 
 #[test]
+fn session_returns_to_waiting_for_user_message_after_streaming() {
+    let provider = DummyProvider::new_responses([
+        DummyResponse::Stream(vec![
+            Ok(StreamEvent::TextDelta("first".to_string())),
+            Ok(StreamEvent::Done {
+                usage: None,
+                stop_reason: Some("stop".to_string()),
+            }),
+        ]),
+        DummyResponse::Stream(vec![
+            Ok(StreamEvent::TextDelta("second".to_string())),
+            Ok(StreamEvent::Done {
+                usage: None,
+                stop_reason: Some("stop".to_string()),
+            }),
+        ]),
+    ]);
+    let provider_handle = provider.clone();
+    let model = LlmModel::new(Arc::new(provider), "dummy");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+
+    runtime.block_on(async move {
+        let handle = Session::start(
+            model,
+            SystemPrompt::new("system".to_string()),
+            tokio::runtime::Handle::current(),
+        );
+        let request_provider = provider_handle.clone();
+        let handle = tokio::task::spawn_blocking(move || {
+            handle
+                .send_message(UserPrompt::new("first".to_string()))
+                .expect("session should accept the first message");
+
+            let mut first_text = String::new();
+            loop {
+                match handle
+                    .recv_event()
+                    .expect("session event channel should stay open")
+                {
+                    SessionEvent::StreamEvent(StreamEvent::TextDelta(delta)) => {
+                        first_text.push_str(&delta)
+                    }
+                    SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
+                    SessionEvent::StreamEvent(_) => {}
+                    SessionEvent::Closed => panic!("session closed during first stream"),
+                }
+            }
+
+            while request_provider.requests().len() < 2 {
+                handle
+                    .send_message(UserPrompt::new("second".to_string()))
+                    .expect("session should accept commands");
+                std::thread::yield_now();
+            }
+
+            let mut second_text = String::new();
+            loop {
+                match handle
+                    .recv_event()
+                    .expect("session event channel should stay open")
+                {
+                    SessionEvent::StreamEvent(StreamEvent::TextDelta(delta)) => {
+                        second_text.push_str(&delta)
+                    }
+                    SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
+                    SessionEvent::StreamEvent(_) => {}
+                    SessionEvent::Closed => panic!("session closed during second stream"),
+                }
+            }
+
+            (first_text, second_text)
+        })
+        .await
+        .expect("session interaction task should complete");
+
+        assert_eq!(handle, ("first".to_string(), "second".to_string()));
+        assert_eq!(provider_handle.requests().len(), 2);
+    });
+}
+
+#[test]
 fn session_runs_two_agentic_iterations_with_auto_approved_tool() {
     let provider = DummyProvider::new_responses([
         DummyResponse::Stream(vec![
