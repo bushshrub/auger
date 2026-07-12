@@ -1,15 +1,63 @@
 use crate::SystemPrompt;
-use crate::events::{HarnessState, LoopEvent, SessionCommand, SessionEvent};
+use crate::events::{HarnessState, LoopMessage, SessionCommand, SessionEvent};
 use crate::tools::auto_approval::AutoApprovalPolicy;
-use crate::tools::tool_decisions::{ToolAuthorization, UserToolDecisions};
+use crate::tools::tool_decisions::{Resolved, Resolving, ToolAuthorization, UserToolDecisions};
 use crate::tools::tool_registry::ToolRegistry;
 use agent_tools::Tool;
-use auger_driver::TypedAgent;
-use provider::{LlmModel, UserPrompt};
+use auger_driver::{StreamResult, TypedAgent, WaitingForUserMessage};
+use futures::stream;
+use provider::{LlmModel, LlmProvider, LlmResponse, LlmStream, StreamEvent, UserPrompt};
 use std::fmt;
-use std::sync::mpsc;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{mpsc, Arc};
+use std::sync::mpsc::Sender;
+use either::Either;
 use tokio::runtime::Handle;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+
+struct DummyProvider;
+
+impl LlmProvider for DummyProvider {
+    fn complete<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        _model: &'life1 str,
+        _request: provider::LlmRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<LlmResponse, provider::LlmError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async {
+            Ok(LlmResponse::from(vec![StreamEvent::Done {
+                usage: None,
+                stop_reason: Some("stop".to_string()),
+            }]))
+        })
+    }
+
+    fn stream<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        _model: &'life1 str,
+        _request: provider::LlmRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<LlmStream, provider::LlmError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async {
+            Ok(LlmStream::new(stream::once(async {
+                Ok(StreamEvent::Done {
+                    usage: None,
+                    stop_reason: Some("stop".to_string()),
+                })
+            })))
+        })
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(uuid::Uuid);
@@ -29,14 +77,14 @@ impl SessionId {
 /// A handle to a running auger session
 pub struct SessionHandle {
     id: SessionId,
-    loop_event_tx: mpsc::Sender<LoopEvent>,
+    loop_event_tx: mpsc::Sender<LoopMessage>,
     event_rx: mpsc::Receiver<SessionEvent>,
 }
 
 impl SessionHandle {
     fn new(
         id: SessionId,
-        command_tx: mpsc::Sender<LoopEvent>,
+        command_tx: mpsc::Sender<LoopMessage>,
         event_rx: mpsc::Receiver<SessionEvent>,
     ) -> Self {
         Self {
@@ -53,13 +101,13 @@ impl SessionHandle {
 
     pub fn send_message(&self, prompt: UserPrompt) -> Result<(), ()> {
         self.loop_event_tx
-            .send(LoopEvent::Cmd(SessionCommand::SendMessage(prompt)))
+            .send(LoopMessage::Cmd(SessionCommand::SendMessage(prompt)))
             .map_err(|_| ())
     }
 
     pub fn interrupt(&self) -> Result<(), ()> {
         self.loop_event_tx
-            .send(LoopEvent::Cmd(SessionCommand::Interrupt))
+            .send(LoopMessage::Cmd(SessionCommand::Interrupt))
             .map_err(|_| ())
     }
 
@@ -78,7 +126,7 @@ impl SessionHandle {
         message: Option<String>,
     ) -> Result<(), ()> {
         self.loop_event_tx
-            .send(LoopEvent::Cmd(SessionCommand::ToolDecision {
+            .send(LoopMessage::Cmd(SessionCommand::ToolDecision {
                 id: id.into(),
                 approved,
                 message,
@@ -95,14 +143,14 @@ impl SessionHandle {
 pub struct Session {
     id: SessionId,
 
-    session_state: Option<HarnessState>,
+
     /// Receiver to receive session commands and agent events from
-    inbox: mpsc::Receiver<LoopEvent>,
-    loop_event_tx: mpsc::Sender<LoopEvent>,
+    inbox: mpsc::Receiver<LoopMessage>,
+    loop_event_tx: mpsc::Sender<LoopMessage>,
     /// Sender for the session to emit events through
     event_tx: mpsc::Sender<SessionEvent>,
-    tool_registry: std::sync::Arc<ToolRegistry>,
-    auto_approval_policy: std::sync::Arc<AutoApprovalPolicy>,
+    tool_registry: Arc<ToolRegistry>,
+    auto_approval_policy: Arc<AutoApprovalPolicy>,
 }
 
 impl Session {
@@ -121,7 +169,7 @@ impl Session {
         for tool in tools {
             tool_registry.register(tool);
         }
-        let tool_registry = std::sync::Arc::new(tool_registry);
+        let tool_registry = Arc::new(tool_registry);
         let tool_defs = tool_registry.list_for_clanker();
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
@@ -131,11 +179,8 @@ impl Session {
             inbox: cmd_rx,
             loop_event_tx: cmd_tx.clone(),
             event_tx,
-            session_state: Some(HarnessState::WaitingForUserMessage {
-                agent: TypedAgent::new(model, system_prompt.into(), tool_defs),
-            }),
             tool_registry,
-            auto_approval_policy: std::sync::Arc::new(AutoApprovalPolicy::new(auto_approved_tools)),
+            auto_approval_policy: Arc::new(AutoApprovalPolicy::new(auto_approved_tools)),
         };
         let handle = SessionHandle::new(session.id, cmd_tx, event_rx);
 
@@ -149,178 +194,137 @@ impl Session {
 
     fn run(mut self, rt: Handle) {
         info!(session_id = %self.id, "Session started");
-        while let Ok(event) = self.inbox.recv() {
-            match event {
-                LoopEvent::Cmd(cmd) => match cmd {
-                    SessionCommand::SendMessage(prompt) => match self.session_state.take() {
-                        Some(HarnessState::WaitingForUserMessage { agent }) => {
-                            self.emit_state_transition(HarnessState::ReadyToStream {
-                                agent: agent.add_message(prompt),
-                            });
-                        }
-                        Some(HarnessState::StreamingInterrupted { agent }) => {
-                            self.emit_state_transition(HarnessState::ReadyToStream {
-                                agent: agent.add_message_to_continue(prompt, true),
-                            });
-                        }
-                        Some(HarnessState::StreamingFailed { agent }) => {
-                            self.emit_state_transition(HarnessState::ReadyToStream {
-                                agent: agent.add_message_to_continue(prompt),
-                            });
-                        }
-                        Some(HarnessState::Streaming { cancel }) => {
-                            // TODO: add a message queue that lets the user steer the current turn
-                            // or enqueue the message for the next turn.
-                            self.session_state = Some(HarnessState::Streaming { cancel });
-                            warn!(session_id = %self.id, "Rejected SendMessage while streaming");
-                        }
-                        state => {
-                            self.session_state = state;
-                            warn!(session_id = %self.id, "Received SendMessage command while not ready for a message");
-                        }
-                    },
-                    SessionCommand::Interrupt => {
-                        if let Some(HarnessState::Streaming { cancel, .. }) =
-                            self.session_state.as_ref()
-                        {
-                            cancel.cancel();
-                        }
-                    }
-                    SessionCommand::ToolDecision {
-                        id,
-                        approved,
-                        message,
-                    } => {
-                        if let Some(HarnessState::NeedToolConsent {
-                            agent,
-                            user_tool_decisions,
-                        }) = self
-                            .session_state
-                            .take_if(|state| matches!(state, HarnessState::NeedToolConsent { .. }))
-                        {
-                            if !user_tool_decisions.decision_needed(&id) {
-                                warn!(session_id = %self.id, "Received ToolDecision for tool id {}, but it does not need a decision", id);
-                                self.emit_state_transition(HarnessState::NeedToolConsent {
-                                    agent,
-                                    user_tool_decisions,
-                                });
-                                continue;
+
+        let model = LlmModel::new(Arc::new(DummyProvider), "dummy");
+        let tools = self.tool_registry.list_for_clanker();
+        let init_agent = TypedAgent::<WaitingForUserMessage>::new(
+            model,
+            "You are a helpful coding agent.".to_string(),
+            tools,
+        );
+        let mut curr_state = HarnessState::WaitingForUserMessage { agent: init_agent };
+        for msg in self.inbox.iter() {
+            match msg {
+                LoopMessage::Cmd(cmd) => {
+                    match cmd {
+                        SessionCommand::SendMessage(prompt) => {
+
+                            curr_state = match curr_state {
+                                HarnessState::WaitingForUserMessage { agent } => {
+                                    let new_agent = agent.add_message(prompt);
+                                    let inbox_tx = self.loop_event_tx.clone();
+                                    // todo: attach event handler function
+                                    let stream_fut = new_agent.create_stream();
+                                    let cancel = stream_fut.interrupt_handle();
+                                    rt.spawn(async move {
+                                        let res = stream_fut.await;
+                                        inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
+                                    });
+                                    HarnessState::Streaming {
+                                        cancel,
+                                    }}
+                                _ => curr_state
                             }
 
-                            match user_tool_decisions.record_decision(id, approved, message) {
-                                either::Either::Left(user_tool_decisions) => {
-                                    self.emit_state_transition(HarnessState::NeedToolConsent {
-                                        agent,
-                                        user_tool_decisions,
-                                    });
+                        }
+                        SessionCommand::Interrupt => {
+                            curr_state = match curr_state {
+                                HarnessState::Streaming { cancel } => {
+                                    cancel.cancel();
+                                    HarnessState::InterruptingStream
                                 }
-                                either::Either::Right(user_tool_decisions) => {
-                                    info!(session_id = %self.id, "All tool decisions have been made, transitioning to ReadyToRunTools");
-                                    self.emit_state_transition(HarnessState::ReadyToRunTools {
-                                        agent,
-                                        authorization: ToolAuthorization::PerTool(
-                                            user_tool_decisions,
-                                        ),
-                                    });
+                                HarnessState::ToolCallsAreRunning { agent, cancel } => {
+                                    cancel.cancel();
+                                    // TODO: set all tool results to interrupting. should be a field in this variant.
+                                    HarnessState::ToolResultsReady { agent }
                                 }
+                                _ => curr_state
                             }
-                        } else {
-                            warn!(session_id = %self.id, "Received ToolDecision but session isn't waiting for tool decisions");
+                        }
+                        SessionCommand::ToolDecision { id, approved, message } => {
+                            curr_state = match curr_state {
+                                HarnessState::NeedToolConsent { agent, user_tool_decisions } => {
+                                    match user_tool_decisions.record_decision(id, approved, message) {
+                                        Either::Left(not_all_decided) => {
+                                            HarnessState::NeedToolConsent {
+                                                agent,
+                                                user_tool_decisions: not_all_decided
+                                            }
+                                        }
+                                        Either::Right(all_decided) => {
+                                            // TODO: rt spawn execution of tools
+                                            HarnessState::ToolCallsAreRunning { agent, cancel: CancellationToken::new() }
+                                        }
+                                    }
+                                }
+                                _ => curr_state
+                            }
                         }
                     }
-                },
-                LoopEvent::StreamResult(result) => {
-                    let state: HarnessState = result.into();
-                    self.emit_state_transition(state);
                 }
-                LoopEvent::StateTransition(new_state) => {
-                    match new_state {
-                        // idle state: no need to do anything
-                        HarnessState::WaitingForUserMessage { agent } => {
-                            self.session_state =
-                                Some(HarnessState::WaitingForUserMessage { agent });
-                        }
-                        HarnessState::ReadyToStream { agent } => {
-                            let event_tx = self.event_tx.clone();
-                            let agent = agent.add_event_callback(move |event| {
-                                let _ = event_tx.send(SessionEvent::StreamEvent(event));
-                            });
-                            let streaming_fut = agent.create_stream();
-                            let cancel_token = streaming_fut.interrupt_handle();
-                            let loop_event_tx = self.loop_event_tx.clone();
-                            rt.spawn(async move {
-                                let _ = loop_event_tx
-                                    .send(LoopEvent::StreamResult(streaming_fut.await));
-                            });
-                            self.session_state = Some(HarnessState::Streaming {
-                                cancel: cancel_token,
-                            });
-                        }
+                LoopMessage::StreamResult(res) => {
+                    curr_state = match curr_state {
+                        // TODO: HarnessState::StreamInterrupting?
                         HarnessState::Streaming { cancel } => {
-                            self.session_state = Some(HarnessState::Streaming { cancel });
-                        }
-                        HarnessState::StreamingInterrupted { agent } => {
-                            self.session_state = Some(HarnessState::StreamingInterrupted { agent });
-                        }
-                        HarnessState::StreamingFailed { agent } => {
-                            self.session_state = Some(HarnessState::StreamingFailed { agent });
-                        }
-                        HarnessState::HasToolCalls { agent } => {
-                            if self
-                                .auto_approval_policy
-                                .will_approve_all(agent.tool_names_requested())
-                            {
-                                self.emit_state_transition(HarnessState::ReadyToRunTools {
-                                    agent,
-                                    authorization: ToolAuthorization::AllAutoApproved,
-                                });
-                            } else {
-                                let ids_needing_consent = self
-                                    .auto_approval_policy
-                                    .ids_needing_consent(agent.get_requested_tools());
-                                self.emit_state_transition(HarnessState::NeedToolConsent {
-                                    agent,
-                                    user_tool_decisions: UserToolDecisions::new_undecided(
-                                        ids_needing_consent,
-                                    ),
-                                });
+                            drop(cancel);
+                            match res {
+                                StreamResult::Interrupted(agent) => {
+
+                                    // TODO: deal with this...
+                                    panic!("stream interrupted but harness state was not in InterruptingStream state")
+                                }
+                                StreamResult::Failed(agent) => {
+                                    // TODO: This will NOT append the partial response? Still TBD how to handle.
+                                    let new_agent = make_typeagent_new();
+                                    HarnessState::WaitingForUserMessage { agent: new_agent }
+                                }
+                                StreamResult::WaitingForToolResponses(agent) => {
+                                    let tool_batch = agent.get_requested_tools();
+                                    if self.auto_approval_policy.will_approve_all(tool_batch.iter().map(|t| t.name.clone())) {
+                                        // TODO: rt spawn execution of all tools
+                                        HarnessState::ToolCallsAreRunning { agent, cancel: CancellationToken::new() }
+                                    } else {
+                                        let unapproved = self.auto_approval_policy.ids_needing_consent(tool_batch);
+                                        HarnessState::NeedToolConsent { agent, user_tool_decisions: UserToolDecisions::new_undecided(unapproved) }
+                                    }
+                                }
+                                StreamResult::WaitingForUserMessage(agent) => {
+                                    HarnessState::WaitingForUserMessage { agent }
+                                }
                             }
                         }
-                        HarnessState::ReadyToRunTools {
-                            agent,
-                            authorization,
-                        } => {
-                            // TODO: enqueue task on async executor to run all tools, transition to WaitingForToolResults
-                            // the future that runs the tools will emit a state transition into HarnessState::ReadyToStream
-                        }
-                        // "idle" state: the future that runs the tools will emit a state transition into HarnessState::ReadyToStream
-                        HarnessState::WaitingForToolResults { cancel } => {
-                            self.session_state =
-                                Some(HarnessState::WaitingForToolResults { cancel });
-                        }
-                        // idle state: user has to provide a response.
-                        HarnessState::NeedToolConsent {
-                            agent,
-                            user_tool_decisions,
-                        } => {
-                            self.session_state = Some(HarnessState::NeedToolConsent {
-                                agent,
-                                user_tool_decisions,
+                        _ => curr_state
+                    };
+                }
+                LoopMessage::ToolBatchExecutionResult(tool_batch) => {
+                    curr_state = match curr_state {
+                        HarnessState::ToolCallsAreRunning { agent, cancel } => {
+                            drop(cancel);
+                            let new_agent = agent.add_all_tool_responses(tool_batch);
+                            let stream_fut = new_agent.create_stream();
+                            let cancel = stream_fut.interrupt_handle();
+                            let inbox_tx = self.loop_event_tx.clone();
+                            rt.spawn(async move {
+                                // TODO: Attach stream delta emit pipe.
+                                let res = stream_fut.await;
+                                inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
                             });
+                            HarnessState::Streaming { cancel }
                         }
+                        _ => curr_state
                     }
                 }
             }
         }
 
+
         info!(session_id = %self.id, "Session exited");
         let _ = self.event_tx.send(SessionEvent::Closed);
     }
 
-    /// Send an internal event signalling that the state has transitioned.
-    fn emit_state_transition(&self, transition: HarnessState) {
-        self.loop_event_tx
-            .send(LoopEvent::StateTransition(transition))
-            .expect("failed to send state transition");
-    }
+}
+
+// fake temp function to compile
+fn make_typeagent_new() -> TypedAgent<WaitingForUserMessage> {
+    todo!()
 }
