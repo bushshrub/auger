@@ -2,7 +2,7 @@
 
 use crate::tools::tool_decisions::{Resolving, ToolAuthorization, UserToolDecisions};
 use auger_driver::{
-    LlmStreamingFailed, LlmStreamingInterrupted, ReadyToStream, TypedAgent,
+    LlmStreamingFailed, LlmStreamingInterrupted, ReadyToStream, StreamResult, TypedAgent,
     WaitingForToolResponses, WaitingForUserMessage,
 };
 use provider::UserPrompt;
@@ -37,6 +37,8 @@ pub(crate) enum LoopEvent {
     Cmd(SessionCommand),
     /// Internal state transition
     StateTransition(HarnessState),
+    /// A streaming future completed.
+    StreamResult(StreamResult),
 }
 
 /// The current state that the harness is in, with additional data as needed
@@ -48,10 +50,7 @@ pub(crate) enum HarnessState {
     /// The session is ready to stream
     ReadyToStream { agent: TypedAgent<ReadyToStream> },
     /// LLM streaming is in progress
-    Streaming {
-        cancel: CancellationToken,
-        pending_message: Option<UserPrompt>,
-    },
+    Streaming { cancel: CancellationToken },
     /// LLM streaming was interrupted, retaining the partial response.
     StreamingInterrupted {
         agent: TypedAgent<LlmStreamingInterrupted>,
@@ -76,4 +75,15 @@ pub(crate) enum HarnessState {
         agent: TypedAgent<WaitingForToolResponses>,
         user_tool_decisions: UserToolDecisions<Resolving>,
     },
+}
+
+impl From<StreamResult> for HarnessState {
+    fn from(result: StreamResult) -> Self {
+        match result {
+            StreamResult::Interrupted(agent) => Self::StreamingInterrupted { agent },
+            StreamResult::Failed(agent) => Self::StreamingFailed { agent },
+            StreamResult::WaitingForUserMessage(agent) => Self::WaitingForUserMessage { agent },
+            StreamResult::WaitingForToolResponses(agent) => Self::HasToolCalls { agent },
+        }
+    }
 }
