@@ -197,7 +197,7 @@ async fn create_session(
         Box::new(builtin_tools::FetchContent::new()),
     ];
     // Read-only tools run without consent; shell/edit_file/write_file require approval.
-    let auto_approved = [
+    let auto_approved: Vec<String> = [
         "read_file",
         "grep",
         "glob",

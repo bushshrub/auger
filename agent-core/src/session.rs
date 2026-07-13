@@ -1,6 +1,6 @@
 use crate::SystemPrompt;
 use crate::events::{HarnessState, LoopMessage, SessionCommand, SessionEvent};
-use crate::tools::auto_approval::AutoApprovalPolicy;
+use crate::tools::auto_approval::AutoApprovalPolicies;
 use crate::tools::tool_decisions::{ToolAuthorization, UserToolDecisions};
 use crate::tools::tool_execution::ToolExecution;
 use crate::tools::tool_registry::ToolRegistry;
@@ -163,7 +163,7 @@ pub struct Session {
     /// Sender for the session to emit events through
     event_tx: mpsc::Sender<SessionEvent>,
     tool_registry: Arc<ToolRegistry>,
-    auto_approval_policy: Arc<AutoApprovalPolicy>,
+    auto_approval_policies: Arc<AutoApprovalPolicies>,
 }
 
 impl Session {
@@ -180,7 +180,7 @@ impl Session {
         system_prompt: SystemPrompt,
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
-        auto_approved_tools: Vec<String>,
+        auto_approval_policies: impl Into<AutoApprovalPolicies>,
     ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
         Self::spawn(
             SessionId::new(),
@@ -189,7 +189,7 @@ impl Session {
             None,
             rt,
             tools,
-            auto_approved_tools,
+            auto_approval_policies.into(),
         ).expect("new session history is valid")
     }
 
@@ -209,7 +209,7 @@ impl Session {
         messages: Vec<provider::Message>,
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
-        auto_approved_tools: Vec<String>,
+        auto_approval_policies: impl Into<AutoApprovalPolicies>,
     ) -> Result<(SessionOwner, SessionHandle, SessionEventReceiver), provider::RestoreThreadError> {
         Self::spawn(
             id,
@@ -218,7 +218,7 @@ impl Session {
             Some(messages),
             rt,
             tools,
-            auto_approved_tools,
+            auto_approval_policies.into(),
         )
     }
 
@@ -229,7 +229,7 @@ impl Session {
         messages: Option<Vec<provider::Message>>,
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
-        auto_approved_tools: Vec<String>,
+        auto_approval_policies: AutoApprovalPolicies,
     ) -> Result<(SessionOwner, SessionHandle, SessionEventReceiver), provider::RestoreThreadError> {
         let mut tool_registry = ToolRegistry::new();
         for tool in tools {
@@ -258,7 +258,7 @@ impl Session {
             harness_internal_event_tx: cmd_tx.clone(),
             event_tx,
             tool_registry,
-            auto_approval_policy: Arc::new(AutoApprovalPolicy::new(auto_approved_tools)),
+            auto_approval_policies: Arc::new(auto_approval_policies),
         };
         let handle = SessionHandle::new(session.id, cmd_tx.clone());
         let owner = SessionOwner {
@@ -428,7 +428,7 @@ impl Session {
                                     debug!(session_id = %self.id, "agent has called tools");
                                     thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
                                     let tool_batch = agent.get_requested_tools();
-                                    if self.auto_approval_policy.will_approve_all(tool_batch.iter().map(|t| t.name.clone())) {
+                                    if self.auto_approval_policies.will_approve_all(&tool_batch) {
                                         info!(session_id=%self.id, "automatically running all tools");
                                         let execution = ToolExecution::new(
                                             agent.get_batch(),
@@ -445,7 +445,7 @@ impl Session {
                                         HarnessState::ToolCallsAreRunning { agent, cancel }
                                     } else {
                                         info!(session_id=%self.id, "Some tools require consent");
-                                        let unapproved = self.auto_approval_policy.ids_needing_consent(tool_batch);
+                                        let unapproved = self.auto_approval_policies.ids_needing_consent(&tool_batch);
                                         let tool_calls = agent
                                             .get_requested_tools()
                                             .into_iter()

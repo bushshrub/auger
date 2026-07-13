@@ -9,3 +9,4 @@ pub use session::{
     ThreadSnapshot,
 };
 pub use system_prompt::SystemPrompt;
+pub use tools::auto_approval::{AutoApprovalPolicies, AutoApprovalPolicy};
