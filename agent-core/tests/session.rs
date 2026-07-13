@@ -89,6 +89,74 @@ fn session_streams_all_provider_deltas() {
 }
 
 #[test]
+fn session_snapshots_committed_thread_without_changing_state() {
+    let provider = DummyProvider::new_responses([]);
+    let model = LlmModel::new(Arc::new(provider), "dummy");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let handle = Session::start(
+            model,
+            SystemPrompt::new("snapshot system".to_string()),
+            tokio::runtime::Handle::current(),
+        );
+        tokio::task::spawn_blocking(move || {
+            let first = handle.snapshot().unwrap();
+            let second = handle.snapshot().unwrap();
+
+            assert!(matches!(
+                first.messages(),
+                [Message::System(system)] if system == "snapshot system"
+            ));
+            assert_eq!(format!("{:?}", first.messages()), format!("{:?}", second.messages()));
+            handle.stop();
+        })
+        .await
+        .unwrap();
+    });
+}
+
+#[test]
+fn session_snapshots_committed_thread_while_streaming() {
+    let provider = DummyProvider::new_responses([DummyResponse::PendingStream(vec![Ok(
+        StreamEvent::TextDelta("partial".to_string()),
+    )])]);
+    let model = LlmModel::new(Arc::new(provider), "dummy");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let handle = Session::start(
+            model,
+            SystemPrompt::new("system".to_string()),
+            tokio::runtime::Handle::current(),
+        );
+        tokio::task::spawn_blocking(move || {
+            handle
+                .send_message(UserPrompt::new("start".to_string()))
+                .unwrap();
+            assert!(matches!(
+                handle.recv_event().unwrap(),
+                SessionEvent::StreamEvent(StreamEvent::TextDelta(_))
+            ));
+            let snapshot = handle.snapshot().unwrap();
+            assert!(matches!(
+                snapshot.messages(),
+                [Message::System(_), Message::User { .. }]
+            ));
+            handle.stop();
+        })
+        .await
+        .unwrap();
+    });
+}
+
+#[test]
 fn session_returns_to_waiting_for_user_message_after_streaming() {
     let provider = DummyProvider::new_responses([
         DummyResponse::Stream(vec![

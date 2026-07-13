@@ -17,6 +17,24 @@ use tracing::{info, warn};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(uuid::Uuid);
 
+/// A read-only copy of the committed messages in a session thread.
+#[derive(Clone, Debug)]
+pub struct ThreadSnapshot {
+    messages: Vec<provider::Message>,
+}
+
+impl ThreadSnapshot {
+    pub fn messages(&self) -> &[provider::Message] {
+        &self.messages
+    }
+}
+
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum SnapshotError {
+    #[error("session is closed")]
+    SessionClosed,
+}
+
 impl fmt::Display for SessionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
@@ -64,6 +82,15 @@ impl SessionHandle {
         self.loop_event_tx
             .send(LoopMessage::Cmd(SessionCommand::Interrupt))
             .map_err(|_| ())
+    }
+
+    /// Clone the committed conversation thread without changing session state.
+    pub fn snapshot(&self) -> Result<ThreadSnapshot, SnapshotError> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.loop_event_tx
+            .send(LoopMessage::Cmd(SessionCommand::Snapshot { reply_tx }))
+            .map_err(|_| SnapshotError::SessionClosed)?;
+        reply_rx.recv().map_err(|_| SnapshotError::SessionClosed)
     }
 
     pub fn approve_tool_call(&self, id: impl Into<String>) -> Result<(), ()> {
@@ -159,12 +186,18 @@ impl Session {
             self.system_prompt.into(),
             tools,
         );
+        let mut thread_snapshot = ThreadSnapshot {
+            messages: init_agent.snapshot(),
+        };
         let mut curr_state = HarnessState::WaitingForUserMessage { agent: init_agent };
         'session_loop: for msg in self.cmd_rx.iter() {
             match msg {
                 LoopMessage::Cmd(cmd) => {
                     match cmd {
                         SessionCommand::Stop => break 'session_loop,
+                        SessionCommand::Snapshot { reply_tx } => {
+                            let _ = reply_tx.send(thread_snapshot.clone());
+                        }
                         SessionCommand::SendMessage(prompt) => {
 
                             curr_state = match curr_state {
@@ -173,6 +206,7 @@ impl Session {
                                     let new_agent = agent.add_message(prompt).add_event_callback(move |event| {
                                         let _ = event_tx.send(SessionEvent::StreamEvent(event));
                                     });
+                                    thread_snapshot = ThreadSnapshot { messages: new_agent.snapshot() };
                                     let inbox_tx = self.harness_internal_event_tx.clone();
                                     let stream_fut = new_agent.create_stream();
                                     let cancel = stream_fut.interrupt_handle();
@@ -188,6 +222,7 @@ impl Session {
                                         .add_event_callback(move |event| {
                                             let _ = event_tx.send(SessionEvent::StreamEvent(event));
                                         });
+                                    thread_snapshot = ThreadSnapshot { messages: new_agent.snapshot() };
                                     let inbox_tx = self.harness_internal_event_tx.clone();
                                     let stream_fut = new_agent.create_stream();
                                     let cancel = stream_fut.interrupt_handle();
@@ -204,6 +239,7 @@ impl Session {
                                         .add_event_callback(move |event| {
                                             let _ = event_tx.send(SessionEvent::StreamEvent(event));
                                         });
+                                    thread_snapshot = ThreadSnapshot { messages: new_agent.snapshot() };
                                     let inbox_tx = self.harness_internal_event_tx.clone();
                                     let stream_fut = new_agent.create_stream();
                                     let cancel = stream_fut.interrupt_handle();
@@ -284,9 +320,11 @@ impl Session {
                                     panic!("stream returned interrupted while harness was still streaming")
                                 }
                                 StreamResult::Failed(agent) => {
+                                    thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
                                     HarnessState::StreamingFailed { agent }
                                 }
                                 StreamResult::WaitingForToolResponses(agent) => {
+                                    thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
                                     let tool_batch = agent.get_requested_tools();
                                     if self.auto_approval_policy.will_approve_all(tool_batch.iter().map(|t| t.name.clone())) {
                                         let execution = ToolExecution::new(
@@ -307,6 +345,7 @@ impl Session {
                                     }
                                 }
                                 StreamResult::WaitingForUserMessage(agent) => {
+                                    thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
                                     HarnessState::WaitingForUserMessage { agent }
                                 }
                             }
@@ -321,6 +360,7 @@ impl Session {
                                             .add_event_callback(move |event| {
                                                 let _ = event_tx.send(SessionEvent::StreamEvent(event));
                                             });
+                                        thread_snapshot = ThreadSnapshot { messages: new_agent.snapshot() };
                                         let inbox_tx = self.harness_internal_event_tx.clone();
                                         let stream_fut = new_agent.create_stream();
                                         let cancel = stream_fut.interrupt_handle();
@@ -330,7 +370,10 @@ impl Session {
                                         });
                                         HarnessState::Streaming { cancel }
                                     }
-                                    None => HarnessState::StreamingInterrupted { agent },
+                                    None => {
+                                        thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
+                                        HarnessState::StreamingInterrupted { agent }
+                                    }
                                 }
                             }
                             // TODO: we must handle these
@@ -352,6 +395,7 @@ impl Session {
                         HarnessState::ToolCallsAreRunning { agent, cancel } => {
                             drop(cancel);
                             let new_agent = agent.add_all_tool_responses(tool_batch);
+                            thread_snapshot = ThreadSnapshot { messages: new_agent.snapshot() };
                             let event_tx = self.event_tx.clone();
                             let stream_fut = new_agent.add_event_callback(move |event| {
                                 let _ = event_tx.send(SessionEvent::StreamEvent(event));
@@ -366,6 +410,7 @@ impl Session {
                         }
                         HarnessState::InterruptingToolExecution { agent } => {
                             let new_agent = agent.add_all_tool_responses(tool_batch);
+                            thread_snapshot = ThreadSnapshot { messages: new_agent.snapshot() };
                             let event_tx = self.event_tx.clone();
                             let stream_fut = new_agent.add_event_callback(move |event| {
                                 let _ = event_tx.send(SessionEvent::StreamEvent(event));

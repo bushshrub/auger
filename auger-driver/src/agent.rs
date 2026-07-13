@@ -27,6 +27,11 @@ pub struct WaitingForUserMessage {
 impl State for WaitingForUserMessage {}
 
 impl TypedAgent<WaitingForUserMessage> {
+    /// Clone the committed messages in the current thread.
+    pub fn snapshot(&self) -> Vec<provider::Message> {
+        self.state.thread.messages().to_vec()
+    }
+
     /// Create a new agent with the given system prompt and model.
     pub fn new(model: LlmModel, system_prompt: String, tools: Vec<ToolDefinition>) -> Self {
         let thread = LlmThread::new(system_prompt);
@@ -71,6 +76,11 @@ impl ReadyToStream {
 }
 
 impl TypedAgent<ReadyToStream> {
+    /// Clone the committed messages in the current thread.
+    pub fn snapshot(&self) -> Vec<provider::Message> {
+        self.state.thread.messages().to_vec()
+    }
+
     pub fn add_event_callback(
         self,
         cb: impl Fn(provider::StreamEvent) + Send + Sync + 'static,

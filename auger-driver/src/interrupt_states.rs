@@ -25,6 +25,11 @@ impl LlmStreamingInterrupted {
 }
 
 impl TypedAgent<LlmStreamingInterrupted> {
+    /// Clone the committed messages in the current thread.
+    pub fn snapshot(&self) -> Vec<provider::Message> {
+        self.state.thread.messages().to_vec()
+    }
+
     /// Add a new user message.
     /// Choose whether the stream should be left with the partial response or not.
     pub fn add_message_to_continue(
@@ -72,6 +77,11 @@ impl LlmStreamingFailed {
 }
 
 impl TypedAgent<LlmStreamingFailed> {
+    /// Clone the committed messages in the current thread.
+    pub fn snapshot(&self) -> Vec<provider::Message> {
+        self.state.thread.messages().to_vec()
+    }
+
     /// Add a new user message after abandoning the failed partial response.
     pub fn add_message_to_continue(self, msg: UserPrompt) -> TypedAgent<ReadyToStream> {
         let thread = self

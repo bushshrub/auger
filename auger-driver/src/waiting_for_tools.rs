@@ -12,6 +12,11 @@ pub struct WaitingForToolResponses {
 impl State for WaitingForToolResponses {}
 
 impl TypedAgent<WaitingForToolResponses> {
+    /// Clone the committed messages in the current thread.
+    pub fn snapshot(&self) -> Vec<provider::Message> {
+        self.state.thread.messages().to_vec()
+    }
+
     /// Get all the tool names from the tool calls that were requested.
     pub fn tool_names_requested(&self) -> Vec<String> {
         self.state
