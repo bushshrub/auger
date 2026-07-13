@@ -1,215 +1,147 @@
 <script>
-	import { goto } from '$app/navigation';
-	import { listSessions, createSession } from '$lib/api.js';
+	import { LoaderCircle, Plus, SquareTerminal } from '@lucide/svelte';
+	import { createSession, deleteSession, listSessions } from '$lib/api.js';
+	import SessionSidebar from '$lib/components/SessionSidebar.svelte';
+	import SessionView from '$lib/components/SessionView.svelte';
 
-	let sessionList = $state(/** @type {import('$lib/api.js').SessionInfo[]} */ ([]));
-	let browserLoading = $state(false);
-	let browserError = $state(/** @type {string|null} */ (null));
-	let model = $state('');
-	let connecting = $state(false);
+	/** @type {import('$lib/api.js').SessionInfo[]} */
+	let sessions = $state([]);
+	/** @type {string | null} */
+	let activeId = $state(null);
+	let creating = $state(false);
+
+	const active = $derived(sessions.find((s) => s.session_id === activeId) ?? null);
+
+	async function refresh() {
+		try {
+			({ sessions } = await listSessions());
+		} catch {
+			// Server unreachable; keep the stale list. The per-session view shows
+			// its own connection state.
+		}
+	}
 
 	$effect(() => {
-		loadSessions();
-		const interval = setInterval(loadSessions, 5000);
+		refresh();
+		const interval = setInterval(refresh, 10_000);
 		return () => clearInterval(interval);
 	});
 
-	async function loadSessions() {
-		browserLoading = true;
-		browserError = null;
+	/** @param {string} model */
+	async function handleCreate(model) {
+		creating = true;
 		try {
-			const result = await listSessions();
-			sessionList = result.sessions.slice().sort((a, b) => b.created_at - a.created_at);
-		} catch (err) {
-			browserError = String(err);
+			const creds = await createSession(model);
+			await refresh();
+			activeId = creds.session_id;
 		} finally {
-			browserLoading = false;
+			creating = false;
 		}
 	}
 
-	async function connect() {
-		connecting = true;
+	/** @param {string} id */
+	async function handleDelete(id) {
+		const session = sessions.find((s) => s.session_id === id);
+		if (!session) return;
 		try {
-			const session = await createSession(model.trim() || undefined);
-			goto(`/sessions/${session.session_id}`);
-		} catch (err) {
-			browserError = String(err);
-			connecting = false;
+			await deleteSession(id, session.tokens.write);
+		} catch {
+			// 404 means it is already gone; refresh below reconciles either way.
 		}
-	}
-
-	/** @param {number} ts unix seconds */
-	function relTime(ts) {
-		const diff = Math.floor(Date.now() / 1000) - ts;
-		if (diff < 60) return `${diff}s ago`;
-		if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-		if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-		return `${Math.floor(diff / 86400)}d ago`;
+		if (activeId === id) activeId = null;
+		await refresh();
 	}
 </script>
 
-<div class="app">
-	<header>
-		<strong>auger</strong>
-	</header>
+<main class="flex h-dvh bg-background">
+	<SessionSidebar
+		{sessions}
+		{activeId}
+		{creating}
+		onSelect={(id) => (activeId = id)}
+		onCreate={handleCreate}
+		onDelete={handleDelete}
+	/>
 
-	<div class="browser">
-		<div class="browser-header">
-			<span class="browser-title">Sessions</span>
-			<div class="new-session-form">
-				<input
-					class="model-input"
-					placeholder="model (optional)"
-					bind:value={model}
-					onkeydown={(e) => e.key === 'Enter' && connect()}
-				/>
-				<button onclick={connect} disabled={connecting}>
-					{connecting ? 'connecting…' : '+ New'}
-				</button>
-			</div>
+	<div class="flex min-w-0 flex-1 flex-col">
+		<!-- Mobile header -->
+		<div class="flex items-center gap-2 border-b border-border bg-sidebar px-4 py-2.5 md:hidden">
+			<SquareTerminal class="size-4 text-primary" aria-hidden="true" />
+			<span class="font-mono text-sm font-bold text-foreground">auger</span>
+			{#if sessions.length > 0}
+				<select
+					value={activeId ?? ''}
+					onchange={(e) => (activeId = e.currentTarget.value || null)}
+					aria-label="Select session"
+					class="ml-2 min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1 font-mono text-xs text-foreground"
+				>
+					<option value="">select session…</option>
+					{#each sessions as s (s.session_id)}
+						<option value={s.session_id}>{s.session_id.slice(0, 8)} · {s.model}</option>
+					{/each}
+				</select>
+			{/if}
+			<button
+				type="button"
+				disabled={creating}
+				onclick={() => handleCreate('')}
+				aria-label="New session"
+				class="ml-auto flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+			>
+				{#if creating}
+					<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />
+				{:else}
+					<Plus class="size-3.5" aria-hidden="true" />
+				{/if}
+				New
+			</button>
 		</div>
 
-		{#if browserError}
-			<div class="browser-empty error-text">⚠ {browserError}</div>
-		{:else if browserLoading && sessionList.length === 0}
-			<div class="browser-empty">Loading…</div>
-		{:else if sessionList.length === 0}
-			<div class="browser-empty">No active sessions. Create one above.</div>
+		{#if active}
+			{#key active.session_id}
+				<SessionView session={active} />
+			{/key}
 		{:else}
-			<ul class="session-list">
-				{#each sessionList as info}
-					<li class="session-row">
-						<div class="session-model">{info.model}</div>
-						<div class="session-meta">
-							<span class="session-id">{info.session_id.slice(0, 8)}</span>
-							<span class="session-age">{relTime(info.created_at)}</span>
-						</div>
-						<button class="open-btn" onclick={() => goto(`/sessions/${info.session_id}`)}>Open →</button>
-					</li>
-				{/each}
-			</ul>
+			<!-- Welcome screen -->
+			<div class="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-6 auger-scroll">
+				<div class="flex w-full max-w-md flex-col items-center gap-6 text-center">
+					<pre
+						aria-hidden="true"
+						class="font-mono text-[10px] leading-tight text-primary select-none sm:text-xs">   ____ _  __  __ ____ _ ___  _____
+  / __ '/ / / / / __ '/ _ \/ ___/
+ / /_/ / /_/ / / /_/ /  __/ /
+ \__,_/\__,_/  \__, /\___/_/
+              /____/</pre>
+					<div class="flex flex-col gap-2">
+						<h2 class="font-mono text-lg font-bold text-foreground">agentic coding webui</h2>
+						<p class="text-sm leading-relaxed text-pretty text-muted-foreground">
+							A web client for the auger minimal coding agent harness. Streamed responses, tool
+							calls with diffs, and human-in-the-loop approvals for shell, edit, and write.
+						</p>
+					</div>
+					<button
+						type="button"
+						disabled={creating}
+						onclick={() => handleCreate('')}
+						class="flex items-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+					>
+						{#if creating}
+							<LoaderCircle class="size-4 animate-spin" aria-hidden="true" />
+						{:else}
+							<SquareTerminal class="size-4" aria-hidden="true" />
+						{/if}
+						Start a session
+					</button>
+					<div class="grid w-full grid-cols-1 gap-2 text-left sm:grid-cols-3">
+						{#each [['sessions', 'create, resume, and delete sessions'], ['streaming', 'SSE deltas for reasoning + content'], ['approvals', 'gate shell, edit, and write calls']] as [title, desc] (title)}
+							<div class="flex flex-col gap-1 rounded-lg border border-border bg-card p-3">
+								<span class="font-mono text-xs font-semibold text-primary">{title}</span>
+								<span class="text-[11px] leading-snug text-muted-foreground">{desc}</span>
+							</div>
+						{/each}
+					</div>
+				</div>
+			</div>
 		{/if}
-
-		<div class="browser-refresh">
-			<button class="ghost" onclick={loadSessions} disabled={browserLoading}>Refresh</button>
-		</div>
 	</div>
-</div>
-
-<style>
-	.app {
-		display: flex;
-		flex-direction: column;
-		height: 100vh;
-		max-width: 860px;
-		margin: 0 auto;
-	}
-	header {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-		padding: 0.7rem 1rem;
-		border-bottom: 1px solid var(--border);
-	}
-	.browser {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		overflow: hidden;
-	}
-	.browser-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 0.9rem 1rem 0.6rem;
-		border-bottom: 1px solid var(--border);
-	}
-	.browser-title {
-		font-size: 0.88rem;
-		font-weight: 600;
-		color: var(--muted);
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-	}
-	.new-session-form {
-		display: flex;
-		gap: 0.5rem;
-		align-items: center;
-	}
-	.model-input {
-		width: 180px;
-		font-size: 0.84rem;
-	}
-	.browser-empty {
-		padding: 2rem 1rem;
-		color: var(--muted);
-		font-size: 0.88rem;
-		text-align: center;
-	}
-	.error-text {
-		color: var(--error);
-	}
-	.session-list {
-		list-style: none;
-		margin: 0;
-		padding: 0.5rem 0;
-		overflow-y: auto;
-		flex: 1;
-	}
-	.session-row {
-		display: flex;
-		align-items: center;
-		gap: 0.8rem;
-		padding: 0.7rem 1rem;
-		border-bottom: 1px solid var(--border);
-		cursor: pointer;
-		transition: background 0.1s;
-	}
-	.session-row:hover {
-		background: var(--panel);
-	}
-	.session-model {
-		font-family: ui-monospace, monospace;
-		font-size: 0.84rem;
-		flex: 1;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-	.session-meta {
-		display: flex;
-		gap: 0.8rem;
-		color: var(--muted);
-		font-size: 0.78rem;
-		font-family: ui-monospace, monospace;
-		white-space: nowrap;
-	}
-	.session-id {
-		color: var(--muted);
-	}
-	.session-age {
-		color: var(--muted);
-	}
-	.open-btn {
-		font-size: 0.78rem;
-		padding: 0.2rem 0.6rem;
-		border-color: var(--border);
-		color: var(--muted);
-		background: none;
-		white-space: nowrap;
-	}
-	.open-btn:hover {
-		color: var(--accent);
-		border-color: var(--accent);
-	}
-	.browser-refresh {
-		padding: 0.5rem 1rem;
-		border-top: 1px solid var(--border);
-	}
-	.ghost {
-		background: none;
-		font-size: 0.8rem;
-		color: var(--muted);
-		border-color: var(--border);
-	}
-</style>
+</main>

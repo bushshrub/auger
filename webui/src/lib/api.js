@@ -1,45 +1,83 @@
-// Thin client for the auger agent-server HTTP API.
+// Thin client for the auger agent-server HTTP API (agent-server/openapi.yaml).
 //
-// Endpoints (see agent-server/src/main.rs):
-//   POST /v1/sessions                 -> { session_id, owner_token, viewer_token }
-//   POST /v1/sessions/{id}/input      (Bearer owner) { content } -> 202
-//   POST /v1/sessions/{id}/approve    (Bearer owner) { tool_call_id, approved } -> 200
-//   GET  /v1/sessions/{id}/events     (Bearer any)   -> SSE of AgentEvent
+// Endpoints:
+//   GET    /sessions               -> { sessions: [{ session_id, model, created_at,
+//                                        context_window, tokens: { read, write } }] }
+//   POST   /sessions               -> { session_id, context_window, tokens }
+//   DELETE /sessions/{id}          (Bearer write) -> 204
+//   POST   /sessions/{id}/input    (Bearer write) { input } -> { status: "ok" }
+//   POST   /sessions/{id}/tool     (Bearer write) { tool_call_id, approved, message? }
+//   GET    /sessions/{id}/events   (Bearer read)  -> SSE, one SessionEvent JSON per frame
+//   GET    /sessions/{id}/snapshot (Bearer read)  -> { messages: SnapshotMessage[] }
 //
 // EventSource can't set an Authorization header, so the SSE stream is consumed
 // with fetch + a ReadableStream reader and parsed manually.
+//
+// BASE defaults to /v1, which the vite dev server proxies to AGENT_SERVER_URL
+// (see vite.config.js). Set VITE_AUGER_BASE to talk to a server directly.
 
-const BASE = '/v1';
-
-/**
- * @typedef {Object} SessionCreds
- * @property {string} session_id
- * @property {string} owner_token
- * @property {string} viewer_token
- * @property {number} context_window
- */
+const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
 
 /**
- * @typedef {Object} SessionInfo
- * @property {string} session_id
- * @property {string} model
- * @property {number} created_at
- * @property {number} context_window
- * @property {string} owner_token
- * @property {string} viewer_token
+ * @typedef {{ read: string, write: string }} SessionTokens
+ * @typedef {{ session_id: string, model: string, created_at: number,
+ *             context_window: number, tokens: SessionTokens }} SessionInfo
+ * @typedef {{ session_id: string, context_window: number, tokens: SessionTokens }} SessionCreds
+ * @typedef {{ id: string, name: string, arguments: string }} ToolCall
+ * @typedef {{ prompt_tokens: number | null, completion_tokens: number | null,
+ *             total_tokens: number | null, cached_tokens: number | null,
+ *             cache_creation_tokens: number | null }} TokenUsage
+ *
+ * One SSE frame; discriminated by `type`:
+ * @typedef {(
+ *   | { type: 'text_delta', text: string }
+ *   | { type: 'reasoning_delta', text: string }
+ *   | { type: 'tool_call', id: string, name: string, arguments: string }
+ *   | { type: 'tool_call_complete', id: string, name: string, arguments: string }
+ *   | { type: 'tool_consent_required', tool_calls: ToolCall[] }
+ *   | { type: 'tool_call_result', id: string, result: string }
+ *   | { type: 'tool_call_error', id: string, error: string }
+ *   | { type: 'done', usage: TokenUsage | null, stop_reason: string | null }
+ *   | { type: 'closed' }
+ * )} SessionEvent
+ *
+ * @typedef {(
+ *   | { type: 'user', text: string }
+ *   | { type: 'assistant', reasoning: string | null, content: string, tool_calls: ToolCall[] }
+ *   | { type: 'tool', tool_call_id: string, content: string }
+ * )} SnapshotMessage
  */
 
+export class ApiError extends Error {
+	/**
+	 * @param {number} status
+	 * @param {string} message
+	 */
+	constructor(status, message) {
+		super(message);
+		this.name = 'ApiError';
+		this.status = status;
+	}
+}
+
 /**
- * @returns {Promise<{ sessions: SessionInfo[] }>}
+ * @param {Response} res
+ * @returns {Promise<ApiError>}
  */
+async function toError(res) {
+	const text = await res.text().catch(() => '');
+	return new ApiError(res.status, text || res.statusText);
+}
+
+/** @returns {Promise<{ sessions: SessionInfo[] }>} */
 export async function listSessions() {
 	const res = await fetch(`${BASE}/sessions`);
-	if (!res.ok) throw new Error(`listSessions failed: ${res.status}`);
+	if (!res.ok) throw await toError(res);
 	return res.json();
 }
 
 /**
- * @param {string|undefined} model
+ * @param {string} [model]
  * @returns {Promise<SessionCreds>}
  */
 export async function createSession(model) {
@@ -48,73 +86,89 @@ export async function createSession(model) {
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ model: model || null })
 	});
-	if (!res.ok) throw new Error(`createSession failed: ${res.status}`);
+	if (!res.ok) throw await toError(res);
 	return res.json();
 }
 
 /**
  * @param {string} id
- * @param {string} ownerToken
- * @param {string} content
+ * @param {string} writeToken
+ * @returns {Promise<void>}
  */
-export async function sendInput(id, ownerToken, content) {
+export async function deleteSession(id, writeToken) {
+	const res = await fetch(`${BASE}/sessions/${id}`, {
+		method: 'DELETE',
+		headers: { authorization: `Bearer ${writeToken}` }
+	});
+	if (!res.ok) throw await toError(res);
+}
+
+/**
+ * @param {string} id
+ * @param {string} writeToken
+ * @param {string} input
+ * @returns {Promise<void>}
+ */
+export async function sendInput(id, writeToken, input) {
 	const res = await fetch(`${BASE}/sessions/${id}/input`, {
 		method: 'POST',
 		headers: {
 			'content-type': 'application/json',
-			authorization: `Bearer ${ownerToken}`
+			authorization: `Bearer ${writeToken}`
 		},
-		body: JSON.stringify({ content })
+		body: JSON.stringify({ input })
 	});
-	if (!res.ok) throw new Error(`sendInput failed: ${res.status} ${await res.text()}`);
+	if (!res.ok) throw await toError(res);
 }
 
 /**
  * @param {string} id
- * @param {string} ownerToken
+ * @param {string} writeToken
  * @param {string} toolCallId
  * @param {boolean} approved
  * @param {string} [message]
+ * @returns {Promise<void>}
  */
-export async function approveTool(id, ownerToken, toolCallId, approved, message) {
+export async function respondToToolCall(id, writeToken, toolCallId, approved, message) {
 	/** @type {Record<string, unknown>} */
 	const body = { tool_call_id: toolCallId, approved };
 	if (message) body.message = message;
-	const res = await fetch(`${BASE}/sessions/${id}/approve`, {
+	const res = await fetch(`${BASE}/sessions/${id}/tool`, {
 		method: 'POST',
 		headers: {
 			'content-type': 'application/json',
-			authorization: `Bearer ${ownerToken}`
+			authorization: `Bearer ${writeToken}`
 		},
 		body: JSON.stringify(body)
 	});
-	if (!res.ok) throw new Error(`approveTool failed: ${res.status} ${await res.text()}`);
+	if (!res.ok) throw await toError(res);
 }
 
 /**
  * @param {string} id
- * @param {string} token  owner or viewer token
- * @returns {Promise<{ messages: any[] }>}
+ * @param {string} token
+ * @returns {Promise<{ messages: SnapshotMessage[] }>}
  */
 export async function getSnapshot(id, token) {
 	const res = await fetch(`${BASE}/sessions/${id}/snapshot`, {
 		headers: { authorization: `Bearer ${token}` }
 	});
-	if (!res.ok) throw new Error(`getSnapshot failed: ${res.status}`);
+	if (!res.ok) throw await toError(res);
 	return res.json();
 }
 
 /**
- * Subscribe to a session's SSE event stream.
- * Returns an AbortController; call `.abort()` to disconnect.
+ * Subscribe to the session event stream. Returns an AbortController; abort it
+ * to close the stream. `onClose` fires when the stream ends or errors (but not
+ * on deliberate abort) so the caller can run its reconnect logic.
  *
  * @param {string} id
- * @param {string} token  owner or viewer token
- * @param {(event: any) => void} onEvent  receives each parsed AgentEvent
- * @param {(err: Error) => void} [onError]
+ * @param {string} token
+ * @param {(event: SessionEvent) => void} onEvent
+ * @param {(err: Error) => void} [onClose]
  * @returns {AbortController}
  */
-export function subscribeEvents(id, token, onEvent, onError) {
+export function subscribeEvents(id, token, onEvent, onClose) {
 	const controller = new AbortController();
 
 	(async () => {
@@ -123,20 +177,17 @@ export function subscribeEvents(id, token, onEvent, onError) {
 				headers: { authorization: `Bearer ${token}` },
 				signal: controller.signal
 			});
-			if (!res.ok || !res.body) {
-				throw new Error(`events stream failed: ${res.status}`);
-			}
+			if (!res.ok || !res.body) throw await toError(res);
 
 			const reader = res.body.getReader();
 			const decoder = new TextDecoder();
 			let buffer = '';
 
-			while (true) {
+			for (;;) {
 				const { done, value } = await reader.read();
 				if (done) break;
 				buffer += decoder.decode(value, { stream: true });
 
-				// SSE frames are separated by a blank line.
 				let sep;
 				while ((sep = buffer.indexOf('\n\n')) !== -1) {
 					const frame = buffer.slice(0, sep);
@@ -150,9 +201,12 @@ export function subscribeEvents(id, token, onEvent, onError) {
 					}
 				}
 			}
+			if (!controller.signal.aborted) {
+				onClose?.(new Error('event stream ended'));
+			}
 		} catch (err) {
 			if (controller.signal.aborted) return;
-			onError?.(err instanceof Error ? err : new Error(String(err)));
+			onClose?.(err instanceof Error ? err : new Error(String(err)));
 		}
 	})();
 
@@ -160,9 +214,8 @@ export function subscribeEvents(id, token, onEvent, onError) {
 }
 
 /**
- * Extract the concatenated `data:` payload from one SSE frame.
  * @param {string} frame
- * @returns {string|null}
+ * @returns {string | null}
  */
 function parseFrame(frame) {
 	const lines = frame.split('\n');
