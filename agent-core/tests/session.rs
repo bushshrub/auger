@@ -75,7 +75,10 @@ fn session_streams_all_provider_deltas() {
                         deltas.push(delta);
                     }
                     SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
-                    SessionEvent::StreamEvent(_) | SessionEvent::ToolConsentRequired { .. } => {}
+                    SessionEvent::StreamEvent(_)
+                    | SessionEvent::ToolConsentRequired { .. }
+                    | SessionEvent::ToolCallResult { .. }
+                    | SessionEvent::ToolCallError { .. } => {}
                     SessionEvent::Closed => panic!("session closed before stream completed"),
                 }
             }
@@ -204,7 +207,10 @@ fn session_returns_to_waiting_for_user_message_after_streaming() {
                         first_text.push_str(&delta)
                     }
                     SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
-                    SessionEvent::StreamEvent(_) | SessionEvent::ToolConsentRequired { .. } => {}
+                    SessionEvent::StreamEvent(_)
+                    | SessionEvent::ToolConsentRequired { .. }
+                    | SessionEvent::ToolCallResult { .. }
+                    | SessionEvent::ToolCallError { .. } => {}
                     SessionEvent::Closed => panic!("session closed during first stream"),
                 }
             }
@@ -226,7 +232,10 @@ fn session_returns_to_waiting_for_user_message_after_streaming() {
                         second_text.push_str(&delta)
                     }
                     SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
-                    SessionEvent::StreamEvent(_) | SessionEvent::ToolConsentRequired { .. } => {}
+                    SessionEvent::StreamEvent(_)
+                    | SessionEvent::ToolConsentRequired { .. }
+                    | SessionEvent::ToolCallResult { .. }
+                    | SessionEvent::ToolCallError { .. } => {}
                     SessionEvent::Closed => panic!("session closed during second stream"),
                 }
             }
@@ -298,7 +307,10 @@ fn session_runs_two_agentic_iterations_with_auto_approved_tool() {
                             break text;
                         }
                     }
-                    SessionEvent::StreamEvent(_) | SessionEvent::ToolConsentRequired { .. } => {}
+                    SessionEvent::StreamEvent(_)
+                    | SessionEvent::ToolConsentRequired { .. }
+                    | SessionEvent::ToolCallResult { .. }
+                    | SessionEvent::ToolCallError { .. } => {}
                     SessionEvent::Closed => panic!("session closed before stream completed"),
                 }
             }
@@ -367,7 +379,10 @@ fn session_interrupts_running_tool_and_submits_interrupted_result() {
                     }
                     SessionEvent::StreamEvent(StreamEvent::Done { stop_reason, .. })
                         if stop_reason.as_deref() == Some("stop") => break,
-                    SessionEvent::StreamEvent(_) | SessionEvent::ToolConsentRequired { .. } => {}
+                    SessionEvent::StreamEvent(_)
+                    | SessionEvent::ToolConsentRequired { .. }
+                    | SessionEvent::ToolCallResult { .. }
+                    | SessionEvent::ToolCallError { .. } => {}
                     SessionEvent::Closed => panic!("session closed before tool interruption completed"),
                 }
             }
@@ -453,7 +468,9 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
                         break;
                     }
                     SessionEvent::Closed => panic!("session closed before approval"),
-                    SessionEvent::StreamEvent(_) => {}
+                    SessionEvent::StreamEvent(_)
+                    | SessionEvent::ToolCallResult { .. }
+                    | SessionEvent::ToolCallError { .. } => {}
                 }
             }
 
@@ -465,6 +482,8 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
                 .expect("session should accept approval");
 
             let mut text = String::new();
+            let mut result_events = Vec::new();
+            let mut error_events = Vec::new();
             loop {
                 match events
                     .recv_event()
@@ -474,12 +493,20 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
                         text.push_str(&delta)
                     }
                     SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
+                    SessionEvent::ToolCallResult { id, .. } => result_events.push(id),
+                    SessionEvent::ToolCallError { id, error } => error_events.push((id, error)),
                     SessionEvent::Closed => panic!("session closed before second stream completed"),
                     SessionEvent::StreamEvent(_) | SessionEvent::ToolConsentRequired { .. } => {}
                 }
             }
 
             assert_eq!(text, "finished");
+            assert_eq!(result_events, vec!["call-approve".to_string()]);
+            assert!(
+                error_events
+                    .iter()
+                    .any(|(id, error)| id == "call-deny" && error.contains("Denied"))
+            );
             let requests = provider_handle.requests();
             assert_eq!(requests.len(), 2);
             let results = requests[1]

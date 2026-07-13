@@ -37,6 +37,10 @@ pub enum SessionEvent {
     ToolConsentRequired {
         tool_calls: Vec<provider::ToolCallRequest>,
     },
+    /// A tool call finished executing and produced a result.
+    ToolCallResult { id: String, result: String },
+    /// A tool call failed, or was denied by the user.
+    ToolCallError { id: String, error: String },
     /// The session has stopped and will not emit further events.
     Closed,
 }

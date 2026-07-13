@@ -327,6 +327,7 @@ impl Session {
                                                 agent.get_batch(),
                                                 ToolAuthorization::PerTool(all_decided),
                                                 self.tool_registry.clone(),
+                                                self.event_tx.clone(),
                                             ).run();
                                             let cancel = execution.interrupt_handle();
                                             let inbox_tx = self.harness_internal_event_tx.clone();
@@ -366,6 +367,7 @@ impl Session {
                                             agent.get_batch(),
                                             ToolAuthorization::AllAutoApproved,
                                             self.tool_registry.clone(),
+                                            self.event_tx.clone(),
                                         ).run();
                                         let cancel = execution.interrupt_handle();
                                         let inbox_tx = self.harness_internal_event_tx.clone();

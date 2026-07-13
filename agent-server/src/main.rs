@@ -197,12 +197,25 @@ async fn create_session(
         Box::new(builtin_tools::WebSearch::new()),
         Box::new(builtin_tools::FetchContent::new()),
     ];
+    // Read-only tools run without consent; shell/edit_file/write_file require approval.
+    let auto_approved = [
+        "read_file",
+        "grep",
+        "glob",
+        "list_files",
+        "todo_list",
+        "web_search",
+        "fetch_content",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     let (owner, handle, event_receiver) = Session::start_with_tools(
         LlmModel::new(state.provider.clone(), &model),
         sys_prompt,
         tokio::runtime::Handle::current(),
         tools,
-        Vec::new(),
+        auto_approved,
     );
     let session_id = handle.id().as_uuid();
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
@@ -339,6 +352,16 @@ fn session_event_json(event: SessionEvent) -> serde_json::Value {
         SessionEvent::ToolConsentRequired { tool_calls } => json!({
             "type": "tool_consent_required",
             "tool_calls": tool_calls,
+        }),
+        SessionEvent::ToolCallResult { id, result } => json!({
+            "type": "tool_call_result",
+            "id": id,
+            "result": result,
+        }),
+        SessionEvent::ToolCallError { id, error } => json!({
+            "type": "tool_call_error",
+            "id": id,
+            "error": error,
         }),
         SessionEvent::Closed => json!({ "type": "closed" }),
     }

@@ -205,6 +205,18 @@ components:
             type: { const: tool_consent_required }
             tool_calls: { type: array, items: { $ref: "#/components/schemas/ToolCall" } }
         - type: object
+          required: [type, id, result]
+          properties:
+            type: { const: tool_call_result }
+            id: { type: string }
+            result: { type: string }
+        - type: object
+          required: [type, id, error]
+          properties:
+            type: { const: tool_call_error }
+            id: { type: string }
+            error: { type: string }
+        - type: object
           required: [type]
           properties:
             type: { const: done }

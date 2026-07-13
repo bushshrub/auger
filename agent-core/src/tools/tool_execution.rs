@@ -1,12 +1,13 @@
 use super::tool_decisions::ToolAuthorization;
 use super::tool_registry::ToolRegistry;
+use crate::events::SessionEvent;
 use auger_driver::{Resolved, Resolving, ToolBatch};
 use futures::future::join_all;
 use provider::{ToolCallRequest, ToolResult};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::task::{Context, Poll};
 use tokio_util::sync::CancellationToken;
 
@@ -24,6 +25,8 @@ pub(crate) struct ToolExecution<S: ToolExecutionState> {
     batch: ToolBatch<Resolving>,
     authorization: ToolAuthorization,
     registry: Arc<ToolRegistry>,
+    /// Sender to emit per-call result/error events as each call finishes.
+    event_tx: mpsc::Sender<SessionEvent>,
     results: Vec<ToolResult>,
     cancellation: CancellationToken,
     _state: PhantomData<S>,
@@ -44,11 +47,13 @@ impl ToolExecution<Ready> {
         batch: ToolBatch<Resolving>,
         authorization: ToolAuthorization,
         registry: Arc<ToolRegistry>,
+        event_tx: mpsc::Sender<SessionEvent>,
     ) -> Self {
         Self {
             batch,
             authorization,
             registry,
+            event_tx,
             results: Vec::new(),
             cancellation: CancellationToken::new(),
             _state: PhantomData,
@@ -70,6 +75,7 @@ impl ToolExecution<Ready> {
             batch,
             authorization,
             registry,
+            event_tx,
             cancellation,
             ..
         } = self;
@@ -78,14 +84,31 @@ impl ToolExecution<Ready> {
         let execution = async {
             join_all(calls.iter().map(|call| async {
                 let result = match authorization.denial_reason(&call.id) {
-                    Some(reason) => ToolResult::new(call.id.clone(), reason),
-                    None => registry
-                        .invoke(call.clone())
-                        .await
-                        .map(|result| ToolResult::new(call.id.clone(), result.to_string()))
-                        .unwrap_or_else(|error| {
-                            ToolResult::new(call.id.clone(), error.to_string())
-                        }),
+                    Some(reason) => {
+                        let _ = event_tx.send(SessionEvent::ToolCallError {
+                            id: call.id.clone(),
+                            error: reason.clone(),
+                        });
+                        ToolResult::new(call.id.clone(), reason)
+                    }
+                    None => match registry.invoke(call.clone()).await {
+                        Ok(result) => {
+                            let result = result.to_string();
+                            let _ = event_tx.send(SessionEvent::ToolCallResult {
+                                id: call.id.clone(),
+                                result: result.clone(),
+                            });
+                            ToolResult::new(call.id.clone(), result)
+                        }
+                        Err(error) => {
+                            let error = error.to_string();
+                            let _ = event_tx.send(SessionEvent::ToolCallError {
+                                id: call.id.clone(),
+                                error: error.clone(),
+                            });
+                            ToolResult::new(call.id.clone(), error)
+                        }
+                    },
                 };
                 result
             }))
@@ -97,6 +120,7 @@ impl ToolExecution<Ready> {
                 batch,
                 authorization,
                 registry,
+                event_tx,
                 results: Vec::new(),
                 cancellation,
                 _state: PhantomData,
@@ -105,6 +129,7 @@ impl ToolExecution<Ready> {
                 batch,
                 authorization,
                 registry,
+                event_tx,
                 results,
                 cancellation,
                 _state: PhantomData,
