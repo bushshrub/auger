@@ -84,6 +84,23 @@ fn parse_results(html: &str, max: usize) -> Vec<serde_json::Value> {
     results
 }
 
+fn temporary_unavailable_result(query: &str, status: u16) -> ToolCallResult {
+    ToolCallResult::success(
+        json!({
+            "query": query,
+            "results": [],
+            "note": format!(
+                "DuckDuckGo returned status {status}. Search may be temporarily unavailable or rate-limited; try again shortly."
+            ),
+        })
+        .to_string(),
+    )
+}
+
+fn is_temporary_duckduckgo_status(status: u16) -> bool {
+    matches!(status, 202 | 403 | 429 | 503)
+}
+
 #[async_trait]
 impl Tool for WebSearch {
     fn details(&self) -> ToolDetails {
@@ -135,6 +152,9 @@ impl Tool for WebSearch {
             .map_err(|e| ToolError::Execution(format!("search request failed: {e}")))?;
 
         let status = response.status().as_u16();
+        if is_temporary_duckduckgo_status(status) {
+            return Ok(temporary_unavailable_result(&query, status));
+        }
         if status != 200 {
             return Err(ToolError::Execution(format!(
                 "DuckDuckGo returned status {status}"
@@ -166,5 +186,22 @@ impl Tool for WebSearch {
             })
             .to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_temporary_duckduckgo_status, temporary_unavailable_result};
+
+    #[test]
+    fn treats_duckduckgo_202_as_temporary_unavailable() {
+        assert!(is_temporary_duckduckgo_status(202));
+
+        let result = temporary_unavailable_result("rust async traits", 202).to_string();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(parsed["query"], "rust async traits");
+        assert_eq!(parsed["results"].as_array().unwrap().len(), 0);
+        assert!(parsed["note"].as_str().unwrap().contains("status 202"));
     }
 }
