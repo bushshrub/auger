@@ -55,7 +55,7 @@ fn session_streams_all_provider_deltas() {
         .expect("runtime should build");
 
     runtime.block_on(async move {
-        let handle = Session::start(
+        let (_owner, handle, events) = Session::start(
             model,
             SystemPrompt::new("You are a test agent.".to_string()),
             tokio::runtime::Handle::current(),
@@ -67,7 +67,7 @@ fn session_streams_all_provider_deltas() {
         let events = tokio::task::spawn_blocking(move || {
             let mut deltas = Vec::new();
             loop {
-                match handle
+                match events
                     .recv_event()
                     .expect("session event channel should stay open")
                 {
@@ -98,7 +98,7 @@ fn session_snapshots_committed_thread_without_changing_state() {
         .unwrap();
 
     runtime.block_on(async move {
-        let handle = Session::start(
+        let (owner, handle, events) = Session::start(
             model,
             SystemPrompt::new("snapshot system".to_string()),
             tokio::runtime::Handle::current(),
@@ -112,7 +112,8 @@ fn session_snapshots_committed_thread_without_changing_state() {
                 [Message::System(system)] if system == "snapshot system"
             ));
             assert_eq!(format!("{:?}", first.messages()), format!("{:?}", second.messages()));
-            handle.stop();
+            owner.stop();
+            assert!(matches!(events.recv_event().unwrap(), SessionEvent::Closed));
         })
         .await
         .unwrap();
@@ -131,7 +132,7 @@ fn session_snapshots_committed_thread_while_streaming() {
         .unwrap();
 
     runtime.block_on(async move {
-        let handle = Session::start(
+        let (owner, handle, events) = Session::start(
             model,
             SystemPrompt::new("system".to_string()),
             tokio::runtime::Handle::current(),
@@ -141,7 +142,7 @@ fn session_snapshots_committed_thread_while_streaming() {
                 .send_message(UserPrompt::new("start".to_string()))
                 .unwrap();
             assert!(matches!(
-                handle.recv_event().unwrap(),
+                events.recv_event().unwrap(),
                 SessionEvent::StreamEvent(StreamEvent::TextDelta(_))
             ));
             let snapshot = handle.snapshot().unwrap();
@@ -149,7 +150,7 @@ fn session_snapshots_committed_thread_while_streaming() {
                 snapshot.messages(),
                 [Message::System(_), Message::User { .. }]
             ));
-            handle.stop();
+            owner.stop();
         })
         .await
         .unwrap();
@@ -182,7 +183,7 @@ fn session_returns_to_waiting_for_user_message_after_streaming() {
         .expect("runtime should build");
 
     runtime.block_on(async move {
-        let handle = Session::start(
+        let (_owner, handle, events) = Session::start(
             model,
             SystemPrompt::new("system".to_string()),
             tokio::runtime::Handle::current(),
@@ -195,7 +196,7 @@ fn session_returns_to_waiting_for_user_message_after_streaming() {
 
             let mut first_text = String::new();
             loop {
-                match handle
+                match events
                     .recv_event()
                     .expect("session event channel should stay open")
                 {
@@ -217,7 +218,7 @@ fn session_returns_to_waiting_for_user_message_after_streaming() {
 
             let mut second_text = String::new();
             loop {
-                match handle
+                match events
                     .recv_event()
                     .expect("session event channel should stay open")
                 {
@@ -271,7 +272,7 @@ fn session_runs_two_agentic_iterations_with_auto_approved_tool() {
         .expect("runtime should build");
 
     runtime.block_on(async move {
-        let handle = Session::start_with_tools(
+        let (_owner, handle, events) = Session::start_with_tools(
             model,
             SystemPrompt::new("You are a test agent.".to_string()),
             tokio::runtime::Handle::current(),
@@ -286,7 +287,7 @@ fn session_runs_two_agentic_iterations_with_auto_approved_tool() {
             let mut text = Vec::new();
             let mut done_events = 0;
             loop {
-                match handle
+                match events
                     .recv_event()
                     .expect("session event channel should stay open")
                 {
@@ -341,7 +342,7 @@ fn session_interrupts_running_tool_and_submits_interrupted_result() {
         .expect("runtime should build");
 
     runtime.block_on(async move {
-        let handle = Session::start_with_tools(
+        let (_owner, handle, events) = Session::start_with_tools(
             model,
             SystemPrompt::new("system".to_string()),
             tokio::runtime::Handle::current(),
@@ -360,7 +361,7 @@ fn session_interrupts_running_tool_and_submits_interrupted_result() {
 
             let mut text = String::new();
             loop {
-                match handle.recv_event().unwrap() {
+                match events.recv_event().unwrap() {
                     SessionEvent::StreamEvent(StreamEvent::TextDelta(delta)) => {
                         text.push_str(&delta)
                     }
@@ -428,7 +429,7 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
         .expect("runtime should build");
 
     runtime.block_on(async move {
-        let handle = Session::start_with_tools(
+        let (_owner, handle, events) = Session::start_with_tools(
             model,
             SystemPrompt::new("You are a test agent.".to_string()),
             tokio::runtime::Handle::current(),
@@ -441,7 +442,7 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
                 .expect("session should accept the message");
 
             loop {
-                match handle
+                match events
                     .recv_event()
                     .expect("session event channel should stay open")
                 {
@@ -460,7 +461,7 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
 
             let mut text = String::new();
             loop {
-                match handle
+                match events
                     .recv_event()
                     .expect("session event channel should stay open")
                 {
@@ -515,7 +516,7 @@ fn session_accepts_message_after_interrupt_and_keeps_partial_response() {
         .unwrap();
 
     runtime.block_on(async move {
-        let handle = Session::start(
+        let (_owner, handle, events) = Session::start(
             model,
             SystemPrompt::new("system".to_string()),
             tokio::runtime::Handle::current(),
@@ -525,7 +526,7 @@ fn session_accepts_message_after_interrupt_and_keeps_partial_response() {
                 .send_message(UserPrompt::new("first".to_string()))
                 .unwrap();
             assert!(matches!(
-                handle.recv_event().unwrap(),
+                events.recv_event().unwrap(),
                 SessionEvent::StreamEvent(StreamEvent::TextDelta(_))
             ));
 
@@ -534,7 +535,7 @@ fn session_accepts_message_after_interrupt_and_keeps_partial_response() {
                 .send_message(UserPrompt::new("continue".to_string()))
                 .unwrap();
             while !matches!(
-                handle.recv_event().unwrap(),
+                events.recv_event().unwrap(),
                 SessionEvent::StreamEvent(StreamEvent::Done { .. })
             ) {}
 
@@ -572,7 +573,7 @@ fn session_accepts_message_after_stream_failure() {
         .unwrap();
 
     runtime.block_on(async move {
-        let handle = Session::start(
+        let (_owner, handle, events) = Session::start(
             model,
             SystemPrompt::new("system".to_string()),
             tokio::runtime::Handle::current(),
@@ -582,7 +583,7 @@ fn session_accepts_message_after_stream_failure() {
                 .send_message(UserPrompt::new("first".to_string()))
                 .unwrap();
             assert!(matches!(
-                handle.recv_event().unwrap(),
+                events.recv_event().unwrap(),
                 SessionEvent::StreamEvent(StreamEvent::TextDelta(_))
             ));
             while provider_handle.requests().len() < 2 {
@@ -592,7 +593,7 @@ fn session_accepts_message_after_stream_failure() {
                 std::thread::yield_now();
             }
             while !matches!(
-                handle.recv_event().unwrap(),
+                events.recv_event().unwrap(),
                 SessionEvent::StreamEvent(StreamEvent::Done { .. })
             ) {}
 

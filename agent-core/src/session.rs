@@ -48,28 +48,32 @@ impl SessionId {
 }
 
 /// A handle to a running auger session
+#[derive(Clone)]
 pub struct SessionHandle {
     id: SessionId,
     loop_event_tx: mpsc::Sender<LoopMessage>,
+}
+
+/// The unique capability to stop a running session.
+pub struct SessionOwner {
+    loop_event_tx: mpsc::Sender<LoopMessage>,
+}
+
+/// The unique receiver for events emitted by a session.
+pub struct SessionEventReceiver {
     event_rx: mpsc::Receiver<SessionEvent>,
 }
 
 impl SessionHandle {
-    fn new(
-        id: SessionId,
-        command_tx: mpsc::Sender<LoopMessage>,
-        event_rx: mpsc::Receiver<SessionEvent>,
-    ) -> Self {
+    fn new(id: SessionId, command_tx: mpsc::Sender<LoopMessage>) -> Self {
         Self {
             id,
             loop_event_tx: command_tx,
-            event_rx,
         }
     }
 
-    /// Receive the next event emitted by the session.
-    pub fn recv_event(&self) -> Result<SessionEvent, mpsc::RecvError> {
-        self.event_rx.recv()
+    pub fn id(&self) -> SessionId {
+        self.id
     }
 
     pub fn send_message(&self, prompt: UserPrompt) -> Result<(), ()> {
@@ -116,11 +120,21 @@ impl SessionHandle {
             .map_err(|_| ())
     }
 
+}
+
+impl SessionOwner {
     /// Stop the session.
     pub fn stop(self) {
         let _ = self
             .loop_event_tx
             .send(LoopMessage::Cmd(SessionCommand::Stop));
+    }
+}
+
+impl SessionEventReceiver {
+    /// Receive the next event emitted by the session.
+    pub fn recv_event(&self) -> Result<SessionEvent, mpsc::RecvError> {
+        self.event_rx.recv()
     }
 }
 
@@ -138,7 +152,11 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn start(model: LlmModel, system_prompt: SystemPrompt, rt: Handle) -> SessionHandle {
+    pub fn start(
+        model: LlmModel,
+        system_prompt: SystemPrompt,
+        rt: Handle,
+    ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
         Self::start_with_tools(model, system_prompt, rt, Vec::new(), Vec::new())
     }
 
@@ -148,7 +166,7 @@ impl Session {
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
         auto_approved_tools: Vec<String>,
-    ) -> SessionHandle {
+    ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
         let mut tool_registry = ToolRegistry::new();
         for tool in tools {
             tool_registry.register(tool);
@@ -167,14 +185,18 @@ impl Session {
             tool_registry,
             auto_approval_policy: Arc::new(AutoApprovalPolicy::new(auto_approved_tools)),
         };
-        let handle = SessionHandle::new(session.id, cmd_tx, event_rx);
+        let handle = SessionHandle::new(session.id, cmd_tx.clone());
+        let owner = SessionOwner {
+            loop_event_tx: cmd_tx,
+        };
+        let events = SessionEventReceiver { event_rx };
 
         std::thread::Builder::new()
             .name(format!("auger-session-{}", session.id.0))
             .spawn(move || session.run(rt))
             .expect("failed to spawn session thread");
 
-        handle
+        (owner, handle, events)
     }
 
     fn run(self, rt: Handle) {
