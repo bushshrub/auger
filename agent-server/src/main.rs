@@ -373,6 +373,7 @@ fn session_event_json(event: SessionEvent) -> serde_json::Value {
             "error": error,
         }),
         SessionEvent::Interrupted => json!({ "type": "interrupted" }),
+        SessionEvent::StreamError { error } => json!({ "type": "stream_error", "error": error }),
         SessionEvent::Closed => json!({ "type": "closed" }),
     }
 }

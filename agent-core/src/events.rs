@@ -44,6 +44,8 @@ pub enum SessionEvent {
     /// The in-flight LLM stream was interrupted; the session is waiting for
     /// user input with the partial response retained.
     Interrupted,
+    /// The LLM stream failed; the session is waiting for a new user message.
+    StreamError { error: String },
     /// The session has stopped and will not emit further events.
     Closed,
 }

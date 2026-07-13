@@ -41,6 +41,7 @@ const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
  *   | { type: 'tool_call_error', id: string, error: string }
  *   | { type: 'done', usage: TokenUsage | null, stop_reason: string | null }
  *   | { type: 'interrupted' }
+ *   | { type: 'stream_error', error: string }
  *   | { type: 'closed' }
  * )} SessionEvent
  *

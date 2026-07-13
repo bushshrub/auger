@@ -301,6 +301,12 @@ export class AugerSession {
 				this.busy = false;
 				break;
 			}
+			case 'stream_error': {
+				this.#closeStreamingBubble();
+				this.busy = false;
+				this.error = e.error;
+				break;
+			}
 			case 'closed': {
 				this.busy = false;
 				this.error = 'session closed';

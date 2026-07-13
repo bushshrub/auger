@@ -20,6 +20,7 @@ struct DummyProviderState {
 #[derive(Debug, Clone)]
 pub enum DummyResponse {
     Response(LlmResponse),
+    Error(LlmError),
     Stream(Vec<Result<StreamEvent, LlmError>>),
     PendingStream(Vec<Result<StreamEvent, LlmError>>),
 }
@@ -67,6 +68,7 @@ impl LlmProvider for DummyProvider {
         debug!(model, "dummy provider complete called");
         match self.next_response(request)? {
             DummyResponse::Response(response) => Ok(response),
+            DummyResponse::Error(error) => Err(error),
             DummyResponse::Stream(_) | DummyResponse::PendingStream(_) => Err(LlmError {
                 message: "dummy provider queued a stream response for complete".to_string(),
             }),
@@ -80,6 +82,7 @@ impl LlmProvider for DummyProvider {
                 response_to_stream_events(response),
                 model,
             ))),
+            DummyResponse::Error(error) => Err(error),
             DummyResponse::Stream(events) => {
                 Ok(LlmStream::new(finite_stream(events, model)))
             }

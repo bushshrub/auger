@@ -79,7 +79,8 @@ fn session_streams_all_provider_deltas() {
                     | SessionEvent::ToolConsentRequired { .. }
                     | SessionEvent::ToolCallResult { .. }
                     | SessionEvent::ToolCallError { .. }
-                    | SessionEvent::Interrupted => {}
+                    | SessionEvent::Interrupted
+                    | SessionEvent::StreamError { .. } => {}
                     SessionEvent::Closed => panic!("session closed before stream completed"),
                 }
             }
@@ -240,7 +241,8 @@ fn session_returns_to_waiting_for_user_message_after_streaming() {
                     | SessionEvent::ToolConsentRequired { .. }
                     | SessionEvent::ToolCallResult { .. }
                     | SessionEvent::ToolCallError { .. }
-                    | SessionEvent::Interrupted => {}
+                    | SessionEvent::Interrupted
+                    | SessionEvent::StreamError { .. } => {}
                     SessionEvent::Closed => panic!("session closed during first stream"),
                 }
             }
@@ -266,7 +268,8 @@ fn session_returns_to_waiting_for_user_message_after_streaming() {
                     | SessionEvent::ToolConsentRequired { .. }
                     | SessionEvent::ToolCallResult { .. }
                     | SessionEvent::ToolCallError { .. }
-                    | SessionEvent::Interrupted => {}
+                    | SessionEvent::Interrupted
+                    | SessionEvent::StreamError { .. } => {}
                     SessionEvent::Closed => panic!("session closed during second stream"),
                 }
             }
@@ -342,7 +345,8 @@ fn session_runs_two_agentic_iterations_with_auto_approved_tool() {
                     | SessionEvent::ToolConsentRequired { .. }
                     | SessionEvent::ToolCallResult { .. }
                     | SessionEvent::ToolCallError { .. }
-                    | SessionEvent::Interrupted => {}
+                    | SessionEvent::Interrupted
+                    | SessionEvent::StreamError { .. } => {}
                     SessionEvent::Closed => panic!("session closed before stream completed"),
                 }
             }
@@ -416,7 +420,8 @@ fn session_interrupts_running_tool_and_submits_interrupted_result() {
                     SessionEvent::StreamEvent(_)
                     | SessionEvent::ToolConsentRequired { .. }
                     | SessionEvent::ToolCallResult { .. }
-                    | SessionEvent::Interrupted => {}
+                    | SessionEvent::Interrupted
+                    | SessionEvent::StreamError { .. } => {}
                     SessionEvent::Closed => panic!("session closed before tool interruption completed"),
                 }
             }
@@ -508,7 +513,8 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
                     SessionEvent::StreamEvent(_)
                     | SessionEvent::ToolCallResult { .. }
                     | SessionEvent::ToolCallError { .. }
-                    | SessionEvent::Interrupted => {}
+                    | SessionEvent::Interrupted
+                    | SessionEvent::StreamError { .. } => {}
                 }
             }
 
@@ -536,7 +542,8 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
                     SessionEvent::Closed => panic!("session closed before second stream completed"),
                     SessionEvent::StreamEvent(_)
                     | SessionEvent::ToolConsentRequired { .. }
-                    | SessionEvent::Interrupted => {}
+                    | SessionEvent::Interrupted
+                    | SessionEvent::StreamError { .. } => {}
                 }
             }
 
@@ -704,7 +711,8 @@ fn session_runs_mixed_batch_of_auto_approved_and_consented_tools() {
                     SessionEvent::StreamEvent(_)
                     | SessionEvent::ToolCallResult { .. }
                     | SessionEvent::ToolCallError { .. }
-                    | SessionEvent::Interrupted => {}
+                    | SessionEvent::Interrupted
+                    | SessionEvent::StreamError { .. } => {}
                 }
             }
 
@@ -730,7 +738,8 @@ fn session_runs_mixed_batch_of_auto_approved_and_consented_tools() {
                     SessionEvent::Closed => panic!("session closed before second stream completed"),
                     SessionEvent::StreamEvent(_)
                     | SessionEvent::ToolConsentRequired { .. }
-                    | SessionEvent::Interrupted => {}
+                    | SessionEvent::Interrupted
+                    | SessionEvent::StreamError { .. } => {}
                 }
             }
 
@@ -850,6 +859,44 @@ fn session_accepts_message_after_stream_failure() {
                     Message::User { .. }
                 ]
             ));
+        })
+        .await
+        .unwrap();
+    });
+}
+
+#[test]
+fn session_emits_stream_error_when_provider_rejects_request() {
+    let provider = DummyProvider::new_responses([DummyResponse::Error(LlmError {
+        message: "context window exceeded".to_string(),
+    })]);
+    let model = LlmModel::new(Arc::new(provider), "dummy");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let (_owner, handle, events) = Session::start(
+            model,
+            SystemPrompt::new("system".to_string()),
+            tokio::runtime::Handle::current(),
+        );
+        tokio::task::spawn_blocking(move || {
+            handle
+                .send_message(UserPrompt::new("hello".to_string()))
+                .unwrap();
+
+            loop {
+                match events.recv_event().unwrap() {
+                    SessionEvent::StreamError { error } => {
+                        assert_eq!(error, "context window exceeded");
+                        break;
+                    }
+                    SessionEvent::Closed => panic!("session closed before stream error"),
+                    _ => {}
+                }
+            }
         })
         .await
         .unwrap();

@@ -418,6 +418,9 @@ impl Session {
                                         error = %agent.error(),
                                         "LLM stream failed; waiting for a new user message"
                                     );
+                                    let _ = self.event_tx.send(SessionEvent::StreamError {
+                                        error: agent.error().to_string(),
+                                    });
                                     thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
                                     HarnessState::StreamingFailed { agent }
                                 }
