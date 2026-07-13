@@ -54,7 +54,7 @@ fn collect_entries(root: &str, recursive: bool) -> Result<Vec<String>, ToolError
 
     let mut builder = ignore::WalkBuilder::new(root);
     builder
-        .hidden(false)
+        .hidden(true)
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true);

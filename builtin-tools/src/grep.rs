@@ -1,13 +1,82 @@
 use async_trait::async_trait;
 use grep::regex::RegexMatcherBuilder;
 use grep::searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
+use ignore::WalkBuilder;
 use serde_json::json;
 use std::path::Path;
-use walkdir::WalkDir;
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, Mutex,
+};
 
 use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 pub struct Grep;
+
+impl Grep {
+    pub(crate) fn run_shell_command(words: &[String]) -> Option<Result<String, ToolError>> {
+        let name = words.first()?.as_str();
+        if name != "grep" && name != "rg" {
+            return None;
+        }
+
+        let mut recursive = name == "rg";
+        let mut case_insensitive = false;
+        let mut fixed_string = false;
+        let mut index = 1;
+        while let Some(argument) = words.get(index) {
+            if argument == "--" {
+                index += 1;
+                break;
+            }
+            if !argument.starts_with('-') || argument == "-" {
+                break;
+            }
+            for option in argument[1..].chars() {
+                match option {
+                    'i' => case_insensitive = true,
+                    'r' | 'R' => recursive = true,
+                    'E' | 'G' | 'H' | 'n' | 's' => {}
+                    'F' => fixed_string = true,
+                    _ => return None,
+                }
+            }
+            index += 1;
+        }
+
+        let pattern = words.get(index).map(|pattern| {
+            if fixed_string {
+                escape_regex(pattern)
+            } else {
+                pattern.clone()
+            }
+        })?;
+        let path = words.get(index + 1).cloned().unwrap_or_else(|| ".".into());
+        if words.get(index + 2).is_some() {
+            return None;
+        }
+
+        Some(run_grep(
+            &pattern,
+            &path,
+            recursive,
+            case_insensitive,
+            0,
+            500,
+        ))
+    }
+}
+
+fn escape_regex(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(character, '\\' | '.' | '^' | '$' | '|' | '(' | ')' | '[' | ']' | '{' | '}' | '*' | '+' | '?') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
+}
 
 #[async_trait]
 impl Tool for Grep {
@@ -99,82 +168,150 @@ fn run_grep(
         .map_err(|e| ToolError::InvalidArgs(format!("invalid regex: {e}")))?;
 
     let target = Path::new(path);
-    let files: Vec<std::path::PathBuf> = if target.is_file() {
-        vec![target.to_path_buf()]
-    } else if target.is_dir() {
-        let max_depth = if recursive { usize::MAX } else { 1 };
-        WalkDir::new(target)
-            .max_depth(max_depth)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .map(|e| e.into_path())
-            .collect()
-    } else {
+    if !target.is_file() && !target.is_dir() {
         return Err(ToolError::InvalidArgs(format!("path not found: {path}")));
+    }
+
+    let files = if target.is_file() {
+        vec![target.to_path_buf()]
+    } else {
+        let max_depth = if recursive { None } else { Some(1) };
+        let mut walker = WalkBuilder::new(target);
+        walker.standard_filters(true);
+        if let Some(max_depth) = max_depth {
+            walker.max_depth(Some(max_depth));
+        }
+
+        walker
+            .build()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_some_and(|file_type| file_type.is_file()))
+            .map(|entry| entry.into_path())
+            .collect()
     };
 
-    let mut searcher = SearcherBuilder::new()
-        .before_context(context_lines)
-        .after_context(context_lines)
-        .line_number(true)
-        .build();
+    let match_count = Arc::new(AtomicUsize::new(0));
+    let truncated = Arc::new(AtomicBool::new(false));
+    let next_file = Arc::new(AtomicUsize::new(0));
+    let results = Arc::new(Mutex::new(vec![None; files.len()]));
+    let thread_count = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(files.len().max(1));
 
-    let mut all_lines: Vec<String> = Vec::new();
-    let mut match_count = 0usize;
-    let mut truncated = false;
+    std::thread::scope(|scope| {
+        for _ in 0..thread_count {
+            let next_file = Arc::clone(&next_file);
+            let match_count = Arc::clone(&match_count);
+            let truncated = Arc::clone(&truncated);
+            let results = Arc::clone(&results);
+            let matcher = &matcher;
+            let files = &files;
 
-    for file_path in &files {
-        let display = file_path.to_string_lossy().into_owned();
-        let mut sink = CollectSink::new(display, match_count, max_matches);
-        // Silently skip unreadable or binary files.
-        let _ = searcher.search_path(&matcher, file_path, &mut sink);
-        match_count = sink.match_count;
-        truncated = sink.truncated;
-        all_lines.extend(sink.lines);
-        if truncated {
-            break;
+            scope.spawn(move || {
+                let mut searcher = SearcherBuilder::new()
+                    .before_context(context_lines)
+                    .after_context(context_lines)
+                    .line_number(true)
+                    .build();
+
+                loop {
+                    let index = next_file.fetch_add(1, Ordering::Relaxed);
+                    if index >= files.len() || match_count.load(Ordering::Relaxed) >= max_matches {
+                        break;
+                    }
+                    let lines = search_file(
+                        &files[index],
+                        matcher,
+                        &mut searcher,
+                        max_matches,
+                        &match_count,
+                        &truncated,
+                    );
+                    results.lock().unwrap()[index] = Some(lines);
+                }
+            });
         }
-    }
+    });
+
+    let all_lines: Vec<String> = results
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .filter_map(Option::take)
+        .flatten()
+        .collect();
 
     if all_lines.is_empty() {
         return Ok("No matches found.".to_string());
     }
 
     let mut output = all_lines.join("\n");
-    if truncated {
+    if truncated.load(Ordering::Relaxed) {
         output.push_str(&format!("\n[Truncated at {max_matches} matches]"));
     }
     Ok(output)
 }
 
-struct CollectSink {
-    path: String,
-    lines: Vec<String>,
-    match_count: usize,
+fn search_file(
+    file_path: &Path,
+    matcher: &grep::regex::RegexMatcher,
+    searcher: &mut Searcher,
     max_matches: usize,
-    truncated: bool,
+    match_count: &AtomicUsize,
+    truncated: &AtomicBool,
+) -> Vec<String> {
+    let display = file_path.to_string_lossy().into_owned();
+    let mut sink = CollectSink::new(display, match_count, max_matches, truncated);
+    // Silently skip unreadable or binary files.
+    let _ = searcher.search_path(matcher, file_path, &mut sink);
+    sink.lines
 }
 
-impl CollectSink {
-    fn new(path: String, match_count: usize, max_matches: usize) -> Self {
+struct CollectSink<'a> {
+    path: String,
+    lines: Vec<String>,
+    match_count: &'a AtomicUsize,
+    max_matches: usize,
+    truncated: &'a AtomicBool,
+}
+
+impl<'a> CollectSink<'a> {
+    fn new(
+        path: String,
+        match_count: &'a AtomicUsize,
+        max_matches: usize,
+        truncated: &'a AtomicBool,
+    ) -> Self {
         Self {
             path,
             lines: Vec::new(),
             match_count,
             max_matches,
-            truncated: false,
+            truncated,
         }
     }
 }
 
-impl Sink for CollectSink {
+impl Sink for CollectSink<'_> {
     type Error = std::io::Error;
 
     fn matched(&mut self, _: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
-        if self.match_count >= self.max_matches {
-            self.truncated = true;
-            return Ok(false);
+        let mut current = self.match_count.load(Ordering::Relaxed);
+        loop {
+            if current >= self.max_matches {
+                self.truncated.store(true, Ordering::Relaxed);
+                return Ok(false);
+            }
+            match self.match_count.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(updated) => current = updated,
+            }
         }
         let line = String::from_utf8_lossy(mat.bytes())
             .trim_end_matches(|c| c == '\n' || c == '\r')
@@ -182,7 +319,6 @@ impl Sink for CollectSink {
         let lineno = mat.line_number().unwrap_or(0);
         self.lines
             .push(format!("{}:{}:{}", self.path, lineno, line));
-        self.match_count += 1;
         Ok(true)
     }
 

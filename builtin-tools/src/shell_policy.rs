@@ -3,7 +3,7 @@ use provider::ToolCallRequest;
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
 use yash_syntax::syntax::{
-    Command, List, SimpleCommand, Text, TextUnit, Word, WordUnit,
+    AndOr, Command, List, Pipeline, SimpleCommand, Text, TextUnit, Word, WordUnit,
 };
 
 /// Conservative auto-approval policy for the `/bin/sh -c` shell tool.
@@ -50,13 +50,55 @@ fn validate_list(list: &List, cwd: &Path) -> bool {
     }
 
     let and_or = item.and_or.as_ref();
-    let standalone = and_or.rest.is_empty() && and_or.first.commands.len() == 1;
+    let (first, rest) = if is_cwd_cd_prefix(&and_or.first, &and_or.rest, cwd) {
+        let (_, first_after_cd) = &and_or.rest[0];
+        (first_after_cd, &and_or.rest[1..])
+    } else {
+        (&and_or.first, &and_or.rest[..])
+    };
+    let standalone = rest.is_empty() && first.commands.len() == 1;
 
-    validate_pipeline(&and_or.first, cwd, standalone)
-        && and_or
-            .rest
+    validate_pipeline(first, cwd, standalone)
+        && rest
             .iter()
             .all(|(_, pipeline)| validate_pipeline(pipeline, cwd, false))
+}
+
+pub(crate) fn parse_simple_command(command: &str) -> Option<Vec<String>> {
+    let list = command.parse::<List>().ok()?;
+    if list.0.len() != 1 {
+        return None;
+    }
+    let and_or = list.0[0].and_or.as_ref();
+    if !and_or.rest.is_empty() || and_or.first.negation || and_or.first.commands.len() != 1 {
+        return None;
+    }
+    let Command::Simple(simple) = and_or.first.commands[0].as_ref() else {
+        return None;
+    };
+    simple_words(simple, true)
+}
+
+fn is_cwd_cd_prefix(
+    first: &Pipeline,
+    rest: &[(AndOr, Pipeline)],
+    cwd: &Path,
+) -> bool {
+    if first.negation || first.commands.len() != 1 {
+        return false;
+    }
+    if !matches!(rest.first(), Some((AndOr::AndThen, _))) {
+        return false;
+    }
+
+    let Command::Simple(simple) = first.commands[0].as_ref() else {
+        return false;
+    };
+    let Some(words) = simple_words(simple, true) else {
+        return false;
+    };
+
+    words.len() == 2 && words[0] == "cd" && path_is_cwd(cwd, &words[1])
 }
 
 fn validate_pipeline(
@@ -89,6 +131,7 @@ fn validate_command(command: &Command, cwd: &Path, standalone: bool) -> bool {
 
     match name.as_str() {
         "pwd" => args.is_empty(),
+        "which" => validate_which(args),
         "ls" => validate_ls(args, cwd),
         "grep" => validate_grep(args, cwd, false),
         "rg" => validate_grep(args, cwd, true),
@@ -147,6 +190,10 @@ fn append_text_unit(unit: &TextUnit, result: &mut String, reject_glob: bool) -> 
         | TextUnit::Arith { .. } => return None,
     }
     Some(())
+}
+
+fn validate_which(args: &[String]) -> bool {
+    !args.is_empty() && args.iter().all(|arg| !arg.starts_with('-'))
 }
 
 fn validate_ls(args: &[String], cwd: &Path) -> bool {
@@ -289,6 +336,21 @@ fn path_is_within(cwd: &Path, value: &str) -> bool {
     normalize_path(&cwd.join(path)).starts_with(cwd)
 }
 
+fn path_is_cwd(cwd: &Path, value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    let path = Path::new(value);
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return false;
+    }
+
+    normalize_path(&cwd.join(path)) == cwd
+}
+
 fn normalize_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -336,10 +398,12 @@ mod tests {
     #[test]
     fn approves_safe_commands_and_composition() {
         assert!(approved("pwd"));
+        assert!(approved("which cargo"));
         assert!(approved("ls -la src"));
         assert!(approved("grep -R 'needle' src"));
         assert!(approved("rg 'needle' src"));
         assert!(approved("find . -name '*.rs'"));
+        assert!(approved("cd /workspace/project && ls -la"));
         assert!(approved("pwd && ls . | rg 'src'"));
         assert!(approved("grep 'a&&b' './file'"));
     }
@@ -348,6 +412,10 @@ mod tests {
     fn rejects_shell_control_and_expansion_syntax() {
         for command in [
             "pwd; ls",
+            "cd /workspace/other && ls",
+            "cd /workspace/project || ls",
+            "cd /workspace/project; ls",
+            "cd /workspace/project && find . | rg rs",
             "pwd && find .",
             "find . | rg rs",
             "x=$(pwd)",
@@ -369,6 +437,7 @@ mod tests {
     fn rejects_unsafe_commands_options_and_paths() {
         for command in [
             "/bin/pwd",
+            "which -a cargo",
             "ls /workspace",
             "ls ../other",
             "grep --include '*.rs' rs .",

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
+use crate::{grep::Grep, shell_policy::parse_simple_command};
 
 pub struct Shell;
 
@@ -37,16 +38,28 @@ impl Tool for Shell {
             .to_owned();
 
         let output = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("/bin/sh")
+            if let Some(result) = parse_simple_command(&command)
+                .and_then(|words| Grep::run_shell_command(&words))
+            {
+                return result.map(|stdout| (stdout, String::new(), 0));
+            }
+
+            let output = std::process::Command::new("/bin/sh")
                 .arg("-c")
                 .arg(&command)
                 .output()
+                .map_err(|error| ToolError::Execution(error.to_string()))
+                ?;
+            Ok((
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+                output.status.code().unwrap_or(-1),
+            ))
         })
         .await
         .map_err(|e| ToolError::Execution(e.to_string()))??;
 
-        let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let (mut stdout, mut stderr, exit_code) = output;
 
         if stdout.len() > MAX_OUTPUT {
             stdout.truncate(MAX_OUTPUT);
@@ -56,8 +69,6 @@ impl Tool for Shell {
             stderr.truncate(MAX_OUTPUT);
             stderr.push_str("\n[truncated]");
         }
-
-        let exit_code = output.status.code().unwrap_or(-1);
 
         Ok(ToolCallResult::success(
             json!({
