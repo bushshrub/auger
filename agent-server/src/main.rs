@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::server_types::{
     ApproveRequest, CreateSessionRequest, SessionEntry, SnapshotMessage, UserInputRequest,
 };
-use agent_core::{Session, SessionEvent, SessionHandle, SystemPrompt};
+use agent_core::{AutoApprovalPolicies, Session, SessionEvent, SessionHandle, SystemPrompt};
 use provider::{LlmModel, LlmProvider};
 
 mod server_types;
@@ -183,6 +183,7 @@ async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     let model = req.model.unwrap_or_else(|| state.default_model.clone());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
     let tools: Vec<Box<dyn agent_tools::Tool>> = vec![
         Box::new(builtin_tools::ReadFile),
@@ -196,7 +197,7 @@ async fn create_session(
         Box::new(builtin_tools::WebSearch::new()),
         Box::new(builtin_tools::FetchContent::new()),
     ];
-    // Read-only tools run without consent; shell/edit_file/write_file require approval.
+    // Read-only tools and the conservative shell policy run without consent.
     let auto_approved: Vec<String> = [
         "read_file",
         "grep",
@@ -209,12 +210,14 @@ async fn create_session(
     .iter()
     .map(|s| s.to_string())
     .collect();
+    let mut auto_approval = AutoApprovalPolicies::from(auto_approved);
+    auto_approval.add("shell", builtin_tools::BashAutoApprovalPolicy::new(cwd));
     let (owner, handle, event_receiver) = Session::start_with_tools(
         LlmModel::new(state.provider.clone(), &model),
         sys_prompt,
         tokio::runtime::Handle::current(),
         tools,
-        auto_approved,
+        auto_approval,
     );
     let session_id = handle.id().as_uuid();
     let (event_tx, _) = tokio::sync::broadcast::channel(256);

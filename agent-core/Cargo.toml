@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 agent-tools = { version = "0.1.0", path = "../agent-tools" }
-builtin-tools = { version = "0.1.0", path = "../builtin-tools" }
 futures.workspace = true
 provider = { version = "0.1.0", path = "../provider" }
 serde.workspace = true
@@ -20,5 +19,6 @@ tokio-util = "0.7.18"
 
 [dev-dependencies]
 async-trait.workspace = true
+builtin-tools = { path = "../builtin-tools" }
 provider-dummy = { path = "../provider-dummy" }
 tracing-subscriber.workspace = true
