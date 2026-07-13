@@ -4,6 +4,7 @@ use provider::LlmProvider;
 use provider_anthropic::AnthropicProvider;
 use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
 use provider_openai_responses::OpenAiResponsesProvider;
+use tracing::{error, info};
 
 use crate::config::Config;
 
@@ -29,20 +30,30 @@ impl ProviderType {
 
 pub(crate) fn from_config(config: &Config) -> Arc<dyn LlmProvider> {
     let provider_type = config.provider_type();
-    let provider_type = ProviderType::parse(&provider_type).unwrap_or_else(|error| panic!("{error}"));
+    let provider_type = ProviderType::parse(&provider_type).unwrap_or_else(|error| {
+        error!(
+            configured_provider_type = %provider_type,
+            error = %error,
+            "invalid provider API type"
+        );
+        panic!("{error}");
+    });
     let api_key = config.provider_api_key();
 
     match provider_type {
         ProviderType::Anthropic => {
             let base_url = config.provider_base_url().unwrap_or_default();
+            info!(provider_type = ?provider_type, base_url = %base_url, "configured LLM provider");
             Arc::new(AnthropicProvider::new(api_key, base_url))
         }
         ProviderType::OpenAiChatCompletions => {
             let base_url = config.provider_base_url().unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
+            info!(provider_type = ?provider_type, base_url = %base_url, "configured LLM provider");
             Arc::new(OpenAiChatCompletionsProvider::new(api_key, base_url))
         }
         ProviderType::OpenAiResponses => {
             let base_url = config.provider_base_url().unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
+            info!(provider_type = ?provider_type, base_url = %base_url, "configured LLM provider");
             Arc::new(OpenAiResponsesProvider::new(api_key, base_url))
         }
     }

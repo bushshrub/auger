@@ -10,6 +10,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio_util::sync::CancellationToken;
+use tracing::error;
 
 /// Future which when awaited, streams the LLM response.
 /// Once done, returns a StreamResult which gives the result state after streaming.
@@ -65,11 +66,12 @@ pub(crate) async fn run_stream(
     let mut stream = tokio::select! {
         result = model.stream(request) => match result {
             Ok(stream) => stream,
-            Err(_) => {
+            Err(error) => {
+                error!(model = %model.name(), error = %error, "failed to start provider stream");
                 return StreamResult::Failed(TypedAgent {
                     model,
                     tools,
-                    state: LlmStreamingFailed::new(thread, events),
+                    state: LlmStreamingFailed::new(thread, events, error),
                 });
             }
         },
@@ -101,12 +103,12 @@ pub(crate) async fn run_stream(
                 event_callback(event.clone());
                 events.push(event);
             }
-            Some(Err(_)) => {
-                // TODO: what errors can occur here?
+            Some(Err(error)) => {
+                error!(model = %model.name(), error = %error, "provider stream failed");
                 return StreamResult::Failed(TypedAgent {
                     model,
                     tools,
-                    state: LlmStreamingFailed::new(thread, events),
+                    state: LlmStreamingFailed::new(thread, events, error),
                 });
             }
             None => break,

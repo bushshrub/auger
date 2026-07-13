@@ -413,6 +413,11 @@ impl Session {
                                     panic!("stream returned interrupted while harness was still streaming")
                                 }
                                 StreamResult::Failed(agent) => {
+                                    warn!(
+                                        session_id = %self.id,
+                                        error = %agent.error(),
+                                        "LLM stream failed; waiting for a new user message"
+                                    );
                                     thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
                                     HarnessState::StreamingFailed { agent }
                                 }

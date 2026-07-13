@@ -73,17 +73,28 @@ pub struct LlmStreamingFailed {
     thread: LlmThread<ClankerTurn>,
     #[getset(get = "pub")]
     events: Vec<provider::StreamEvent>,
+    #[getset(get = "pub")]
+    error: provider::LlmError,
 }
 
 impl State for LlmStreamingFailed {}
 
 impl LlmStreamingFailed {
-    pub(crate) fn new(thread: LlmThread<ClankerTurn>, events: Vec<provider::StreamEvent>) -> Self {
-        Self { thread, events }
+    pub(crate) fn new(
+        thread: LlmThread<ClankerTurn>,
+        events: Vec<provider::StreamEvent>,
+        error: provider::LlmError,
+    ) -> Self {
+        Self { thread, events, error }
     }
 }
 
 impl TypedAgent<LlmStreamingFailed> {
+    /// The provider error that caused the stream to fail.
+    pub fn error(&self) -> &provider::LlmError {
+        self.state.error()
+    }
+
     /// Clone the committed messages in the current thread.
     pub fn snapshot(&self) -> Vec<provider::Message> {
         self.state.thread.messages().to_vec()

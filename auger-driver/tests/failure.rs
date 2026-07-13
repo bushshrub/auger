@@ -26,7 +26,10 @@ async fn retries_failed_stream_without_partial_response() {
     let agent = TypedAgent::<WaitingForUserMessage>::new(model, "system".to_string(), Vec::new())
         .add_message(UserPrompt::new("first".to_string()));
     let agent = match agent.create_stream().await {
-        StreamResult::Failed(agent) => agent.retry(),
+        StreamResult::Failed(agent) => {
+            assert_eq!(agent.error().message, "stream failed");
+            agent.retry()
+        }
         _ => panic!("expected stream failure"),
     };
     let result = agent.create_stream().await;
