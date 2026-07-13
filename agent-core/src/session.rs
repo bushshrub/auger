@@ -45,6 +45,10 @@ impl SessionId {
     pub(crate) fn new() -> Self {
         Self(uuid::Uuid::new_v4())
     }
+
+    pub fn as_uuid(self) -> uuid::Uuid {
+        self.0
+    }
 }
 
 /// A handle to a running auger session
@@ -103,6 +107,15 @@ impl SessionHandle {
 
     pub fn deny_tool_call(&self, id: impl Into<String>) -> Result<(), ()> {
         self.tool_decision(id, false, Some("Denied by user".to_string()))
+    }
+
+    pub fn decide_tool_call(
+        &self,
+        id: impl Into<String>,
+        approved: bool,
+        message: Option<String>,
+    ) -> Result<(), ()> {
+        self.tool_decision(id, approved, message)
     }
 
     fn tool_decision(

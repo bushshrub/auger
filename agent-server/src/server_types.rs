@@ -1,12 +1,18 @@
 //! Request and response types for the agent server API
-use agent_core::{SessionHandle, UserMessage};
+use agent_core::{SessionEvent, SessionHandle, SessionOwner};
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 /// A session entry holds the handle plus its access tokens, which are owned by the server.
 #[derive(Clone)]
 pub(crate) struct SessionEntry {
     pub(crate) handle: SessionHandle,
+    pub(crate) owner: Arc<Mutex<Option<SessionOwner>>>,
+    pub(crate) events: broadcast::Sender<SessionEvent>,
+    pub(crate) model: String,
+    pub(crate) created_at: u64,
     pub(crate) read_token: Uuid,
     pub(crate) write_token: Uuid,
 }
@@ -22,9 +28,9 @@ pub(crate) struct UserInputRequest {
     pub(crate) input: String,
 }
 
-impl From<UserInputRequest> for UserMessage {
+impl From<UserInputRequest> for provider::UserPrompt {
     fn from(req: UserInputRequest) -> Self {
-        UserMessage::new(req.input)
+        provider::UserPrompt::new(req.input)
     }
 }
 

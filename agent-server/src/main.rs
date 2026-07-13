@@ -3,7 +3,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response, Sse};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
 use futures::StreamExt;
 use serde_json::json;
@@ -18,10 +18,8 @@ use uuid::Uuid;
 use crate::server_types::{
     ApproveRequest, CreateSessionRequest, SessionEntry, SnapshotMessage, UserInputRequest,
 };
-use agent_core::{Session, SessionHandle, SystemPrompt};
+use agent_core::{Session, SessionEvent, SessionHandle, SystemPrompt};
 use provider::LlmModel;
-use provider_anthropic::AnthropicProvider;
-use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
 use provider_openai_responses::OpenAiResponsesProvider;
 
 mod server_types;
@@ -102,6 +100,7 @@ async fn read_auth(
         return (StatusCode::UNAUTHORIZED, "Invalid read token").into_response();
     }
     request.extensions_mut().insert(entry.handle);
+    request.extensions_mut().insert(entry.events);
     next.run(request).await
 }
 
@@ -133,6 +132,7 @@ async fn main() {
 
 fn router(state: AppState) -> Router {
     let write_routes = Router::new()
+        .route("/sessions/{id}", delete(stop_session))
         .route("/sessions/{id}/input", post(send_input))
         .route("/sessions/{id}/tool", post(respond_to_tool_call))
         .route_layer(middleware::from_fn_with_state(state.clone(), write_auth));
@@ -156,9 +156,9 @@ async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
         .values()
         .map(|e| {
             json!({
-                "session_id": e.handle.id,
-                "model": e.handle.model,
-                "created_at": e.handle.created_at,
+                "session_id": e.handle.id().as_uuid(),
+                "model": e.model,
+                "created_at": e.created_at,
                 "context_window": DEFAULT_CONTEXT_WINDOW,
                 "tokens": {
                     "read": e.read_token.to_string(),
@@ -177,14 +177,51 @@ async fn create_session(
 ) -> impl IntoResponse {
     let model = req.model.unwrap_or_else(|| state.default_model.clone());
     let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
-    let handle = Session::spawn(sys_prompt, LlmModel::new(state.provider.clone(), &model));
-    let session_id = handle.id;
+    let tools: Vec<Box<dyn agent_tools::Tool>> = vec![
+        Box::new(builtin_tools::ReadFile),
+        Box::new(builtin_tools::WriteFile),
+        Box::new(builtin_tools::EditFile),
+        Box::new(builtin_tools::Glob),
+        Box::new(builtin_tools::Grep),
+        Box::new(builtin_tools::ListFiles),
+        Box::new(builtin_tools::Shell),
+        Box::new(builtin_tools::TodoList::new()),
+        Box::new(builtin_tools::WebSearch::new()),
+        Box::new(builtin_tools::FetchContent::new()),
+    ];
+    let (owner, handle, event_receiver) = Session::start_with_tools(
+        LlmModel::new(state.provider.clone(), &model),
+        sys_prompt,
+        tokio::runtime::Handle::current(),
+        tools,
+        Vec::new(),
+    );
+    let session_id = handle.id().as_uuid();
+    let (event_tx, _) = tokio::sync::broadcast::channel(256);
+    let forward_tx = event_tx.clone();
+    tokio::task::spawn_blocking(move || {
+        while let Ok(event) = event_receiver.recv_event() {
+            let closed = matches!(event, SessionEvent::Closed);
+            let _ = forward_tx.send(event);
+            if closed {
+                break;
+            }
+        }
+    });
     let read_token = Uuid::new_v4();
     let write_token = Uuid::new_v4();
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     state.sessions.write().await.insert(
         session_id,
         SessionEntry {
             handle,
+            owner: Arc::new(std::sync::Mutex::new(Some(owner))),
+            events: event_tx,
+            model,
+            created_at,
             read_token,
             write_token,
         },
@@ -197,6 +234,16 @@ async fn create_session(
     )
 }
 
+async fn stop_session(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
+    let Some(entry) = state.sessions.write().await.remove(&id) else {
+        return StatusCode::NOT_FOUND;
+    };
+    if let Some(owner) = entry.owner.lock().unwrap().take() {
+        owner.stop();
+    }
+    StatusCode::NO_CONTENT
+}
+
 /// Submit input to the clanker
 #[tracing::instrument(skip(session_handle, req))]
 async fn send_input(
@@ -204,7 +251,7 @@ async fn send_input(
     Json(req): Json<UserInputRequest>,
 ) -> impl IntoResponse {
     debug!("Enqueued message: '{}'", req.input);
-    session_handle.enqueue(req.into()).expect("closed");
+    session_handle.send_message(req.into()).expect("closed");
 
     // TODO: bad return type
     Json(json!({ "status": "ok" }))
@@ -217,11 +264,11 @@ async fn respond_to_tool_call(
     Json(req): Json<ApproveRequest>,
 ) -> impl IntoResponse {
     let span = tracing::Span::current();
-    span.record("session_id", tracing::field::display(&session_handle.id));
+    span.record("session_id", tracing::field::display(&session_handle.id()));
     span.record("call_id", tracing::field::display(&req.tool_call_id));
     debug!("Tool call approved: {}", req.approved);
     session_handle
-        .respond_to_tool_call(req.tool_call_id, req.approved, req.message)
+        .decide_tool_call(req.tool_call_id, req.approved, req.message)
         .expect("closed");
     // TODO: garbage return type
     Json(json!({ "status": "ok" }))
@@ -230,11 +277,12 @@ async fn respond_to_tool_call(
 /// Get a point-in-time snapshot of the session's conversation history.
 async fn snapshot(Extension(session_handle): Extension<SessionHandle>) -> impl IntoResponse {
     match tokio::task::spawn_blocking(move || session_handle.snapshot()).await {
-        Ok(Ok(messages)) => {
-            let snapshot: Vec<SnapshotMessage> = messages
-                .into_iter()
-                .map(SnapshotMessage::from_provider)
-                .flatten()
+        Ok(Ok(snapshot)) => {
+            let snapshot: Vec<SnapshotMessage> = snapshot
+                .messages()
+                .iter()
+                .cloned()
+                .flat_map(SnapshotMessage::from_provider)
                 .collect();
             Json(json!({ "messages": snapshot })).into_response()
         }
@@ -243,14 +291,43 @@ async fn snapshot(Extension(session_handle): Extension<SessionHandle>) -> impl I
 }
 
 /// Get a stream of events for a session, including LLM responses and user events.
-#[tracing::instrument(skip(session_handle))]
-async fn event_stream(Extension(session_handle): Extension<SessionHandle>) -> impl IntoResponse {
-    let stream = BroadcastStream::new(session_handle.subscribe());
+#[tracing::instrument(skip(event_tx))]
+async fn event_stream(
+    Extension(event_tx): Extension<tokio::sync::broadcast::Sender<SessionEvent>>,
+) -> impl IntoResponse {
+    let stream = BroadcastStream::new(event_tx.subscribe());
     Sse::new(stream.filter_map(|result| async move {
         let event = result.ok()?;
-        let json = serde_json::to_string(&event).ok()?;
+        let json = serde_json::to_string(&session_event_json(event)).ok()?;
         Some(Ok::<_, std::convert::Infallible>(
             axum::response::sse::Event::default().data(json),
         ))
     }))
+}
+
+fn session_event_json(event: SessionEvent) -> serde_json::Value {
+    match event {
+        SessionEvent::StreamEvent(event) => match event {
+            provider::StreamEvent::TextDelta(text) => json!({ "type": "text_delta", "text": text }),
+            provider::StreamEvent::ReasoningDelta(text) => json!({ "type": "reasoning_delta", "text": text }),
+            provider::StreamEvent::ToolCall { id, name, arguments } => json!({
+                "type": "tool_call",
+                "id": id,
+                "name": name,
+                "arguments": arguments,
+            }),
+            provider::StreamEvent::ToolCallComplete { id, name, arguments } => json!({
+                "type": "tool_call_complete",
+                "id": id,
+                "name": name,
+                "arguments": arguments,
+            }),
+            provider::StreamEvent::Done { usage, stop_reason } => json!({
+                "type": "done",
+                "usage": usage,
+                "stop_reason": stop_reason,
+            }),
+        },
+        SessionEvent::Closed => json!({ "type": "closed" }),
+    }
 }
