@@ -1,63 +1,18 @@
 use crate::SystemPrompt;
 use crate::events::{HarnessState, LoopMessage, SessionCommand, SessionEvent};
 use crate::tools::auto_approval::AutoApprovalPolicy;
-use crate::tools::tool_decisions::{Resolved, Resolving, ToolAuthorization, UserToolDecisions};
+use crate::tools::tool_decisions::{ToolAuthorization, UserToolDecisions};
+use crate::tools::tool_execution::ToolExecution;
 use crate::tools::tool_registry::ToolRegistry;
 use agent_tools::Tool;
 use auger_driver::{StreamResult, TypedAgent, WaitingForUserMessage};
-use futures::stream;
-use provider::{LlmModel, LlmProvider, LlmResponse, LlmStream, StreamEvent, UserPrompt};
+use provider::{LlmModel, UserPrompt};
 use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{mpsc, Arc};
 use std::sync::mpsc::Sender;
 use either::Either;
 use tokio::runtime::Handle;
-use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
-
-struct DummyProvider;
-
-impl LlmProvider for DummyProvider {
-    fn complete<'life0, 'life1, 'async_trait>(
-        &'life0 self,
-        _model: &'life1 str,
-        _request: provider::LlmRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<LlmResponse, provider::LlmError>> + Send + 'async_trait>>
-    where
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async {
-            Ok(LlmResponse::from(vec![StreamEvent::Done {
-                usage: None,
-                stop_reason: Some("stop".to_string()),
-            }]))
-        })
-    }
-
-    fn stream<'life0, 'life1, 'async_trait>(
-        &'life0 self,
-        _model: &'life1 str,
-        _request: provider::LlmRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<LlmStream, provider::LlmError>> + Send + 'async_trait>>
-    where
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async {
-            Ok(LlmStream::new(stream::once(async {
-                Ok(StreamEvent::Done {
-                    usage: None,
-                    stop_reason: Some("stop".to_string()),
-                })
-            })))
-        })
-    }
-}
+use tracing::info;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(uuid::Uuid);
@@ -136,14 +91,16 @@ impl SessionHandle {
 
     /// Stop the session.
     pub fn stop(self) {
-        todo!()
+        let _ = self
+            .loop_event_tx
+            .send(LoopMessage::Cmd(SessionCommand::Stop));
     }
 }
 
 pub struct Session {
     id: SessionId,
-
-
+    model: LlmModel,
+    system_prompt: SystemPrompt,
     /// Receiver to receive session commands and agent events from
     cmd_rx: mpsc::Receiver<LoopMessage>,
     harness_internal_event_tx: Sender<LoopMessage>,
@@ -170,12 +127,13 @@ impl Session {
             tool_registry.register(tool);
         }
         let tool_registry = Arc::new(tool_registry);
-        let tool_defs = tool_registry.list_for_clanker();
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
         let session = Self {
             id: SessionId::new(),
+            model,
+            system_prompt,
             cmd_rx,
             harness_internal_event_tx: cmd_tx.clone(),
             event_tx,
@@ -192,28 +150,30 @@ impl Session {
         handle
     }
 
-    fn run(mut self, rt: Handle) {
+    fn run(self, rt: Handle) {
         info!(session_id = %self.id, "Session started");
 
-        let model = LlmModel::new(Arc::new(DummyProvider), "dummy");
         let tools = self.tool_registry.list_for_clanker();
         let init_agent = TypedAgent::<WaitingForUserMessage>::new(
-            model,
-            "You are a helpful coding agent.".to_string(),
+            self.model,
+            self.system_prompt.into(),
             tools,
         );
         let mut curr_state = HarnessState::WaitingForUserMessage { agent: init_agent };
-        for msg in self.cmd_rx.iter() {
+        'session_loop: for msg in self.cmd_rx.iter() {
             match msg {
                 LoopMessage::Cmd(cmd) => {
                     match cmd {
+                        SessionCommand::Stop => break 'session_loop,
                         SessionCommand::SendMessage(prompt) => {
 
                             curr_state = match curr_state {
                                 HarnessState::WaitingForUserMessage { agent } => {
-                                    let new_agent = agent.add_message(prompt);
+                                    let event_tx = self.event_tx.clone();
+                                    let new_agent = agent.add_message(prompt).add_event_callback(move |event| {
+                                        let _ = event_tx.send(SessionEvent::StreamEvent(event));
+                                    });
                                     let inbox_tx = self.harness_internal_event_tx.clone();
-                                    // todo: attach event handler function
                                     let stream_fut = new_agent.create_stream();
                                     let cancel = stream_fut.interrupt_handle();
                                     rt.spawn(async move {
@@ -252,8 +212,18 @@ impl Session {
                                             }
                                         }
                                         Either::Right(all_decided) => {
-                                            // TODO: rt spawn execution of tools
-                                            HarnessState::ToolCallsAreRunning { agent, cancel: CancellationToken::new() }
+                                            let execution = ToolExecution::new(
+                                                agent.get_batch(),
+                                                ToolAuthorization::PerTool(all_decided),
+                                                self.tool_registry.clone(),
+                                            ).run();
+                                            let cancel = execution.interrupt_handle();
+                                            let inbox_tx = self.harness_internal_event_tx.clone();
+                                            rt.spawn(async move {
+                                                let result = execution.await.resolve();
+                                                let _ = inbox_tx.send(LoopMessage::ToolBatchExecutionResult(result));
+                                            });
+                                            HarnessState::ToolCallsAreRunning { agent, cancel }
                                         }
                                     }
                                 }
@@ -274,15 +244,23 @@ impl Session {
                                     panic!("stream interrupted but harness state was not in InterruptingStream state")
                                 }
                                 StreamResult::Failed(agent) => {
-                                    // TODO: This will NOT append the partial response? Still TBD how to handle.
-                                    let new_agent = make_typeagent_new();
-                                    HarnessState::WaitingForUserMessage { agent: new_agent }
+                                    HarnessState::StreamingFailed { agent }
                                 }
                                 StreamResult::WaitingForToolResponses(agent) => {
                                     let tool_batch = agent.get_requested_tools();
                                     if self.auto_approval_policy.will_approve_all(tool_batch.iter().map(|t| t.name.clone())) {
-                                        // TODO: rt spawn execution of all tools
-                                        HarnessState::ToolCallsAreRunning { agent, cancel: CancellationToken::new() }
+                                        let execution = ToolExecution::new(
+                                            agent.get_batch(),
+                                            ToolAuthorization::AllAutoApproved,
+                                            self.tool_registry.clone(),
+                                        ).run();
+                                        let cancel = execution.interrupt_handle();
+                                        let inbox_tx = self.harness_internal_event_tx.clone();
+                                        rt.spawn(async move {
+                                            let result = execution.await.resolve();
+                                            let _ = inbox_tx.send(LoopMessage::ToolBatchExecutionResult(result));
+                                        });
+                                        HarnessState::ToolCallsAreRunning { agent, cancel }
                                     } else {
                                         let unapproved = self.auto_approval_policy.ids_needing_consent(tool_batch);
                                         HarnessState::NeedToolConsent { agent, user_tool_decisions: UserToolDecisions::new_undecided(unapproved) }
@@ -301,11 +279,13 @@ impl Session {
                         HarnessState::ToolCallsAreRunning { agent, cancel } => {
                             drop(cancel);
                             let new_agent = agent.add_all_tool_responses(tool_batch);
-                            let stream_fut = new_agent.create_stream();
+                            let event_tx = self.event_tx.clone();
+                            let stream_fut = new_agent.add_event_callback(move |event| {
+                                let _ = event_tx.send(SessionEvent::StreamEvent(event));
+                            }).create_stream();
                             let cancel = stream_fut.interrupt_handle();
                             let inbox_tx = self.harness_internal_event_tx.clone();
                             rt.spawn(async move {
-                                // TODO: Attach stream delta emit pipe.
                                 let res = stream_fut.await;
                                 inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
                             });
@@ -322,9 +302,4 @@ impl Session {
         let _ = self.event_tx.send(SessionEvent::Closed);
     }
 
-}
-
-// fake temp function to compile
-fn make_typeagent_new() -> TypedAgent<WaitingForUserMessage> {
-    todo!()
 }

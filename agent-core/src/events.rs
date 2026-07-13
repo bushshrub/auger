@@ -10,6 +10,8 @@ use tokio_util::sync::CancellationToken;
 pub enum SessionCommand {
     /// Send a message
     SendMessage(UserPrompt),
+    /// Stop the session.
+    Stop,
     /// Interrupt the current activity on the stream
     Interrupt,
     /// Make a decision on a tool.
