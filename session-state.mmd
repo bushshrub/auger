@@ -1,24 +1,72 @@
 stateDiagram-v2
-  [*] --> SessionWaitingForUser
+    direction TB
 
-  SessionWaitingForUser --> CoreStreaming: send SubmitInput to minimal loop
+    state "Waiting for user message" as Waiting
+    state "Ready to stream" as Ready
+    state "LLM streaming" as Streaming
+    state "Interrupting stream" as InterruptingStream
+    state "Stream interrupted\n(partial response retained)" as StreamInterrupted
+    state "Stream failed\n(partial response retained)" as StreamFailed
+    state "Has tool calls" as HasTools
+    state "Waiting for tool consent" as NeedConsent
+    state "Tool calls running" as RunningTools
+    state "Interrupting tool execution" as InterruptingTools
+    state "Closed" as Closed
 
-  CoreStreaming --> SessionWaitingForUser: minimal loop emits FinalAssistantResponse
-  CoreStreaming --> CoreStreamingFailed: host observes model stream error
-  CoreStreaming --> RunningAutoApprovedTools: minimal loop emits ModelToolCallBatchReady + all calls auto-approved
-  CoreStreaming --> PendingUserAction: minimal loop emits ModelToolCallBatchReady + at least one call requires user intervention
-  CoreStreaming --> SessionWaitingForUser: minimal loop handles LLM-turn Interrupt
+    [*] --> Waiting
 
-  CoreStreamingFailed --> CoreStreaming: user retries response
-  CoreStreamingFailed --> CoreStreaming: user chats, send SubmitInput to minimal loop
+    Waiting --> Ready: SendMessage
+    StreamInterrupted --> Streaming: SendMessage\n(continue partial response)
+    StreamFailed --> Streaming: SendMessage\n(continue partial response)
 
-  RunningAutoApprovedTools --> CoreStreaming: auto-approved calls done, send SubmitHostFeedback to minimal loop
-  RunningAutoApprovedTools --> SessionWaitingForUser: minimal loop handles tool-call-state Interrupt
+    Ready --> Streaming: create_stream
 
-  PendingUserAction --> PendingUserAction: user approves/denies/cancels one tool call
-  PendingUserAction --> RunningUserApprovedTools: all calls resolved + approved calls exist
-  PendingUserAction --> CoreStreaming: all calls resolved + no approved calls, send SubmitHostFeedback to minimal loop
-  PendingUserAction --> SessionWaitingForUser: minimal loop handles tool-call-state Interrupt
+    Streaming --> Waiting: stream completes\n(no tool calls)
+    Streaming --> HasTools: stream completes\n(tool calls returned)
+    Streaming --> StreamFailed: provider error
+    Streaming --> InterruptingStream: Interrupt\n(cancel stream)
 
-  RunningUserApprovedTools --> CoreStreaming: approved calls done, send SubmitHostFeedback to minimal loop
-  RunningUserApprovedTools --> SessionWaitingForUser: minimal loop handles tool-call-state Interrupt
+    InterruptingStream --> StreamInterrupted: stream returns Interrupted
+    InterruptingStream --> Streaming: pending SendMessage exists\n(continue partial response)
+
+    HasTools --> RunningTools: all calls auto-approved
+    HasTools --> NeedConsent: at least one call\nneeds consent
+
+    NeedConsent --> NeedConsent: ToolDecision\n(more decisions pending)
+    NeedConsent --> RunningTools: all decisions recorded\nstart ToolExecution
+
+    RunningTools --> Streaming: tool batch completes\nappend tool results, create_stream
+    RunningTools --> InterruptingTools: Interrupt\n(cancel tool execution)
+    InterruptingTools --> Streaming: interrupted calls resolved\nappend results, create_stream
+
+    Waiting --> Closed: Stop
+    Ready --> Closed: Stop
+    Streaming --> Closed: Stop\n(session loop exits)
+    InterruptingStream --> Closed: Stop\n(session loop exits)
+    StreamInterrupted --> Closed: Stop
+    StreamFailed --> Closed: Stop
+    HasTools --> Closed: Stop
+    NeedConsent --> Closed: Stop
+    RunningTools --> Closed: Stop\n(session loop exits)
+    InterruptingTools --> Closed: Stop\n(session loop exits)
+
+    note right of Waiting
+        The session loop owns the current state and
+        serializes external commands with internal
+        stream/tool completion messages.
+    end note
+
+    note right of InterruptingStream
+        A SendMessage received while cancellation
+        is draining is retained as pending_message.
+    end note
+
+    note right of NeedConsent
+        ToolDecision starts execution directly after
+        every non-auto-approved call is decided.
+    end note
+
+    note right of Ready
+        ReadyToStream is a transient typed-agent state;
+        the harness stores Streaming after spawning the future.
+    end note
