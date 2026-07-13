@@ -135,6 +135,19 @@ impl LlmThread<UserTurn> {
         }
     }
 
+    /// Restore a thread at a boundary where it is waiting for user input.
+    pub fn restore(messages: Vec<Message>) -> Result<Self, RestoreThreadError> {
+        match messages.last() {
+            Some(Message::System(_)) if messages.len() == 1 => {}
+            Some(Message::Assistant { tool_calls, .. }) if tool_calls.is_empty() => {}
+            _ => return Err(RestoreThreadError::NotWaitingForUser),
+        }
+        Ok(Self {
+            messages,
+            _state: UserTurn,
+        })
+    }
+
     /// Add a user prompt to the thread.
     pub fn add_user_message(self, prompt: UserPrompt) -> LlmThread<ClankerTurn> {
         let mut messages = self.messages;
@@ -144,6 +157,12 @@ impl LlmThread<UserTurn> {
             _state: ClankerTurn,
         }
     }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum RestoreThreadError {
+    #[error("thread is not waiting for user input")]
+    NotWaitingForUser,
 }
 
 impl LlmThread<ToolResultsPending> {

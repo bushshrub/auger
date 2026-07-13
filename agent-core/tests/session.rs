@@ -3,7 +3,7 @@ use std::sync::mpsc;
 
 use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 use async_trait::async_trait;
-use agent_core::{Session, SessionEvent, SystemPrompt};
+use agent_core::{Session, SessionEvent, SessionId, SystemPrompt};
 use provider::{LlmError, LlmModel, Message, StreamEvent, UserPrompt};
 use provider_dummy::{DummyProvider, DummyResponse};
 
@@ -121,6 +121,34 @@ fn session_snapshots_committed_thread_without_changing_state() {
         })
         .await
         .unwrap();
+    });
+}
+
+#[test]
+fn restores_session_id_and_committed_history() {
+    let model = LlmModel::new(Arc::new(DummyProvider::new_responses([])), "dummy");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let id = uuid::Uuid::new_v4();
+    let messages = vec![Message::System("restored system".to_string())];
+
+    runtime.block_on(async move {
+        let (owner, handle, events) = Session::restore(
+            SessionId::from_uuid(id),
+            model,
+            messages,
+            tokio::runtime::Handle::current(),
+        )
+        .unwrap();
+        assert_eq!(handle.id().as_uuid(), id);
+        assert!(matches!(
+            handle.snapshot().unwrap().messages(),
+            [Message::System(system)] if system == "restored system"
+        ));
+        owner.stop();
+        assert!(matches!(events.recv_event().unwrap(), SessionEvent::Closed));
     });
 }
 

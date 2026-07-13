@@ -2,9 +2,10 @@
 //
 // Endpoints:
 //   GET    /sessions               -> { sessions: [{ session_id, model, created_at,
-//                                        context_window, tokens: { read, write } }] }
+//                                        context_window, tokens: { read, write },
+//                                        archived: bool }] }
 //   POST   /sessions               -> { session_id, context_window, tokens }
-//   DELETE /sessions/{id}          (Bearer write) -> 204
+//   DELETE /sessions/{id}          (Bearer write) -> 204 (archives the session)
 //   POST   /sessions/{id}/input    (Bearer write) { input } -> { status: "ok" }
 //   POST   /sessions/{id}/tool     (Bearer write) { tool_call_id, approved, message? }
 //   POST   /sessions/{id}/interrupt (Bearer write) -> { status: "ok" } (fire-and-forget)
@@ -22,7 +23,7 @@ const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
 /**
  * @typedef {{ read: string, write: string }} SessionTokens
  * @typedef {{ session_id: string, model: string, created_at: number,
- *             context_window: number, tokens: SessionTokens }} SessionInfo
+ *             context_window: number, tokens: SessionTokens, archived: boolean }} SessionInfo
  * @typedef {{ session_id: string, context_window: number, tokens: SessionTokens }} SessionCreds
  * @typedef {{ id: string, name: string, arguments: string }} ToolCall
  * @typedef {{ prompt_tokens: number | null, completion_tokens: number | null,
@@ -93,11 +94,13 @@ export async function createSession(model) {
 }
 
 /**
+ * Archive a session. The server returns 204; the session remains in GET /sessions
+ * with archived: true.
  * @param {string} id
  * @param {string} writeToken
  * @returns {Promise<void>}
  */
-export async function deleteSession(id, writeToken) {
+export async function archiveSession(id, writeToken) {
 	const res = await fetch(`${BASE}/sessions/${id}`, {
 		method: 'DELETE',
 		headers: { authorization: `Bearer ${writeToken}` }

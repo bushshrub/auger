@@ -9,6 +9,7 @@ use futures::StreamExt;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::BroadcastStream;
@@ -22,9 +23,9 @@ use agent_core::{Session, SessionEvent, SessionHandle, SystemPrompt};
 use provider::{LlmModel, LlmProvider};
 
 mod server_types;
+mod config;
 mod provider_config;
 
-const DEFAULT_MODEL: &str = "qwen3.6-35b-q8";
 const DEFAULT_CONTEXT_WINDOW: usize = 113072;
 const SYSTEM_PROMPT: &str =
 "You are a precise, capable software engineering agent. You have access to tools to read files, run commands, make changes, and search the web.
@@ -109,13 +110,14 @@ async fn main() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
-    let provider = provider_config::from_env();
+    let config = config::Config::load().unwrap_or_else(|error| panic!("{error}"));
+    let addr = config.listen_addr();
+    let provider = provider_config::from_config(&config);
 
     let state = AppState {
         provider: Arc::clone(&provider),
         sessions: Arc::new(RwLock::new(HashMap::new())),
-        default_model: std::env::var("MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
+        default_model: config.model(),
     };
 
     let listener = TcpListener::bind(&addr).await.expect("bind failed");
@@ -153,7 +155,7 @@ async fn openapi() -> impl IntoResponse {
     )
 }
 
-/// List all active sessions
+/// List all sessions, including archived sessions.
 async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
     let sessions = state.sessions.read().await;
     let list: Vec<_> = sessions
@@ -163,6 +165,7 @@ async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
                 "session_id": e.handle.id().as_uuid(),
                 "model": e.model,
                 "created_at": e.created_at,
+                "archived": e.archived.load(Ordering::Relaxed),
                 "context_window": DEFAULT_CONTEXT_WINDOW,
                 "tokens": {
                     "read": e.read_token.to_string(),
@@ -241,6 +244,7 @@ async fn create_session(
             created_at,
             read_token,
             write_token,
+            archived: Arc::new(AtomicBool::new(false)),
         },
     );
     Json(
@@ -252,12 +256,10 @@ async fn create_session(
 }
 
 async fn stop_session(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    let Some(entry) = state.sessions.write().await.remove(&id) else {
+    let Some(entry) = state.sessions.read().await.get(&id).cloned() else {
         return StatusCode::NOT_FOUND;
     };
-    if let Some(owner) = entry.owner.lock().unwrap().take() {
-        owner.stop();
-    }
+    entry.archived.store(true, Ordering::Relaxed);
     StatusCode::NO_CONTENT
 }
 
@@ -403,7 +405,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_snapshot_and_delete_session() {
+    async fn create_snapshot_and_archive_session() {
         let app = router(test_state());
         let response = app
             .clone()
@@ -450,6 +452,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let response = app
+            .clone()
             .oneshot(
                 Request::delete(format!("/sessions/{id}"))
                     .header(header::AUTHORIZATION, format!("Bearer {write_token}"))
@@ -459,5 +462,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let response = app
+            .oneshot(Request::get("/sessions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let sessions: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sessions["sessions"][0]["archived"], true);
     }
 }

@@ -22,10 +22,11 @@
 	/**
 	 * @type {{
 	 *   call: import('$lib/session.svelte.js').UiToolCall,
+	 *   sessionArchived?: boolean,
 	 *   onRespond: (toolCallId: string, approved: boolean, message?: string) => Promise<void>
 	 * }}
 	 */
-	let { call, onRespond } = $props();
+	let { call, sessionArchived = false, onRespond } = $props();
 
 	/** @type {Record<string, typeof Terminal>} */
 	const TOOL_ICONS = {
@@ -195,7 +196,7 @@
 					class="overflow-x-auto rounded-md bg-destructive/10 p-2.5 font-mono text-xs text-destructive auger-scroll">{call.error}</pre>
 			{/if}
 
-			{#if isPending}
+			{#if isPending && !sessionArchived}
 				<div class="flex flex-wrap items-center gap-2 pt-1">
 					<p class="mr-auto text-xs text-muted-foreground">Approve this tool call?</p>
 					<button

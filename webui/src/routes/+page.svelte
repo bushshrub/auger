@@ -1,6 +1,6 @@
 <script>
 	import { LoaderCircle, Plus, SquareTerminal } from '@lucide/svelte';
-	import { createSession, deleteSession, listSessions } from '$lib/api.js';
+	import { archiveSession, createSession, listSessions } from '$lib/api.js';
 	import SessionSidebar from '$lib/components/SessionSidebar.svelte';
 	import SessionView from '$lib/components/SessionView.svelte';
 
@@ -40,15 +40,15 @@
 	}
 
 	/** @param {string} id */
-	async function handleDelete(id) {
+	async function handleArchive(id) {
 		const session = sessions.find((s) => s.session_id === id);
 		if (!session) return;
 		try {
-			await deleteSession(id, session.tokens.write);
+			await archiveSession(id, session.tokens.write);
 		} catch {
-			// 404 means it is already gone; refresh below reconciles either way.
+			// Non-2xx: refresh anyway to reconcile local state with server.
 		}
-		if (activeId === id) activeId = null;
+		// Do not clear activeId -- archived sessions remain selectable.
 		await refresh();
 	}
 </script>
@@ -60,7 +60,7 @@
 		{creating}
 		onSelect={(id) => (activeId = id)}
 		onCreate={handleCreate}
-		onDelete={handleDelete}
+		onArchive={handleArchive}
 	/>
 
 	<div class="flex min-w-0 flex-1 flex-col">
@@ -77,7 +77,7 @@
 				>
 					<option value="">select session…</option>
 					{#each sessions as s (s.session_id)}
-						<option value={s.session_id}>{s.session_id.slice(0, 8)} · {s.model}</option>
+						<option value={s.session_id}>{s.session_id.slice(0, 8)} · {s.model}{s.archived ? ' [archived]' : ''}</option>
 					{/each}
 				</select>
 			{/if}

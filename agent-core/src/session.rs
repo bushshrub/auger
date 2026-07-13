@@ -12,7 +12,7 @@ use std::sync::{mpsc, Arc};
 use std::sync::mpsc::Sender;
 use either::Either;
 use tokio::runtime::Handle;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(uuid::Uuid);
@@ -48,6 +48,10 @@ impl SessionId {
 
     pub fn as_uuid(self) -> uuid::Uuid {
         self.0
+    }
+
+    pub fn from_uuid(id: uuid::Uuid) -> Self {
+        Self(id)
     }
 }
 
@@ -153,8 +157,6 @@ impl SessionEventReceiver {
 
 pub struct Session {
     id: SessionId,
-    model: LlmModel,
-    system_prompt: SystemPrompt,
     /// Receiver to receive session commands and agent events from
     cmd_rx: mpsc::Receiver<LoopMessage>,
     harness_internal_event_tx: Sender<LoopMessage>,
@@ -180,18 +182,78 @@ impl Session {
         tools: Vec<Box<dyn Tool>>,
         auto_approved_tools: Vec<String>,
     ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
+        Self::spawn(
+            SessionId::new(),
+            model,
+            system_prompt,
+            None,
+            rt,
+            tools,
+            auto_approved_tools,
+        ).expect("new session history is valid")
+    }
+
+    /// Restore a session from committed history at a user-input boundary.
+    pub fn restore(
+        id: SessionId,
+        model: LlmModel,
+        messages: Vec<provider::Message>,
+        rt: Handle,
+    ) -> Result<(SessionOwner, SessionHandle, SessionEventReceiver), provider::RestoreThreadError> {
+        Self::restore_with_tools(id, model, messages, rt, Vec::new(), Vec::new())
+    }
+
+    pub fn restore_with_tools(
+        id: SessionId,
+        model: LlmModel,
+        messages: Vec<provider::Message>,
+        rt: Handle,
+        tools: Vec<Box<dyn Tool>>,
+        auto_approved_tools: Vec<String>,
+    ) -> Result<(SessionOwner, SessionHandle, SessionEventReceiver), provider::RestoreThreadError> {
+        Self::spawn(
+            id,
+            model,
+            SystemPrompt::new(String::new()),
+            Some(messages),
+            rt,
+            tools,
+            auto_approved_tools,
+        )
+    }
+
+    fn spawn(
+        id: SessionId,
+        model: LlmModel,
+        system_prompt: SystemPrompt,
+        messages: Option<Vec<provider::Message>>,
+        rt: Handle,
+        tools: Vec<Box<dyn Tool>>,
+        auto_approved_tools: Vec<String>,
+    ) -> Result<(SessionOwner, SessionHandle, SessionEventReceiver), provider::RestoreThreadError> {
         let mut tool_registry = ToolRegistry::new();
         for tool in tools {
             tool_registry.register(tool);
         }
         let tool_registry = Arc::new(tool_registry);
+        let llm_tools = tool_registry.list_for_clanker();
+        let init_agent = match messages {
+            Some(messages) => TypedAgent::<WaitingForUserMessage>::restore(
+                model,
+                messages,
+                llm_tools,
+            )?,
+            None => TypedAgent::<WaitingForUserMessage>::new(
+                model,
+                system_prompt.into(),
+                llm_tools,
+            ),
+        };
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
         let session = Self {
-            id: SessionId::new(),
-            model,
-            system_prompt,
+            id,
             cmd_rx,
             harness_internal_event_tx: cmd_tx.clone(),
             event_tx,
@@ -206,21 +268,14 @@ impl Session {
 
         std::thread::Builder::new()
             .name(format!("auger-session-{}", session.id.0))
-            .spawn(move || session.run(rt))
+            .spawn(move || session.run(rt, init_agent))
             .expect("failed to spawn session thread");
 
-        (owner, handle, events)
+        Ok((owner, handle, events))
     }
 
-    fn run(self, rt: Handle) {
+    fn run(self, rt: Handle, init_agent: TypedAgent<WaitingForUserMessage>) {
         info!(session_id = %self.id, "Session started");
-
-        let tools = self.tool_registry.list_for_clanker();
-        let init_agent = TypedAgent::<WaitingForUserMessage>::new(
-            self.model,
-            self.system_prompt.into(),
-            tools,
-        );
         let mut thread_snapshot = ThreadSnapshot {
             messages: init_agent.snapshot(),
         };
@@ -234,7 +289,7 @@ impl Session {
                             let _ = reply_tx.send(thread_snapshot.clone());
                         }
                         SessionCommand::SendMessage(prompt) => {
-
+                            info!(session_id = %self.id, "Received user message {:?}", prompt);
                             curr_state = match curr_state {
                                 HarnessState::WaitingForUserMessage { agent } => {
                                     let event_tx = self.event_tx.clone();
@@ -245,7 +300,9 @@ impl Session {
                                     let inbox_tx = self.harness_internal_event_tx.clone();
                                     let stream_fut = new_agent.create_stream();
                                     let cancel = stream_fut.interrupt_handle();
+                                    let sess_id = self.id;
                                     rt.spawn(async move {
+                                        info!(session_id=%sess_id, "Starting stream");
                                         let res = stream_fut.await;
                                         inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
                                     });
@@ -360,9 +417,11 @@ impl Session {
                                     HarnessState::StreamingFailed { agent }
                                 }
                                 StreamResult::WaitingForToolResponses(agent) => {
+                                    debug!(session_id = %self.id, "agent has called tools");
                                     thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
                                     let tool_batch = agent.get_requested_tools();
                                     if self.auto_approval_policy.will_approve_all(tool_batch.iter().map(|t| t.name.clone())) {
+                                        info!(session_id=%self.id, "automatically running all tools");
                                         let execution = ToolExecution::new(
                                             agent.get_batch(),
                                             ToolAuthorization::AllAutoApproved,
@@ -377,6 +436,7 @@ impl Session {
                                         });
                                         HarnessState::ToolCallsAreRunning { agent, cancel }
                                     } else {
+                                        info!(session_id=%self.id, "Some tools require consent");
                                         let unapproved = self.auto_approval_policy.ids_needing_consent(tool_batch);
                                         let tool_calls = agent
                                             .get_requested_tools()
@@ -390,6 +450,7 @@ impl Session {
                                     }
                                 }
                                 StreamResult::WaitingForUserMessage(agent) => {
+                                    info!(session_id=%self.id, "No tools called");
                                     thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
                                     HarnessState::WaitingForUserMessage { agent }
                                 }

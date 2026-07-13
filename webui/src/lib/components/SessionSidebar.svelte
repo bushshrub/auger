@@ -1,5 +1,5 @@
 <script>
-	import { LoaderCircle, Plus, SquareTerminal, X } from '@lucide/svelte';
+	import { Archive, LoaderCircle, Plus, SquareTerminal } from '@lucide/svelte';
 
 	/**
 	 * @type {{
@@ -8,10 +8,13 @@
 	 *   creating: boolean,
 	 *   onSelect: (id: string) => void,
 	 *   onCreate: (model: string) => void,
-	 *   onDelete: (id: string) => void
+	 *   onArchive: (id: string) => void
 	 * }}
 	 */
-	let { sessions, activeId, creating, onSelect, onCreate, onDelete } = $props();
+	let { sessions, activeId, creating, onSelect, onCreate, onArchive } = $props();
+
+	const activeSessions = $derived(sessions.filter((s) => !s.archived));
+	const archivedSessions = $derived(sessions.filter((s) => s.archived));
 
 	// Empty means "let the server pick its default model".
 	let model = $state('');
@@ -66,35 +69,62 @@
 		{#if sessions.length === 0}
 			<p class="px-2 py-3 font-mono text-xs text-muted-foreground">no sessions yet</p>
 		{:else}
-			<ul class="flex flex-col gap-1">
-				{#each sessions as s (s.session_id)}
-					<li class="group relative">
-						<button
-							type="button"
-							onclick={() => onSelect(s.session_id)}
-							aria-current={s.session_id === activeId ? 'true' : undefined}
-							class={`flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left hover:bg-sidebar-accent ${s.session_id === activeId ? 'bg-sidebar-accent' : ''}`}
-						>
-							<span
-								class={`font-mono text-xs ${s.session_id === activeId ? 'text-primary' : 'text-foreground'}`}
+			{#if activeSessions.length > 0}
+				<ul class="flex flex-col gap-1">
+					{#each activeSessions as s (s.session_id)}
+						<li class="group relative">
+							<button
+								type="button"
+								onclick={() => onSelect(s.session_id)}
+								aria-current={s.session_id === activeId ? 'true' : undefined}
+								class={`flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left hover:bg-sidebar-accent ${s.session_id === activeId ? 'bg-sidebar-accent' : ''}`}
 							>
-								{s.session_id.slice(0, 8)}
-							</span>
-							<span class="font-mono text-[10px] text-muted-foreground">
-								{s.model} · {formatTime(s.created_at)}
-							</span>
-						</button>
-						<button
-							type="button"
-							onclick={() => onDelete(s.session_id)}
-							aria-label={`Delete session ${s.session_id.slice(0, 8)}`}
-							class="absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-destructive/15 hover:text-destructive focus-visible:opacity-100"
-						>
-							<X class="size-3.5" aria-hidden="true" />
-						</button>
-					</li>
-				{/each}
-			</ul>
+								<span
+									class={`font-mono text-xs ${s.session_id === activeId ? 'text-primary' : 'text-foreground'}`}
+								>
+									{s.session_id.slice(0, 8)}
+								</span>
+								<span class="font-mono text-[10px] text-muted-foreground">
+									{s.model} · {formatTime(s.created_at)}
+								</span>
+							</button>
+							<button
+								type="button"
+								onclick={() => onArchive(s.session_id)}
+								aria-label={`Archive session ${s.session_id.slice(0, 8)}`}
+								class="absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100"
+							>
+								<Archive class="size-3.5" aria-hidden="true" />
+							</button>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+
+			{#if archivedSessions.length > 0}
+				<p class="px-2 pt-3 pb-1 font-mono text-[10px] tracking-wider text-muted-foreground uppercase">
+					archived
+				</p>
+				<ul class="flex flex-col gap-1">
+					{#each archivedSessions as s (s.session_id)}
+						<li>
+							<button
+								type="button"
+								onclick={() => onSelect(s.session_id)}
+								aria-current={s.session_id === activeId ? 'true' : undefined}
+								class={`flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left opacity-60 hover:bg-sidebar-accent hover:opacity-100 ${s.session_id === activeId ? 'bg-sidebar-accent opacity-100' : ''}`}
+							>
+								<span class="font-mono text-xs text-muted-foreground">
+									{s.session_id.slice(0, 8)}
+								</span>
+								<span class="font-mono text-[10px] text-muted-foreground">
+									{s.model} · {formatTime(s.created_at)}
+								</span>
+							</button>
+						</li>
+					{/each}
+				</ul>
+			{/if}
 		{/if}
 	</nav>
 

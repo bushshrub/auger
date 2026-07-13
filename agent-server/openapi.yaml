@@ -5,10 +5,10 @@ info:
 paths:
   /sessions:
     get:
-      summary: List active sessions
+      summary: List sessions
       responses:
         "200":
-          description: Active sessions
+          description: Sessions, including archived sessions
           content:
             application/json:
               schema:
@@ -33,11 +33,11 @@ paths:
               schema: { $ref: "#/components/schemas/CreateSessionResponse" }
   /sessions/{id}:
     delete:
-      summary: Stop and remove a session
+      summary: Archive a session
       security: [{ bearerAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/SessionId" }]
       responses:
-        "204": { description: Session stopped }
+        "204": { description: Session archived }
         "401": { description: Invalid write token }
         "404": { description: Session not found }
   /sessions/{id}/input:
@@ -164,11 +164,12 @@ components:
         arguments: { type: string }
     Session:
       type: object
-      required: [session_id, model, created_at, context_window, tokens]
+      required: [session_id, model, created_at, archived, context_window, tokens]
       properties:
         session_id: { type: string, format: uuid }
         model: { type: string }
         created_at: { type: integer }
+        archived: { type: boolean }
         context_window: { type: integer }
         tokens:
           type: object

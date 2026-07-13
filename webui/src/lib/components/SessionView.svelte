@@ -59,11 +59,17 @@
 <div class="flex min-h-0 flex-1 flex-col">
 	<!-- Status bar -->
 	<header class="flex items-center gap-3 border-b border-border px-4 py-2">
-		<span
-			class={`size-2 rounded-full ${agent.connected ? 'bg-success' : 'bg-destructive'}`}
-			role="status"
-			aria-label={agent.connected ? 'Connected' : 'Disconnected'}
-		></span>
+		{#if session.archived}
+			<span
+				class="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+			>archived</span>
+		{:else}
+			<span
+				class={`size-2 rounded-full ${agent.connected ? 'bg-success' : 'bg-destructive'}`}
+				role="status"
+				aria-label={agent.connected ? 'Connected' : 'Disconnected'}
+			></span>
+		{/if}
 		<span class="font-mono text-xs text-foreground">{session.model}</span>
 		<span class="font-mono text-[10px] text-muted-foreground">
 			{session.session_id.slice(0, 8)}
@@ -107,7 +113,11 @@
 					<AssistantMessage {item} />
 				{:else}
 					<div class="pl-7">
-						<ToolCallCard call={item.call} onRespond={(id, ok, msg) => agent.respond(id, ok, msg)} />
+						<ToolCallCard
+							call={item.call}
+							sessionArchived={session.archived}
+							onRespond={(id, ok, msg) => agent.respond(id, ok, msg)}
+						/>
 					</div>
 				{/if}
 			{/each}
@@ -123,11 +133,17 @@
 	<!-- Composer -->
 	<div class="border-t border-border px-4 py-3">
 		<div class="mx-auto w-full max-w-3xl">
-			<Composer
-				busy={agent.busy}
-				onSend={(text) => agent.send(text)}
-				onInterrupt={() => agent.interrupt()}
-			/>
+			{#if session.archived}
+				<p class="py-2 text-center font-mono text-xs text-muted-foreground">
+					this session is archived and cannot accept new messages
+				</p>
+			{:else}
+				<Composer
+					busy={agent.busy}
+					onSend={(text) => agent.send(text)}
+					onInterrupt={() => agent.interrupt()}
+				/>
+			{/if}
 		</div>
 	</div>
 </div>

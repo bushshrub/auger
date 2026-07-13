@@ -2,6 +2,7 @@
 use agent_core::{SessionEvent, SessionHandle, SessionOwner};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicBool;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -15,6 +16,7 @@ pub(crate) struct SessionEntry {
     pub(crate) created_at: u64,
     pub(crate) read_token: Uuid,
     pub(crate) write_token: Uuid,
+    pub(crate) archived: Arc<AtomicBool>,
 }
 
 #[derive(Deserialize, Debug)]

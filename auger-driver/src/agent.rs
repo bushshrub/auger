@@ -1,7 +1,7 @@
 use crate::streaming::LlmStreaming as LlmStreamingFuture;
 use getset::Getters;
 use provider::thread::{ClankerTurn, UserTurn};
-use provider::{LlmModel, LlmThread, ToolDefinition, UserPrompt};
+use provider::{LlmModel, LlmThread, RestoreThreadError, ToolDefinition, UserPrompt};
 use tokio_util::sync::CancellationToken;
 /// Synchronous state machine for the auger driver.
 #[derive(Getters)]
@@ -41,6 +41,20 @@ impl TypedAgent<WaitingForUserMessage> {
             tools,
             state,
         }
+    }
+
+    /// Restore an agent from committed messages at a user-input boundary.
+    pub fn restore(
+        model: LlmModel,
+        messages: Vec<provider::Message>,
+        tools: Vec<ToolDefinition>,
+    ) -> Result<Self, RestoreThreadError> {
+        let thread = LlmThread::restore(messages)?;
+        Ok(Self {
+            model,
+            tools,
+            state: WaitingForUserMessage { thread },
+        })
     }
 
     /// Add a user message to the driver and transition it to the [`ReadyToStream`] state.

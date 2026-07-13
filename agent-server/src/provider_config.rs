@@ -5,6 +5,8 @@ use provider_anthropic::AnthropicProvider;
 use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
 use provider_openai_responses::OpenAiResponsesProvider;
 
+use crate::config::Config;
+
 const DEFAULT_OPENAI_BASE_URL: &str = "http://server-slop:8080/v1/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,22 +27,22 @@ impl ProviderType {
     }
 }
 
-pub(crate) fn from_env() -> Arc<dyn LlmProvider> {
-    let provider_type = std::env::var("PROVIDER_TYPE").unwrap_or_else(|_| "openai-responses".to_string());
+pub(crate) fn from_config(config: &Config) -> Arc<dyn LlmProvider> {
+    let provider_type = config.provider_type();
     let provider_type = ProviderType::parse(&provider_type).unwrap_or_else(|error| panic!("{error}"));
-    let api_key = std::env::var("PROVIDER_API_KEY").unwrap_or_default();
+    let api_key = config.provider_api_key();
 
     match provider_type {
         ProviderType::Anthropic => {
-            let base_url = std::env::var("PROVIDER_BASE_URL").unwrap_or_default();
+            let base_url = config.provider_base_url().unwrap_or_default();
             Arc::new(AnthropicProvider::new(api_key, base_url))
         }
         ProviderType::OpenAiChatCompletions => {
-            let base_url = std::env::var("PROVIDER_BASE_URL").unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string());
+            let base_url = config.provider_base_url().unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
             Arc::new(OpenAiChatCompletionsProvider::new(api_key, base_url))
         }
         ProviderType::OpenAiResponses => {
-            let base_url = std::env::var("PROVIDER_BASE_URL").unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string());
+            let base_url = config.provider_base_url().unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
             Arc::new(OpenAiResponsesProvider::new(api_key, base_url))
         }
     }
