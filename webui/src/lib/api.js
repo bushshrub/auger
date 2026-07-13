@@ -7,6 +7,7 @@
 //   DELETE /sessions/{id}          (Bearer write) -> 204
 //   POST   /sessions/{id}/input    (Bearer write) { input } -> { status: "ok" }
 //   POST   /sessions/{id}/tool     (Bearer write) { tool_call_id, approved, message? }
+//   POST   /sessions/{id}/interrupt (Bearer write) -> { status: "ok" } (fire-and-forget)
 //   GET    /sessions/{id}/events   (Bearer read)  -> SSE, one SessionEvent JSON per frame
 //   GET    /sessions/{id}/snapshot (Bearer read)  -> { messages: SnapshotMessage[] }
 //
@@ -38,6 +39,7 @@ const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
  *   | { type: 'tool_call_result', id: string, result: string }
  *   | { type: 'tool_call_error', id: string, error: string }
  *   | { type: 'done', usage: TokenUsage | null, stop_reason: string | null }
+ *   | { type: 'interrupted' }
  *   | { type: 'closed' }
  * )} SessionEvent
  *
@@ -140,6 +142,21 @@ export async function respondToToolCall(id, writeToken, toolCallId, approved, me
 			authorization: `Bearer ${writeToken}`
 		},
 		body: JSON.stringify(body)
+	});
+	if (!res.ok) throw await toError(res);
+}
+
+/**
+ * Interrupt in-flight generation or tool execution. Fire-and-forget: the
+ * outcome arrives on the event stream (`interrupted` / `tool_call_error`).
+ * @param {string} id
+ * @param {string} writeToken
+ * @returns {Promise<void>}
+ */
+export async function interruptSession(id, writeToken) {
+	const res = await fetch(`${BASE}/sessions/${id}/interrupt`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${writeToken}` }
 	});
 	if (!res.ok) throw await toError(res);
 }

@@ -68,6 +68,19 @@ paths:
         "200": { $ref: "#/components/responses/Ok" }
         "401": { description: Invalid write token }
         "404": { description: Session not found }
+  /sessions/{id}/interrupt:
+    post:
+      summary: Interrupt in-flight generation or tool execution
+      description: >-
+        Fire-and-forget; the outcome is observed on the event stream as an
+        `interrupted` event (stream interruption) or `tool_call_error` events
+        (cancelled tool calls). Ignored if the session is idle.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/SessionId" }]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { description: Invalid write token }
+        "404": { description: Session not found }
   /sessions/{id}/snapshot:
     get:
       summary: Get committed conversation history
@@ -216,6 +229,9 @@ components:
             type: { const: tool_call_error }
             id: { type: string }
             error: { type: string }
+        - type: object
+          required: [type]
+          properties: { type: { const: interrupted } }
         - type: object
           required: [type]
           properties:

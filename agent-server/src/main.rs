@@ -19,10 +19,10 @@ use crate::server_types::{
     ApproveRequest, CreateSessionRequest, SessionEntry, SnapshotMessage, UserInputRequest,
 };
 use agent_core::{Session, SessionEvent, SessionHandle, SystemPrompt};
-use provider::LlmModel;
-use provider_openai_responses::OpenAiResponsesProvider;
+use provider::{LlmModel, LlmProvider};
 
 mod server_types;
+mod provider_config;
 
 const DEFAULT_MODEL: &str = "qwen3.6-35b-q8";
 const DEFAULT_CONTEXT_WINDOW: usize = 113072;
@@ -45,8 +45,7 @@ const SYSTEM_PROMPT: &str =
 
 #[derive(Clone)]
 struct AppState {
-    // TODO: support multiple providers
-    provider: Arc<OpenAiResponsesProvider>,
+    provider: Arc<dyn LlmProvider>,
     sessions: Arc<RwLock<HashMap<Uuid, SessionEntry>>>,
     default_model: String,
 }
@@ -111,11 +110,7 @@ async fn main() {
         .init();
 
     let addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
-    let base_url = std::env::var("PROVIDER_BASE_URL")
-        .unwrap_or_else(|_| "http://server-slop:8080/v1/".to_string());
-    let api_key = std::env::var("PROVIDER_API_KEY").unwrap_or_default();
-
-    let provider = Arc::new(OpenAiResponsesProvider::new(api_key, base_url));
+    let provider = provider_config::from_env();
 
     let state = AppState {
         provider: Arc::clone(&provider),
@@ -135,6 +130,7 @@ fn router(state: AppState) -> Router {
         .route("/sessions/{id}", delete(stop_session))
         .route("/sessions/{id}/input", post(send_input))
         .route("/sessions/{id}/tool", post(respond_to_tool_call))
+        .route("/sessions/{id}/interrupt", post(interrupt_session))
         .route_layer(middleware::from_fn_with_state(state.clone(), write_auth));
 
     let read_routes = Router::new()
@@ -295,6 +291,17 @@ async fn respond_to_tool_call(
     Json(json!({ "status": "ok" }))
 }
 
+/// Interrupt in-flight generation or tool execution. Fire-and-forget: the
+/// outcome is observed on the event stream (`interrupted` / tool_call_error).
+#[tracing::instrument(skip(session_handle))]
+async fn interrupt_session(
+    Extension(session_handle): Extension<SessionHandle>,
+) -> impl IntoResponse {
+    debug!(session_id = %session_handle.id(), "Interrupt requested");
+    session_handle.interrupt().expect("closed");
+    Json(json!({ "status": "ok" }))
+}
+
 /// Get a point-in-time snapshot of the session's conversation history.
 async fn snapshot(Extension(session_handle): Extension<SessionHandle>) -> impl IntoResponse {
     match tokio::task::spawn_blocking(move || session_handle.snapshot()).await {
@@ -363,6 +370,7 @@ fn session_event_json(event: SessionEvent) -> serde_json::Value {
             "id": id,
             "error": error,
         }),
+        SessionEvent::Interrupted => json!({ "type": "interrupted" }),
         SessionEvent::Closed => json!({ "type": "closed" }),
     }
 }
@@ -376,10 +384,7 @@ mod tests {
 
     fn test_state() -> AppState {
         AppState {
-            provider: Arc::new(OpenAiResponsesProvider::new(
-                "test".to_string(),
-                "http://127.0.0.1:1/v1/".to_string(),
-            )),
+            provider: provider_config::from_env_for_test(),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             default_model: "test-model".to_string(),
         }
@@ -431,6 +436,18 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let snapshot: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(snapshot["messages"], json!([]));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/sessions/{id}/interrupt"))
+                    .header(header::AUTHORIZATION, format!("Bearer {write_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
 
         let response = app
             .oneshot(

@@ -123,7 +123,11 @@
 	<!-- Composer -->
 	<div class="border-t border-border px-4 py-3">
 		<div class="mx-auto w-full max-w-3xl">
-			<Composer busy={agent.busy} onSend={(text) => agent.send(text)} />
+			<Composer
+				busy={agent.busy}
+				onSend={(text) => agent.send(text)}
+				onInterrupt={() => agent.interrupt()}
+			/>
 		</div>
 	</div>
 </div>

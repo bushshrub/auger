@@ -417,6 +417,7 @@ impl Session {
                                     }
                                     None => {
                                         thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
+                                        let _ = self.event_tx.send(SessionEvent::Interrupted);
                                         HarnessState::StreamingInterrupted { agent }
                                     }
                                 }

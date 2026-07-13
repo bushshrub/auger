@@ -1,14 +1,15 @@
 <script>
-	import { CornerDownLeft, LoaderCircle } from '@lucide/svelte';
+	import { CornerDownLeft, LoaderCircle, Square } from '@lucide/svelte';
 
 	/**
 	 * @type {{
 	 *   busy: boolean,
 	 *   disabled?: boolean,
-	 *   onSend: (content: string) => Promise<void>
+	 *   onSend: (content: string) => Promise<void>,
+	 *   onInterrupt: () => void
 	 * }}
 	 */
-	let { busy, disabled = false, onSend } = $props();
+	let { busy, disabled = false, onSend, onInterrupt } = $props();
 
 	let value = $state('');
 	let sending = $state(false);
@@ -54,6 +55,16 @@
 			aria-label="Message the agent"
 			class="max-h-48 min-h-12 flex-1 resize-none bg-transparent py-2 font-mono text-sm text-foreground outline-none placeholder:text-muted-foreground/60 disabled:opacity-50 auger-scroll"
 		></textarea>
+		{#if busy}
+			<button
+				type="button"
+				onclick={onInterrupt}
+				class="mb-1 flex items-center gap-1.5 rounded-md border border-destructive/50 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
+			>
+				<Square class="size-3.5" aria-hidden="true" />
+				Stop
+			</button>
+		{/if}
 		<button
 			type="button"
 			onclick={submit}

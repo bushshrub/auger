@@ -162,6 +162,13 @@ impl ToolExecution<Completed> {
 
 impl ToolExecution<Interrupted> {
     pub(crate) fn resolve(self) -> ToolBatch<Resolved> {
+        // Matches the result text interrupt_remaining() records for the model.
+        for call in self.batch.requested() {
+            let _ = self.event_tx.send(SessionEvent::ToolCallError {
+                id: call.id.clone(),
+                error: "Tool call interrupted before execution".to_string(),
+            });
+        }
         self.batch.interrupt_remaining()
     }
 }

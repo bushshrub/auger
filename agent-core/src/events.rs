@@ -41,6 +41,9 @@ pub enum SessionEvent {
     ToolCallResult { id: String, result: String },
     /// A tool call failed, or was denied by the user.
     ToolCallError { id: String, error: String },
+    /// The in-flight LLM stream was interrupted; the session is waiting for
+    /// user input with the partial response retained.
+    Interrupted,
     /// The session has stopped and will not emit further events.
     Closed,
 }

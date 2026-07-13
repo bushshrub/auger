@@ -78,7 +78,8 @@ fn session_streams_all_provider_deltas() {
                     SessionEvent::StreamEvent(_)
                     | SessionEvent::ToolConsentRequired { .. }
                     | SessionEvent::ToolCallResult { .. }
-                    | SessionEvent::ToolCallError { .. } => {}
+                    | SessionEvent::ToolCallError { .. }
+                    | SessionEvent::Interrupted => {}
                     SessionEvent::Closed => panic!("session closed before stream completed"),
                 }
             }
@@ -210,7 +211,8 @@ fn session_returns_to_waiting_for_user_message_after_streaming() {
                     SessionEvent::StreamEvent(_)
                     | SessionEvent::ToolConsentRequired { .. }
                     | SessionEvent::ToolCallResult { .. }
-                    | SessionEvent::ToolCallError { .. } => {}
+                    | SessionEvent::ToolCallError { .. }
+                    | SessionEvent::Interrupted => {}
                     SessionEvent::Closed => panic!("session closed during first stream"),
                 }
             }
@@ -235,7 +237,8 @@ fn session_returns_to_waiting_for_user_message_after_streaming() {
                     SessionEvent::StreamEvent(_)
                     | SessionEvent::ToolConsentRequired { .. }
                     | SessionEvent::ToolCallResult { .. }
-                    | SessionEvent::ToolCallError { .. } => {}
+                    | SessionEvent::ToolCallError { .. }
+                    | SessionEvent::Interrupted => {}
                     SessionEvent::Closed => panic!("session closed during second stream"),
                 }
             }
@@ -310,7 +313,8 @@ fn session_runs_two_agentic_iterations_with_auto_approved_tool() {
                     SessionEvent::StreamEvent(_)
                     | SessionEvent::ToolConsentRequired { .. }
                     | SessionEvent::ToolCallResult { .. }
-                    | SessionEvent::ToolCallError { .. } => {}
+                    | SessionEvent::ToolCallError { .. }
+                    | SessionEvent::Interrupted => {}
                     SessionEvent::Closed => panic!("session closed before stream completed"),
                 }
             }
@@ -372,6 +376,7 @@ fn session_interrupts_running_tool_and_submits_interrupted_result() {
             handle.interrupt().unwrap();
 
             let mut text = String::new();
+            let mut error_events = Vec::new();
             loop {
                 match events.recv_event().unwrap() {
                     SessionEvent::StreamEvent(StreamEvent::TextDelta(delta)) => {
@@ -379,15 +384,19 @@ fn session_interrupts_running_tool_and_submits_interrupted_result() {
                     }
                     SessionEvent::StreamEvent(StreamEvent::Done { stop_reason, .. })
                         if stop_reason.as_deref() == Some("stop") => break,
+                    SessionEvent::ToolCallError { id, error } => error_events.push((id, error)),
                     SessionEvent::StreamEvent(_)
                     | SessionEvent::ToolConsentRequired { .. }
                     | SessionEvent::ToolCallResult { .. }
-                    | SessionEvent::ToolCallError { .. } => {}
+                    | SessionEvent::Interrupted => {}
                     SessionEvent::Closed => panic!("session closed before tool interruption completed"),
                 }
             }
 
             assert_eq!(text, "interrupted");
+            assert!(error_events.iter().any(|(id, error)| {
+                id == "call-pending" && error.contains("interrupted before execution")
+            }));
             let requests = provider_handle.requests();
             let results = requests[1]
                 .messages()
@@ -470,7 +479,8 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
                     SessionEvent::Closed => panic!("session closed before approval"),
                     SessionEvent::StreamEvent(_)
                     | SessionEvent::ToolCallResult { .. }
-                    | SessionEvent::ToolCallError { .. } => {}
+                    | SessionEvent::ToolCallError { .. }
+                    | SessionEvent::Interrupted => {}
                 }
             }
 
@@ -496,7 +506,9 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
                     SessionEvent::ToolCallResult { id, .. } => result_events.push(id),
                     SessionEvent::ToolCallError { id, error } => error_events.push((id, error)),
                     SessionEvent::Closed => panic!("session closed before second stream completed"),
-                    SessionEvent::StreamEvent(_) | SessionEvent::ToolConsentRequired { .. } => {}
+                    SessionEvent::StreamEvent(_)
+                    | SessionEvent::ToolConsentRequired { .. }
+                    | SessionEvent::Interrupted => {}
                 }
             }
 
@@ -528,6 +540,46 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
         })
         .await
         .expect("session interaction task should complete");
+    });
+}
+
+#[test]
+fn session_emits_interrupted_event_when_stream_is_interrupted() {
+    let provider = DummyProvider::new_responses([DummyResponse::PendingStream(vec![Ok(
+        StreamEvent::TextDelta("partial".to_string()),
+    )])]);
+    let model = LlmModel::new(Arc::new(provider), "dummy");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async move {
+        let (_owner, handle, events) = Session::start(
+            model,
+            SystemPrompt::new("system".to_string()),
+            tokio::runtime::Handle::current(),
+        );
+        tokio::task::spawn_blocking(move || {
+            handle
+                .send_message(UserPrompt::new("start".to_string()))
+                .unwrap();
+            assert!(matches!(
+                events.recv_event().unwrap(),
+                SessionEvent::StreamEvent(StreamEvent::TextDelta(_))
+            ));
+
+            handle.interrupt().unwrap();
+            loop {
+                match events.recv_event().unwrap() {
+                    SessionEvent::Interrupted => break,
+                    SessionEvent::Closed => panic!("session closed before interrupted event"),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
     });
 }
 

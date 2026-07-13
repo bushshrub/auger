@@ -5,7 +5,14 @@
 // subscribes to /events. On stream loss it reconnects with backoff and
 // rebuilds from a fresh snapshot (the server does not replay events).
 
-import { ApiError, getSnapshot, respondToToolCall, sendInput, subscribeEvents } from './api.js';
+import {
+	ApiError,
+	getSnapshot,
+	interruptSession,
+	respondToToolCall,
+	sendInput,
+	subscribeEvents
+} from './api.js';
 
 /**
  * @typedef {import('./api.js').SessionEvent} SessionEvent
@@ -132,6 +139,18 @@ export class AugerSession {
 		await respondToToolCall(this.sessionId, this.tokens.write, toolCallId, approved, message);
 		const call = this.#findCall(toolCallId);
 		if (call) call.status = approved ? 'running' : 'denied';
+	}
+
+	/**
+	 * Interrupt the in-flight turn. Fire-and-forget; the `interrupted` event
+	 * (or tool_call_error events) arrive on the stream.
+	 */
+	async interrupt() {
+		try {
+			await interruptSession(this.sessionId, this.tokens.write);
+		} catch (err) {
+			this.error = err instanceof Error ? err.message : String(err);
+		}
 	}
 
 	/** @param {string} id */
@@ -265,6 +284,12 @@ export class AugerSession {
 				// The turn continues (tool execution, then another stream) while
 				// any tool call is still awaiting consent or running.
 				this.busy = this.#hasUnresolvedTools();
+				break;
+			}
+			case 'interrupted': {
+				// Stream cut short; the partial response is committed server-side.
+				this.#closeStreamingBubble();
+				this.busy = false;
 				break;
 			}
 			case 'closed': {
