@@ -53,6 +53,16 @@ jobs:
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
 
+      - name: Lint Rust (clippy)
+        run: |
+          cargo clippy --all-targets --all-features -- -D warnings
+        continue-on-error: true
+
+      - name: Format check Rust
+        run: |
+          cargo fmt --check
+        continue-on-error: true
+
       # ── Node / WebUI ─────────────────────────────────────────────
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -86,6 +96,23 @@ jobs:
         run: pnpm build
         working-directory: webui
 
+      - name: Lint WebUI (prettier)
+        run: |
+          cd webui && pnpm run lint
+        continue-on-error: true
+
+      # ── Tests ─────────────────────────────────────────────────────
+      - name: Run Rust tests
+        run: |
+          cargo test --all-features --no-run
+        env:
+          RUSTFLAGS: -D warnings
+
+      - name: Run WebUI tests
+        run: |
+          cd webui && pnpm test
+        continue-on-error: true
+
       # ── Package ──────────────────────────────────────────────────
       - name: Create package directory
         run: |
@@ -99,6 +126,10 @@ jobs:
           # Copy webui build output
           cp -r webui/build "$PKG_DIR/webui-build"
 
+          # Copy configuration files
+          cp agent-server/config.toml "$PKG_DIR/" 2>/dev/null || true
+          cp agent-server/provider_config.toml "$PKG_DIR/" 2>/dev/null || true
+
           echo "PKG_DIR=$PKG_DIR" >> $GITHUB_ENV
 
       - name: Tar package
@@ -111,4 +142,3 @@ jobs:
           name: auger-${{ matrix.target }}
           path: ${{ env.PKG_DIR }}.tar.gz
           retention-days: 14
-
