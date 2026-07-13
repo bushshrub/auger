@@ -180,9 +180,44 @@ impl Session {
                                         let res = stream_fut.await;
                                         inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
                                     });
-                                    HarnessState::Streaming {
-                                        cancel,
-                                    }}
+                                    HarnessState::Streaming { cancel }}
+                                HarnessState::StreamingInterrupted { agent } => {
+                                    let event_tx = self.event_tx.clone();
+                                    let new_agent = agent
+                                        .add_message_to_continue(prompt, true)
+                                        .add_event_callback(move |event| {
+                                            let _ = event_tx.send(SessionEvent::StreamEvent(event));
+                                        });
+                                    let inbox_tx = self.harness_internal_event_tx.clone();
+                                    let stream_fut = new_agent.create_stream();
+                                    let cancel = stream_fut.interrupt_handle();
+                                    rt.spawn(async move {
+                                        let res = stream_fut.await;
+                                        inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
+                                    });
+                                    HarnessState::Streaming { cancel }
+                                }
+                                HarnessState::StreamingFailed { agent } => {
+                                    let event_tx = self.event_tx.clone();
+                                    let new_agent = agent
+                                        .add_message_to_continue(prompt)
+                                        .add_event_callback(move |event| {
+                                            let _ = event_tx.send(SessionEvent::StreamEvent(event));
+                                        });
+                                    let inbox_tx = self.harness_internal_event_tx.clone();
+                                    let stream_fut = new_agent.create_stream();
+                                    let cancel = stream_fut.interrupt_handle();
+                                    rt.spawn(async move {
+                                        let res = stream_fut.await;
+                                        inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
+                                    });
+                                    HarnessState::Streaming { cancel }
+                                }
+                                HarnessState::InterruptingStream { pending_message: None } => {
+                                    HarnessState::InterruptingStream {
+                                        pending_message: Some(prompt),
+                                    }
+                                }
                                 _ => curr_state
                             }
 
@@ -191,7 +226,7 @@ impl Session {
                             curr_state = match curr_state {
                                 HarnessState::Streaming { cancel } => {
                                     cancel.cancel();
-                                    HarnessState::InterruptingStream
+                                    HarnessState::InterruptingStream { pending_message: None }
                                 }
                                 HarnessState::ToolCallsAreRunning { agent, cancel } => {
                                     cancel.cancel();
@@ -267,9 +302,27 @@ impl Session {
                                 }
                             }
                         }
-                        HarnessState::InterruptingStream => match res {
+                        HarnessState::InterruptingStream { pending_message } => match res {
                             StreamResult::Interrupted(agent) => {
-                                HarnessState::StreamingInterrupted { agent }
+                                match pending_message {
+                                    Some(prompt) => {
+                                        let event_tx = self.event_tx.clone();
+                                        let new_agent = agent
+                                            .add_message_to_continue(prompt, true)
+                                            .add_event_callback(move |event| {
+                                                let _ = event_tx.send(SessionEvent::StreamEvent(event));
+                                            });
+                                        let inbox_tx = self.harness_internal_event_tx.clone();
+                                        let stream_fut = new_agent.create_stream();
+                                        let cancel = stream_fut.interrupt_handle();
+                                        rt.spawn(async move {
+                                            let res = stream_fut.await;
+                                            inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
+                                        });
+                                        HarnessState::Streaming { cancel }
+                                    }
+                                    None => HarnessState::StreamingInterrupted { agent },
+                                }
                             }
                             // TODO: we must handle these
                             StreamResult::Failed(_) => {

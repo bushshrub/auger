@@ -51,7 +51,9 @@ pub(crate) enum HarnessState {
     /// LLM streaming is in progress
     Streaming { cancel: CancellationToken },
     /// Trying to interrupt the stream.
-    InterruptingStream,
+    InterruptingStream {
+        pending_message: Option<UserPrompt>,
+    },
     /// LLM streaming was interrupted, retaining the partial response.
     StreamingInterrupted {
         agent: TypedAgent<LlmStreamingInterrupted>,
