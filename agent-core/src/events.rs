@@ -1,10 +1,10 @@
 //! Events and command types for a session
 
 use crate::session::ThreadSnapshot;
-use crate::tools::tool_decisions::{Resolving, ToolAuthorization, UserToolDecisions};
-use std::sync::mpsc;
-use auger_driver::{LlmStreaming, LlmStreamingFailed, LlmStreamingInterrupted, ReadyToStream, Resolved, StreamResult, ToolBatch, TypedAgent, WaitingForToolResponses, WaitingForUserMessage};
+use crate::tools::tool_decisions::{Resolving, UserToolDecisions};
+use auger_driver::{LlmStreamingFailed, LlmStreamingInterrupted, Resolved, StreamResult, ToolBatch, TypedAgent, WaitingForToolResponses, WaitingForUserMessage};
 use provider::UserPrompt;
+use std::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// User sent commands to the session
@@ -65,8 +65,6 @@ pub(crate) enum HarnessState {
     WaitingForUserMessage {
         agent: TypedAgent<WaitingForUserMessage>,
     },
-    /// The session is ready to stream
-    ReadyToStream { agent: TypedAgent<ReadyToStream> },
     /// LLM streaming is in progress
     Streaming { cancel: CancellationToken },
     /// Trying to interrupt the stream.
@@ -85,19 +83,10 @@ pub(crate) enum HarnessState {
     HasToolCalls {
         agent: TypedAgent<WaitingForToolResponses>,
     },
-    /// All tools have a decision and we are ready to run tools
-    ReadyToRunTools {
-        agent: TypedAgent<WaitingForToolResponses>,
-        authorization: ToolAuthorization,
-    },
     /// Tool call execution is in progress
     ToolCallsAreRunning { agent: TypedAgent<WaitingForToolResponses>,  cancel: CancellationToken },
     /// Tool execution is being interrupted.
     InterruptingToolExecution {
-        agent: TypedAgent<WaitingForToolResponses>,
-    },
-    /// Tool calls have been executed and have responses.
-    ToolResultsReady {
         agent: TypedAgent<WaitingForToolResponses>,
     },
     /// Session is waiting for consent for tool calls
