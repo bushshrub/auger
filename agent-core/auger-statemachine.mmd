@@ -1,0 +1,26 @@
+
+stateDiagram-v2
+[*] --> WaitingForUserMessage
+
+WaitingForUserMessage --> Streaming: SendMessage
+
+Streaming --> WaitingForUserMessage: Completed without tools
+Streaming --> StreamingFailed: Stream failed
+Streaming --> ToolCallsAreRunning: Tools auto-approved
+Streaming --> NeedToolConsent: Consent required
+Streaming --> InterruptingStream: Interrupt
+
+InterruptingStream --> InterruptingStream: Queue message
+InterruptingStream --> StreamingInterrupted: Interrupted
+InterruptingStream --> Streaming: Interrupted with queued message
+
+StreamingInterrupted --> Streaming: SendMessage
+StreamingFailed --> Streaming: SendMessage
+
+NeedToolConsent --> NeedToolConsent: More decisions needed
+NeedToolConsent --> ToolCallsAreRunning: All decisions received
+
+ToolCallsAreRunning --> Streaming: Tool results received
+ToolCallsAreRunning --> InterruptingToolExecution: Interrupt
+
+InterruptingToolExecution --> Streaming: Interrupted tool results received
