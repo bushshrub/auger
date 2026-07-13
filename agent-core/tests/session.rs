@@ -75,7 +75,7 @@ fn session_streams_all_provider_deltas() {
                         deltas.push(delta);
                     }
                     SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
-                    SessionEvent::StreamEvent(_) => {}
+                    SessionEvent::StreamEvent(_) | SessionEvent::ToolConsentRequired { .. } => {}
                     SessionEvent::Closed => panic!("session closed before stream completed"),
                 }
             }
@@ -204,7 +204,7 @@ fn session_returns_to_waiting_for_user_message_after_streaming() {
                         first_text.push_str(&delta)
                     }
                     SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
-                    SessionEvent::StreamEvent(_) => {}
+                    SessionEvent::StreamEvent(_) | SessionEvent::ToolConsentRequired { .. } => {}
                     SessionEvent::Closed => panic!("session closed during first stream"),
                 }
             }
@@ -226,7 +226,7 @@ fn session_returns_to_waiting_for_user_message_after_streaming() {
                         second_text.push_str(&delta)
                     }
                     SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
-                    SessionEvent::StreamEvent(_) => {}
+                    SessionEvent::StreamEvent(_) | SessionEvent::ToolConsentRequired { .. } => {}
                     SessionEvent::Closed => panic!("session closed during second stream"),
                 }
             }
@@ -298,7 +298,7 @@ fn session_runs_two_agentic_iterations_with_auto_approved_tool() {
                             break text;
                         }
                     }
-                    SessionEvent::StreamEvent(_) => {}
+                    SessionEvent::StreamEvent(_) | SessionEvent::ToolConsentRequired { .. } => {}
                     SessionEvent::Closed => panic!("session closed before stream completed"),
                 }
             }
@@ -367,7 +367,7 @@ fn session_interrupts_running_tool_and_submits_interrupted_result() {
                     }
                     SessionEvent::StreamEvent(StreamEvent::Done { stop_reason, .. })
                         if stop_reason.as_deref() == Some("stop") => break,
-                    SessionEvent::StreamEvent(_) => {}
+                    SessionEvent::StreamEvent(_) | SessionEvent::ToolConsentRequired { .. } => {}
                     SessionEvent::Closed => panic!("session closed before tool interruption completed"),
                 }
             }
@@ -446,7 +446,12 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
                     .recv_event()
                     .expect("session event channel should stay open")
                 {
-                    SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
+                    SessionEvent::ToolConsentRequired { tool_calls } => {
+                        assert_eq!(tool_calls.len(), 2);
+                        assert!(tool_calls.iter().any(|call| call.id == "call-approve"));
+                        assert!(tool_calls.iter().any(|call| call.id == "call-deny"));
+                        break;
+                    }
                     SessionEvent::Closed => panic!("session closed before approval"),
                     SessionEvent::StreamEvent(_) => {}
                 }
@@ -470,7 +475,7 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
                     }
                     SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
                     SessionEvent::Closed => panic!("session closed before second stream completed"),
-                    SessionEvent::StreamEvent(_) => {}
+                    SessionEvent::StreamEvent(_) | SessionEvent::ToolConsentRequired { .. } => {}
                 }
             }
 
@@ -491,7 +496,7 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
                 result.id() == "call-approve" && result.content().contains("approved")
             }));
             assert!(results.iter().any(|result| {
-                result.id() == "call-deny" && result.content().contains("denied")
+                result.id() == "call-deny" && result.content().contains("Denied")
             }));
         })
         .await

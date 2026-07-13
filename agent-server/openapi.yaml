@@ -1,0 +1,215 @@
+openapi: 3.1.0
+info:
+  title: Auger Agent API
+  version: 0.1.0
+paths:
+  /sessions:
+    get:
+      summary: List active sessions
+      responses:
+        "200":
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: "#/components/schemas/Session" }
+    post:
+      summary: Create a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSessionRequest" }
+      responses:
+        "200":
+          description: Session created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreateSessionResponse" }
+  /sessions/{id}:
+    delete:
+      summary: Stop and remove a session
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/SessionId" }]
+      responses:
+        "204": { description: Session stopped }
+        "401": { description: Invalid write token }
+        "404": { description: Session not found }
+  /sessions/{id}/input:
+    post:
+      summary: Send a user message
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/SessionId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserInputRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { description: Invalid write token }
+        "404": { description: Session not found }
+  /sessions/{id}/tool:
+    post:
+      summary: Approve or deny a tool call
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/SessionId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ToolDecisionRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "401": { description: Invalid write token }
+        "404": { description: Session not found }
+  /sessions/{id}/snapshot:
+    get:
+      summary: Get committed conversation history
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/SessionId" }]
+      responses:
+        "200":
+          description: Conversation snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SnapshotResponse" }
+        "401": { description: Invalid read token }
+        "404": { description: Session not found }
+  /sessions/{id}/events:
+    get:
+      summary: Subscribe to session events
+      description: Each SSE data field contains one JSON object matching SessionEvent.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/SessionId" }]
+      responses:
+        "200":
+          description: Server-sent event stream
+          content:
+            text/event-stream:
+              schema: { $ref: "#/components/schemas/SessionEvent" }
+        "401": { description: Invalid read token }
+        "404": { description: Session not found }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    SessionId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Ok:
+      description: Command accepted
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [status]
+            properties: { status: { const: ok } }
+  schemas:
+    CreateSessionRequest:
+      type: object
+      properties: { model: { type: [string, "null"] } }
+    CreateSessionResponse:
+      type: object
+      required: [session_id, context_window, tokens]
+      properties:
+        session_id: { type: string, format: uuid }
+        context_window: { type: integer }
+        tokens:
+          type: object
+          required: [read, write]
+          properties:
+            read: { type: string, format: uuid }
+            write: { type: string, format: uuid }
+    UserInputRequest:
+      type: object
+      required: [input]
+      properties: { input: { type: string } }
+    ToolDecisionRequest:
+      type: object
+      required: [tool_call_id, approved]
+      properties:
+        tool_call_id: { type: string }
+        approved: { type: boolean }
+        message: { type: [string, "null"] }
+    ToolCall:
+      type: object
+      required: [id, name, arguments]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        arguments: { type: string }
+    Session:
+      type: object
+      required: [session_id, model, created_at, context_window, tokens]
+      properties:
+        session_id: { type: string, format: uuid }
+        model: { type: string }
+        created_at: { type: integer }
+        context_window: { type: integer }
+        tokens:
+          type: object
+          properties:
+            read: { type: string, format: uuid }
+            write: { type: string, format: uuid }
+    SnapshotResponse:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/SnapshotMessage" }
+    SnapshotMessage:
+      oneOf:
+        - type: object
+          required: [type, text]
+          properties: { type: { const: user }, text: { type: string } }
+        - type: object
+          required: [type, content, tool_calls]
+          properties:
+            type: { const: assistant }
+            reasoning: { type: [string, "null"] }
+            content: { type: string }
+            tool_calls: { type: array, items: { $ref: "#/components/schemas/ToolCall" } }
+        - type: object
+          required: [type, tool_call_id, content]
+          properties:
+            type: { const: tool }
+            tool_call_id: { type: string }
+            content: { type: string }
+    SessionEvent:
+      oneOf:
+        - type: object
+          required: [type, text]
+          properties: { type: { const: text_delta }, text: { type: string } }
+        - type: object
+          required: [type, text]
+          properties: { type: { const: reasoning_delta }, text: { type: string } }
+        - allOf:
+            - { $ref: "#/components/schemas/ToolCall" }
+            - type: object
+              properties: { type: { enum: [tool_call, tool_call_complete] } }
+        - type: object
+          required: [type, tool_calls]
+          properties:
+            type: { const: tool_consent_required }
+            tool_calls: { type: array, items: { $ref: "#/components/schemas/ToolCall" } }
+        - type: object
+          required: [type]
+          properties:
+            type: { const: done }
+            usage: { type: [object, "null"] }
+            stop_reason: { type: [string, "null"] }
+        - type: object
+          required: [type]
+          properties: { type: { const: closed } }

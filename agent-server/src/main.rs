@@ -143,10 +143,18 @@ fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), read_auth));
 
     Router::new()
+        .route("/openapi.yaml", get(openapi))
         .route("/sessions", get(list_sessions).post(create_session))
         .merge(write_routes)
         .merge(read_routes)
         .with_state(state)
+}
+
+async fn openapi() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/yaml")],
+        include_str!("../openapi.yaml"),
+    )
 }
 
 /// List all active sessions
@@ -328,6 +336,88 @@ fn session_event_json(event: SessionEvent) -> serde_json::Value {
                 "stop_reason": stop_reason,
             }),
         },
+        SessionEvent::ToolConsentRequired { tool_calls } => json!({
+            "type": "tool_consent_required",
+            "tool_calls": tool_calls,
+        }),
         SessionEvent::Closed => json!({ "type": "closed" }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, header};
+    use tower::ServiceExt;
+
+    fn test_state() -> AppState {
+        AppState {
+            provider: Arc::new(OpenAiResponsesProvider::new(
+                "test".to_string(),
+                "http://127.0.0.1:1/v1/".to_string(),
+            )),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            default_model: "test-model".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn openapi_document_is_served() {
+        let response = router(test_state())
+            .oneshot(Request::get("/openapi.yaml").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(std::str::from_utf8(&body).unwrap().contains("openapi: 3.1.0"));
+    }
+
+    #[tokio::test]
+    async fn create_snapshot_and_delete_session() {
+        let app = router(test_state());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/sessions")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let id = created["session_id"].as_str().unwrap();
+        let read_token = created["tokens"]["read"].as_str().unwrap();
+        let write_token = created["tokens"]["write"].as_str().unwrap();
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/sessions/{id}/snapshot"))
+                    .header(header::AUTHORIZATION, format!("Bearer {read_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let snapshot: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(snapshot["messages"], json!([]));
+
+        let response = app
+            .oneshot(
+                Request::delete(format!("/sessions/{id}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {write_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
     }
 }

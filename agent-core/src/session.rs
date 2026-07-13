@@ -376,6 +376,14 @@ impl Session {
                                         HarnessState::ToolCallsAreRunning { agent, cancel }
                                     } else {
                                         let unapproved = self.auto_approval_policy.ids_needing_consent(tool_batch);
+                                        let tool_calls = agent
+                                            .get_requested_tools()
+                                            .into_iter()
+                                            .filter(|call| unapproved.contains(&call.id))
+                                            .collect();
+                                        let _ = self.event_tx.send(SessionEvent::ToolConsentRequired {
+                                            tool_calls,
+                                        });
                                         HarnessState::NeedToolConsent { agent, user_tool_decisions: UserToolDecisions::new_undecided(unapproved) }
                                     }
                                 }

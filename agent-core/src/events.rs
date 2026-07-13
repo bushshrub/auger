@@ -33,6 +33,10 @@ pub enum SessionCommand {
 pub enum SessionEvent {
     /// A provider event emitted while the LLM is streaming.
     StreamEvent(provider::StreamEvent),
+    /// Tool calls that require a user approval or denial decision.
+    ToolConsentRequired {
+        tool_calls: Vec<provider::ToolCallRequest>,
+    },
     /// The session has stopped and will not emit further events.
     Closed,
 }
