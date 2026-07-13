@@ -25,9 +25,16 @@ impl LlmStreamingInterrupted {
 }
 
 impl TypedAgent<LlmStreamingInterrupted> {
-    /// Clone the committed messages in the current thread.
+    /// Clone the committed messages in the current thread, plus the partial
+    /// response accumulated before the interruption (which is committed for
+    /// real when the conversation continues).
     pub fn snapshot(&self) -> Vec<provider::Message> {
-        self.state.thread.messages().to_vec()
+        let mut messages = self.state.thread.messages().to_vec();
+        if !self.state.events.is_empty() {
+            let response = provider::LlmResponse::from(self.state.events.clone());
+            messages.push(provider::ClankerMessage::from(response).into());
+        }
+        messages
     }
 
     /// Add a new user message.

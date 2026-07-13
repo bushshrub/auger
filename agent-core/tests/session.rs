@@ -577,6 +577,15 @@ fn session_emits_interrupted_event_when_stream_is_interrupted() {
                     _ => {}
                 }
             }
+
+            // The partial response must survive into the snapshot so clients
+            // rebuilding from it (reload/reconnect) keep the interrupted text.
+            let snapshot = handle.snapshot().unwrap();
+            assert!(matches!(
+                snapshot.messages(),
+                [Message::System(_), Message::User { .. }, Message::Assistant { content, .. }]
+                    if content == "partial"
+            ));
         })
         .await
         .unwrap();

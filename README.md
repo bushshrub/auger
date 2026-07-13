@@ -23,20 +23,22 @@ Design goals:
   - Subagents (model customizable)
 
 ## Current state
-Not useable yet. 
+ 
 TODO: 
 - tokenize message with provider to check token consumption
 - query LLM parameters directly from provider
 - refactor session history handling in agent core
 
-## Handwritten code state
+## Code quality state
 
-A primary goal of auger is to be a coding agent that is (ironically)
-not written with a coding agent. This list tracks the current
-state of what code is handwritten and what isn't.
+A primary goal of auger is to have a codebase that should be
+easy to understand. Generating lots of code with LLMs is contrary to this goal.
+Some LLM generated code may still live around for prototyping.
+This list tracks what is currently "artisanal" and what isn't/
 
 
 - [x] agent-core (Main agentic loop and harness)
+- [x] auger-driver (Minimal agent state machine)
 - [x] provider (Provider abstraction)
 - [ ] agent webserver
   - 90% there.
@@ -47,12 +49,11 @@ state of what code is handwritten and what isn't.
 
 ## Clanker usage
 
-Contributors are not prohibited from using AI agents. However,
-AI generated code should be treated as a starting point and must 
-be replaced eventually. Note that the use of AI-based autocomplete
-such as GitHub Copilot or Zed Zeta is fine (unless of course you're using it
-to generate entire files or modules).
+Contributors are not prohibited from using AI agents.
+Any code generated should be high quality and blend into
+the surrounding codebase.
+
 In summary:
 - Clankers are allowed for prototyping and scaffolding.
-- All clanker written code has to be replaced.
-- Don't use clankers to write documentation.
+- Any code that isn't understood must be replaced. 
+- Don't use clankers to write documentation for things you don't understand.
