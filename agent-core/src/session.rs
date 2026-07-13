@@ -195,8 +195,7 @@ impl Session {
                                 }
                                 HarnessState::ToolCallsAreRunning { agent, cancel } => {
                                     cancel.cancel();
-                                    // TODO: set all tool results to interrupting. should be a field in this variant.
-                                    HarnessState::ToolResultsReady { agent }
+                                    HarnessState::InterruptingToolExecution { agent }
                                 }
                                 _ => curr_state
                             }
@@ -234,14 +233,11 @@ impl Session {
                 }
                 LoopMessage::StreamResult(res) => {
                     curr_state = match curr_state {
-                        // TODO: HarnessState::StreamInterrupting?
                         HarnessState::Streaming { cancel } => {
                             drop(cancel);
                             match res {
-                                StreamResult::Interrupted(agent) => {
-
-                                    // TODO: deal with this...
-                                    panic!("stream interrupted but harness state was not in InterruptingStream state")
+                                StreamResult::Interrupted(_) => {
+                                    panic!("stream returned interrupted while harness was still streaming")
                                 }
                                 StreamResult::Failed(agent) => {
                                     HarnessState::StreamingFailed { agent }
@@ -271,6 +267,21 @@ impl Session {
                                 }
                             }
                         }
+                        HarnessState::InterruptingStream => match res {
+                            StreamResult::Interrupted(agent) => {
+                                HarnessState::StreamingInterrupted { agent }
+                            }
+                            // TODO: we must handle these
+                            StreamResult::Failed(_) => {
+                                panic!("stream failed while harness was interrupting the stream")
+                            }
+                            StreamResult::WaitingForToolResponses(_) => {
+                                panic!("stream requested tools while harness was interrupting the stream")
+                            }
+                            StreamResult::WaitingForUserMessage(_) => {
+                                panic!("stream completed while harness was interrupting the stream")
+                            }
+                        },
                         _ => curr_state
                     };
                 }
@@ -278,6 +289,20 @@ impl Session {
                     curr_state = match curr_state {
                         HarnessState::ToolCallsAreRunning { agent, cancel } => {
                             drop(cancel);
+                            let new_agent = agent.add_all_tool_responses(tool_batch);
+                            let event_tx = self.event_tx.clone();
+                            let stream_fut = new_agent.add_event_callback(move |event| {
+                                let _ = event_tx.send(SessionEvent::StreamEvent(event));
+                            }).create_stream();
+                            let cancel = stream_fut.interrupt_handle();
+                            let inbox_tx = self.harness_internal_event_tx.clone();
+                            rt.spawn(async move {
+                                let res = stream_fut.await;
+                                inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
+                            });
+                            HarnessState::Streaming { cancel }
+                        }
+                        HarnessState::InterruptingToolExecution { agent } => {
                             let new_agent = agent.add_all_tool_responses(tool_batch);
                             let event_tx = self.event_tx.clone();
                             let stream_fut = new_agent.add_event_callback(move |event| {

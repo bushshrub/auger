@@ -71,8 +71,10 @@ pub(crate) enum HarnessState {
     },
     /// Tool call execution is in progress
     ToolCallsAreRunning { agent: TypedAgent<WaitingForToolResponses>,  cancel: CancellationToken },
-    /// Tool calls are being interrupted
-    InterruptingToolCalls,
+    /// Tool execution is being interrupted.
+    InterruptingToolExecution {
+        agent: TypedAgent<WaitingForToolResponses>,
+    },
     /// Tool calls have been executed and have responses.
     ToolResultsReady {
         agent: TypedAgent<WaitingForToolResponses>,
