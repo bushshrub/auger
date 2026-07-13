@@ -23,7 +23,9 @@ impl ToolAuthorization {
                         .clone()
                         .unwrap_or_else(|| "Denied by user".to_string()),
                 ),
-                None => unreachable!("resolved tool authorization is missing tool call {id}"),
+                // Auto-approved calls in a mixed batch never enter the
+                // decision set; absence means the call was not denied.
+                None => None,
             },
         }
     }

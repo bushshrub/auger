@@ -7,5 +7,6 @@
       "runtimeArgs": ["--dir", "webui", "dev"],
       "port": 5173
     }
-  ]
+  ],
+  "autoVerify": false
 }

@@ -583,6 +583,129 @@ fn session_emits_interrupted_event_when_stream_is_interrupted() {
     });
 }
 
+struct EchoTool;
+
+#[async_trait]
+impl Tool for EchoTool {
+    fn details(&self) -> ToolDetails {
+        ToolDetails {
+            name: "echo",
+            description: "Returns a fixed string.",
+        }
+    }
+
+    fn parameters(&self) -> JsonSchema {
+        JsonSchema(serde_json::json!({ "type": "object" }))
+    }
+
+    async fn call(&self, _args: serde_json::Value) -> Result<ToolCallResult, ToolError> {
+        Ok(ToolCallResult::success("echoed".to_string()))
+    }
+}
+
+/// Regression test: a batch mixing an auto-approved call with one needing
+/// consent used to panic in ToolAuthorization::denial_reason because the
+/// decision set only tracks the consent-needing ids.
+#[test]
+fn session_runs_mixed_batch_of_auto_approved_and_consented_tools() {
+    let provider = DummyProvider::new_responses([
+        DummyResponse::Stream(vec![
+            Ok(StreamEvent::ToolCallComplete {
+                id: "call-auto".to_string(),
+                name: "dummy".to_string(),
+                arguments: r#"{"message":"auto"}"#.to_string(),
+            }),
+            Ok(StreamEvent::ToolCallComplete {
+                id: "call-consent".to_string(),
+                name: "echo".to_string(),
+                arguments: "{}".to_string(),
+            }),
+            Ok(StreamEvent::Done {
+                usage: None,
+                stop_reason: Some("tool_calls".to_string()),
+            }),
+        ]),
+        DummyResponse::Stream(vec![
+            Ok(StreamEvent::TextDelta("finished".to_string())),
+            Ok(StreamEvent::Done {
+                usage: None,
+                stop_reason: Some("stop".to_string()),
+            }),
+        ]),
+    ]);
+    let model = LlmModel::new(Arc::new(provider), "dummy");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+
+    runtime.block_on(async move {
+        let (_owner, handle, events) = Session::start_with_tools(
+            model,
+            SystemPrompt::new("You are a test agent.".to_string()),
+            tokio::runtime::Handle::current(),
+            vec![Box::new(builtin_tools::Dummy), Box::new(EchoTool)],
+            vec!["dummy".to_string()],
+        );
+        tokio::task::spawn_blocking(move || {
+            handle
+                .send_message(UserPrompt::new("Use both tools.".to_string()))
+                .expect("session should accept the message");
+
+            loop {
+                match events
+                    .recv_event()
+                    .expect("session event channel should stay open")
+                {
+                    SessionEvent::ToolConsentRequired { tool_calls } => {
+                        // Only the non-auto-approved call needs consent.
+                        assert_eq!(tool_calls.len(), 1);
+                        assert_eq!(tool_calls[0].id, "call-consent");
+                        break;
+                    }
+                    SessionEvent::Closed => panic!("session closed before approval"),
+                    SessionEvent::StreamEvent(_)
+                    | SessionEvent::ToolCallResult { .. }
+                    | SessionEvent::ToolCallError { .. }
+                    | SessionEvent::Interrupted => {}
+                }
+            }
+
+            handle
+                .approve_tool_call("call-consent")
+                .expect("session should accept approval");
+
+            let mut text = String::new();
+            let mut result_events = Vec::new();
+            loop {
+                match events
+                    .recv_event()
+                    .expect("session event channel should stay open")
+                {
+                    SessionEvent::StreamEvent(StreamEvent::TextDelta(delta)) => {
+                        text.push_str(&delta)
+                    }
+                    SessionEvent::StreamEvent(StreamEvent::Done { .. }) => break,
+                    SessionEvent::ToolCallResult { id, .. } => result_events.push(id),
+                    SessionEvent::ToolCallError { id, error } => {
+                        panic!("unexpected tool error for {id}: {error}")
+                    }
+                    SessionEvent::Closed => panic!("session closed before second stream completed"),
+                    SessionEvent::StreamEvent(_)
+                    | SessionEvent::ToolConsentRequired { .. }
+                    | SessionEvent::Interrupted => {}
+                }
+            }
+
+            assert_eq!(text, "finished");
+            result_events.sort();
+            assert_eq!(result_events, vec!["call-auto", "call-consent"]);
+        })
+        .await
+        .expect("session interaction task should complete");
+    });
+}
+
 #[test]
 fn session_accepts_message_after_interrupt_and_keeps_partial_response() {
     let provider = DummyProvider::new_responses([

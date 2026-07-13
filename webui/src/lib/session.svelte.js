@@ -142,12 +142,21 @@ export class AugerSession {
 	}
 
 	/**
-	 * Interrupt the in-flight turn. Fire-and-forget; the `interrupted` event
-	 * (or tool_call_error events) arrive on the stream.
+	 * Stop the in-flight turn. While tool calls are awaiting consent the
+	 * server ignores interrupts, so "stop" there means denying every pending
+	 * call; otherwise interrupt the active stream / tool execution. The two
+	 * states are mutually exclusive (nothing streams during consent).
 	 */
 	async interrupt() {
+		const pending = this.items.flatMap((i) =>
+			i.kind === 'tool' && i.call.status === 'pending_approval' ? [i.call.id] : []
+		);
 		try {
-			await interruptSession(this.sessionId, this.tokens.write);
+			if (pending.length > 0) {
+				await Promise.all(pending.map((id) => this.respond(id, false)));
+			} else {
+				await interruptSession(this.sessionId, this.tokens.write);
+			}
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : String(err);
 		}
