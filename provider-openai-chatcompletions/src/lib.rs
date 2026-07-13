@@ -6,6 +6,9 @@ use provider::{
     ToolCallRequest,
 };
 use serde_json::{Value, json};
+use reqwest::Client as HttpClient;
+
+const DEFAULT_USER_AGENT: &str = "auger-code/0.1.0";
 
 mod catalog;
 
@@ -24,12 +27,34 @@ fn normalize_base_url(base_url: impl Into<String>) -> String {
 
 impl OpenAiChatCompletionsProvider {
     pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self::with_user_agent(api_key, base_url, "")
+    }
+
+    pub fn with_user_agent(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        user_agent: impl AsRef<str>,
+    ) -> Self {
         let client = Client::with_config(
             OpenAIConfig::new()
                 .with_api_key(api_key)
                 .with_api_base(normalize_base_url(base_url)),
+        )
+        .with_http_client(
+            HttpClient::builder()
+                .user_agent(format_user_agent(user_agent.as_ref()))
+                .build()
+                .expect("auger user agent must be valid HTTP header text"),
         );
         Self { client }
+    }
+}
+
+fn format_user_agent(user_agent: &str) -> String {
+    if user_agent.is_empty() {
+        DEFAULT_USER_AGENT.to_string()
+    } else {
+        user_agent.to_string()
     }
 }
 

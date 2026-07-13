@@ -39,22 +39,23 @@ pub(crate) fn from_config(config: &Config) -> Arc<dyn LlmProvider> {
         panic!("{error}");
     });
     let api_key = config.provider_api_key();
+    let user_agent = config.user_agent();
 
     match provider_type {
         ProviderType::Anthropic => {
             let base_url = config.provider_base_url().unwrap_or_default();
             info!(provider_type = ?provider_type, base_url = %base_url, "configured LLM provider");
-            Arc::new(AnthropicProvider::new(api_key, base_url))
+            Arc::new(AnthropicProvider::with_user_agent(api_key, base_url, user_agent.clone()))
         }
         ProviderType::OpenAiChatCompletions => {
             let base_url = config.provider_base_url().unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
             info!(provider_type = ?provider_type, base_url = %base_url, "configured LLM provider");
-            Arc::new(OpenAiChatCompletionsProvider::new(api_key, base_url))
+            Arc::new(OpenAiChatCompletionsProvider::with_user_agent(api_key, base_url, user_agent.clone()))
         }
         ProviderType::OpenAiResponses => {
             let base_url = config.provider_base_url().unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
             info!(provider_type = ?provider_type, base_url = %base_url, "configured LLM provider");
-            Arc::new(OpenAiResponsesProvider::new(api_key, base_url))
+            Arc::new(OpenAiResponsesProvider::with_user_agent(api_key, base_url, user_agent))
         }
     }
 }

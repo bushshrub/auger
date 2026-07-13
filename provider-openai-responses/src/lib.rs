@@ -8,6 +8,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+const DEFAULT_USER_AGENT: &str = "auger-code/0.1.0";
+
 mod catalog;
 
 /// Reasoning effort level for models that support it (o3, o4-mini, etc.).
@@ -38,8 +40,19 @@ pub struct OpenAiResponsesProvider {
 
 impl OpenAiResponsesProvider {
     pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self::with_user_agent(api_key, base_url, "")
+    }
+
+    pub fn with_user_agent(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        user_agent: impl AsRef<str>,
+    ) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .user_agent(format_user_agent(user_agent.as_ref()))
+                .build()
+                .expect("auger user agent must be valid HTTP header text"),
             api_key: api_key.into(),
             base_url: base_url.into(),
             reasoning_effort: None,
@@ -61,6 +74,14 @@ impl OpenAiResponsesProvider {
         } else {
             Some(format!("Bearer {}", self.api_key))
         }
+    }
+}
+
+fn format_user_agent(user_agent: &str) -> String {
+    if user_agent.is_empty() {
+        DEFAULT_USER_AGENT.to_string()
+    } else {
+        user_agent.to_string()
     }
 }
 

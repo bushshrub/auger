@@ -10,6 +10,7 @@ const DEFAULT_PROVIDER_TYPE: &str = "openai-responses";
 pub(crate) struct Config {
     pub(crate) listen_addr: Option<String>,
     pub(crate) model: Option<String>,
+    pub(crate) user_agent: Option<String>,
     pub(crate) provider: ProviderConfig,
 }
 
@@ -50,6 +51,13 @@ impl Config {
             .unwrap_or_else(|| DEFAULT_MODEL.to_string())
     }
 
+    pub(crate) fn user_agent(&self) -> String {
+        std::env::var("USER_AGENT")
+            .ok()
+            .or_else(|| self.user_agent.clone())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn provider_type(&self) -> String {
         std::env::var("PROVIDER_TYPE")
             .ok()
@@ -88,6 +96,7 @@ mod tests {
             r#"
 listen_addr = "0.0.0.0:4000"
 model = "test-model"
+user_agent = "my-client/1.0"
 
 [provider]
 type = "anthropic"
@@ -99,6 +108,7 @@ base_url = "https://example.test"
 
         assert_eq!(config.listen_addr.as_deref(), Some("0.0.0.0:4000"));
         assert_eq!(config.model.as_deref(), Some("test-model"));
+        assert_eq!(config.user_agent.as_deref(), Some("my-client/1.0"));
         assert_eq!(config.provider.kind.as_deref(), Some("anthropic"));
         assert_eq!(config.provider.api_key.as_deref(), Some("secret"));
         assert_eq!(config.provider.base_url.as_deref(), Some("https://example.test"));

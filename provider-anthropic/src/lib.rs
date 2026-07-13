@@ -13,6 +13,7 @@ mod catalog;
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const API_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 8096;
+const DEFAULT_USER_AGENT: &str = "auger-code/0.1.0";
 
 pub struct AnthropicProvider {
     client: Client,
@@ -23,6 +24,14 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self::with_user_agent(api_key, base_url, "")
+    }
+
+    pub fn with_user_agent(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        user_agent: impl AsRef<str>,
+    ) -> Self {
         let base = base_url.into();
         let base = if base.is_empty() {
             DEFAULT_BASE_URL.to_string()
@@ -30,12 +39,24 @@ impl AnthropicProvider {
             base
         };
         let base = base.trim_end_matches('/');
+        let user_agent = format_user_agent(user_agent.as_ref());
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .user_agent(user_agent)
+                .build()
+                .expect("auger user agent must be valid HTTP header text"),
             api_key: api_key.into(),
             messages_url: format!("{base}/v1/messages"),
             models_url: format!("{base}/v1/models"),
         }
+    }
+}
+
+fn format_user_agent(user_agent: &str) -> String {
+    if user_agent.is_empty() {
+        DEFAULT_USER_AGENT.to_string()
+    } else {
+        user_agent.to_string()
     }
 }
 
