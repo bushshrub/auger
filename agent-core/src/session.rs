@@ -12,7 +12,7 @@ use std::sync::{mpsc, Arc};
 use std::sync::mpsc::Sender;
 use either::Either;
 use tokio::runtime::Handle;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(uuid::Uuid);
@@ -218,7 +218,10 @@ impl Session {
                                         pending_message: Some(prompt),
                                     }
                                 }
-                                _ => curr_state
+                                _ => {
+                                    warn!(session_id = %self.id, command = "send_message", "Ignoring command in invalid harness state");
+                                    curr_state
+                                }
                             }
 
                         }
@@ -232,7 +235,10 @@ impl Session {
                                     cancel.cancel();
                                     HarnessState::InterruptingToolExecution { agent }
                                 }
-                                _ => curr_state
+                                _ => {
+                                    warn!(session_id = %self.id, command = "interrupt", "Ignoring command in invalid harness state");
+                                    curr_state
+                                }
                             }
                         }
                         SessionCommand::ToolDecision { id, approved, message } => {
@@ -261,7 +267,10 @@ impl Session {
                                         }
                                     }
                                 }
-                                _ => curr_state
+                                _ => {
+                                    warn!(session_id = %self.id, command = "tool_decision", "Ignoring command in invalid harness state");
+                                    curr_state
+                                }
                             }
                         }
                     }

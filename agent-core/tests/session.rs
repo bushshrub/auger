@@ -1,8 +1,36 @@
 use std::sync::Arc;
+use std::sync::mpsc;
 
+use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
+use async_trait::async_trait;
 use agent_core::{Session, SessionEvent, SystemPrompt};
 use provider::{LlmError, LlmModel, Message, StreamEvent, UserPrompt};
 use provider_dummy::{DummyProvider, DummyResponse};
+
+struct PendingTool {
+    started_tx: std::sync::Mutex<Option<mpsc::Sender<()>>>,
+}
+
+#[async_trait]
+impl Tool for PendingTool {
+    fn details(&self) -> ToolDetails {
+        ToolDetails {
+            name: "pending",
+            description: "A tool that remains pending until interrupted.",
+        }
+    }
+
+    fn parameters(&self) -> JsonSchema {
+        JsonSchema(serde_json::json!({ "type": "object" }))
+    }
+
+    async fn call(&self, _args: serde_json::Value) -> Result<ToolCallResult, ToolError> {
+        if let Some(started_tx) = self.started_tx.lock().unwrap().take() {
+            let _ = started_tx.send(());
+        }
+        futures::future::pending().await
+    }
+}
 
 #[test]
 fn session_streams_all_provider_deltas() {
@@ -211,6 +239,89 @@ fn session_runs_two_agentic_iterations_with_auto_approved_tool() {
 
         assert_eq!(events, vec!["done"]);
         assert_eq!(provider_handle.requests().len(), 2);
+    });
+}
+
+#[test]
+fn session_interrupts_running_tool_and_submits_interrupted_result() {
+    let provider = DummyProvider::new_responses([
+        DummyResponse::Stream(vec![
+            Ok(StreamEvent::ToolCallComplete {
+                id: "call-pending".to_string(),
+                name: "pending".to_string(),
+                arguments: "{}".to_string(),
+            }),
+            Ok(StreamEvent::Done {
+                usage: None,
+                stop_reason: Some("tool_calls".to_string()),
+            }),
+        ]),
+        DummyResponse::Stream(vec![
+            Ok(StreamEvent::TextDelta("interrupted".to_string())),
+            Ok(StreamEvent::Done {
+                usage: None,
+                stop_reason: Some("stop".to_string()),
+            }),
+        ]),
+    ]);
+    let provider_handle = provider.clone();
+    let model = LlmModel::new(Arc::new(provider), "dummy");
+    let (started_tx, started_rx) = mpsc::channel();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+
+    runtime.block_on(async move {
+        let handle = Session::start_with_tools(
+            model,
+            SystemPrompt::new("system".to_string()),
+            tokio::runtime::Handle::current(),
+            vec![Box::new(PendingTool {
+                started_tx: std::sync::Mutex::new(Some(started_tx)),
+            })],
+            vec!["pending".to_string()],
+        );
+
+        tokio::task::spawn_blocking(move || {
+            handle
+                .send_message(UserPrompt::new("Run the pending tool.".to_string()))
+                .unwrap();
+            started_rx.recv().expect("tool should start");
+            handle.interrupt().unwrap();
+
+            let mut text = String::new();
+            loop {
+                match handle.recv_event().unwrap() {
+                    SessionEvent::StreamEvent(StreamEvent::TextDelta(delta)) => {
+                        text.push_str(&delta)
+                    }
+                    SessionEvent::StreamEvent(StreamEvent::Done { stop_reason, .. })
+                        if stop_reason.as_deref() == Some("stop") => break,
+                    SessionEvent::StreamEvent(_) => {}
+                    SessionEvent::Closed => panic!("session closed before tool interruption completed"),
+                }
+            }
+
+            assert_eq!(text, "interrupted");
+            let requests = provider_handle.requests();
+            let results = requests[1]
+                .messages()
+                .iter()
+                .find_map(|message| match message {
+                    Message::User { tool_call_results, .. } if !tool_call_results.is_empty() => {
+                        Some(tool_call_results)
+                    }
+                    _ => None,
+                })
+                .expect("second request should contain interrupted tool result");
+            assert!(results.iter().any(|result| {
+                result.id() == "call-pending"
+                    && result.content().contains("interrupted before execution")
+            }));
+        })
+        .await
+        .unwrap();
     });
 }
 
