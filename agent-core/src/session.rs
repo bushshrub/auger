@@ -503,6 +503,7 @@ impl Session {
                     };
                 }
                 LoopMessage::ToolBatchExecutionResult(tool_batch) => {
+                    info!(session_id=%self.id, "tools have finished executing");
                     curr_state = match curr_state {
                         HarnessState::ToolCallsAreRunning { agent, cancel } => {
                             drop(cancel);

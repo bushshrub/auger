@@ -23,6 +23,18 @@ Design goals:
   - Subagents (model customizable)
 
 ## Current state
+Very barebones, but definitely useable.
+
+1. Configure provider with env vars:
+```bash
+PROVIDER_TYPE=openai-chat-completions
+PROVIDER_BASE_URL=https://opencode.ai/zen/v1
+PROVIDER_API_KEY=dummy
+MODEL=north-mini-code-free
+```
+(model discovery not yet supported)
+2. Run web server: `cargo run -p agent-server`
+3. Run webui: `cd webui && pnpm dev`
  
 TODO: 
 - tokenize message with provider to check token consumption

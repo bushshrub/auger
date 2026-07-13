@@ -13,12 +13,21 @@ pub struct OpenAiChatCompletionsProvider {
     client: Client<OpenAIConfig>,
 }
 
+fn normalize_base_url(base_url: impl Into<String>) -> String {
+    let base_url = base_url.into();
+    let base_url = base_url.trim_end_matches('/');
+    base_url
+        .strip_suffix("/chat/completions")
+        .unwrap_or(base_url)
+        .to_string()
+}
+
 impl OpenAiChatCompletionsProvider {
     pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
         let client = Client::with_config(
             OpenAIConfig::new()
                 .with_api_key(api_key)
-                .with_api_base(base_url),
+                .with_api_base(normalize_base_url(base_url)),
         );
         Self { client }
     }
@@ -35,17 +44,18 @@ fn messages_to_json(messages: &[provider::Message]) -> Vec<Value> {
                 message,
                 tool_call_results,
             } => {
-                let msg_text = message.message();
-                if tool_call_results.is_empty() {
-                    out.push(json!({"role": "user", "content": msg_text}));
-                } else {
-                    out.push(json!({"role": "user", "content": msg_text}));
-                    for tr in tool_call_results {
-                        out.push(json!({
-                            "role": "user",
-                            "content": tr.content(),
-                        }));
-                    }
+                for tr in tool_call_results {
+                    out.push(json!({
+                        "role": "tool",
+                        "tool_call_id": tr.id(),
+                        "content": tr.content(),
+                    }));
+                }
+                if !message.message().is_empty() || tool_call_results.is_empty() {
+                    out.push(json!({
+                        "role": "user",
+                        "content": message.message(),
+                    }));
                 }
             }
             provider::Message::Assistant {
@@ -123,6 +133,14 @@ fn extract_tool_calls(v: &Value) -> Option<Vec<ToolCallRequest>> {
     if calls.is_empty() { None } else { Some(calls) }
 }
 
+fn extract_reasoning(v: &Value) -> Option<String> {
+    v["reasoning_content"]
+        .as_str()
+        .or_else(|| v["reasoning"].as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiChatCompletionsProvider {
     async fn complete(&self, model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError> {
@@ -149,10 +167,7 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
 
         Ok(LlmResponse {
             content: msg["content"].as_str().unwrap_or("").to_string(),
-            reasoning: msg["reasoning_content"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .map(str::to_string),
+            reasoning: extract_reasoning(msg),
             tool_calls,
             usage: extract_usage(&resp),
             stop_reason: finish_reason,
@@ -207,10 +222,8 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
                         let choice = &chunk["choices"][0];
                         let delta = &choice["delta"];
 
-                        if let Some(rc) = delta["reasoning_content"].as_str() {
-                            if !rc.is_empty() {
-                                yield Ok(StreamEvent::ReasoningDelta(rc.to_string()));
-                            }
+                        if let Some(reasoning) = extract_reasoning(delta) {
+                            yield Ok(StreamEvent::ReasoningDelta(reasoning));
                         }
 
                         if let Some(content) = delta["content"].as_str() {
@@ -269,5 +282,47 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
         .boxed();
 
         Ok(LlmStream::new(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_reasoning, messages_to_json, normalize_base_url};
+    use provider::{Message, ToolResult, UserPrompt};
+    use serde_json::json;
+
+    #[test]
+    fn normalizes_chat_completions_endpoint() {
+        assert_eq!(
+            normalize_base_url("https://opencode.ai/zen/v1/chat/completions"),
+            "https://opencode.ai/zen/v1"
+        );
+        assert_eq!(
+            normalize_base_url("https://opencode.ai/zen/v1/chat/completions/"),
+            "https://opencode.ai/zen/v1"
+        );
+        assert_eq!(normalize_base_url("https://opencode.ai/zen/v1"), "https://opencode.ai/zen/v1");
+    }
+
+    #[test]
+    fn accepts_openai_reasoning_field_names() {
+        assert_eq!(extract_reasoning(&json!({"reasoning": "think"})), Some("think".to_string()));
+        assert_eq!(
+            extract_reasoning(&json!({"reasoning_content": "think"})),
+            Some("think".to_string())
+        );
+    }
+
+    #[test]
+    fn serializes_tool_results_as_tool_messages() {
+        let messages = messages_to_json(&[Message::User {
+            message: UserPrompt::new("continue".to_string()),
+            tool_call_results: vec![ToolResult::new("call_1".to_string(), "result".to_string())],
+        }]);
+
+        assert_eq!(messages[0]["role"], "tool");
+        assert_eq!(messages[0]["tool_call_id"], "call_1");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"], "continue");
     }
 }
