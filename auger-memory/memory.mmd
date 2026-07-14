@@ -1,0 +1,26 @@
+stateDiagram-v2
+    direction TB
+
+    state "namespace:<br/>tenant / user / coding-agent / preferences" as N1
+    state "namespace:<br/>tenant / repo / codebase / conventions" as N2
+    state "namespace:<br/>tenant / repo / tasks / active" as N3
+    state "namespace:<br/>tenant / repo / decisions" as N4
+    state "namespace:<br/>tenant / repo / debugging / lessons" as N5
+
+    state "Common record shape<br/><br/>
+    namespace<br/>
+    key<br/>
+    memory_type<br/>
+    value<br/>
+    embedding optional<br/>
+    metadata<br/>
+    confidence<br/>
+    created_at<br/>
+    updated_at<br/>
+    expires_at optional" as ROW
+
+    N1 --> ROW
+    N2 --> ROW
+    N3 --> ROW
+    N4 --> ROW
+    N5 --> ROW

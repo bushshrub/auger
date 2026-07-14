@@ -210,6 +210,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "auger-memory"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "auger-tui"
 version = "0.1.0"
 dependencies = [
