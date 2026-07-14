@@ -210,6 +210,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "auger-traces"
+version = "0.1.0"
+
+[[package]]
 name = "auger-tui"
 version = "0.1.0"
 dependencies = [
