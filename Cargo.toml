@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["agent-core","agent-server","agent-tools","builtin-tools", "auger-tui","provider", "provider-anthropic","provider-openai-chatcompletions", "provider-openai-responses", "tool-call-healer", "auger-driver", "provider-dummy"]
+members = ["agent-core","agent-server","agent-tools","builtin-tools", "auger-tui","provider", "provider-anthropic","provider-openai-chatcompletions", "provider-openai-responses", "tool-call-healer", "auger-driver", "provider-dummy", "auger-traces"]
 
 [workspace.dependencies]
 async-trait = "0.1.89"
