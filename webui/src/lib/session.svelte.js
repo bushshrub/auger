@@ -1,4 +1,4 @@
-// Per-session client state machine: consumes the snapshot + SSE event stream
+// Per-session client state machine: consumes the trace snapshot + SSE event stream
 // and maintains a normalized transcript (UiItem[]) for the view components.
 //
 // Lifecycle: start() fetches /snapshot, rebuilds the transcript, then
@@ -16,7 +16,7 @@ import {
 
 /**
  * @typedef {import('./api.js').SessionEvent} SessionEvent
- * @typedef {import('./api.js').SnapshotMessage} SnapshotMessage
+ * @typedef {import('./api.js').TraceEvent} TraceEvent
  * @typedef {import('./api.js').TokenUsage} TokenUsage
  *
  * @typedef {'pending_approval' | 'running' | 'done' | 'error' | 'denied'} ToolCallStatus
@@ -83,8 +83,8 @@ export class AugerSession {
 
 	async #connect() {
 		try {
-			const { messages } = await getSnapshot(this.sessionId, this.tokens.read);
-			this.items = buildItems(messages);
+			const { events } = await getSnapshot(this.sessionId, this.tokens.read);
+			this.items = buildItems(events);
 			this.busy = this.#hasUnresolvedTools();
 		} catch (err) {
 			this.#handleConnectionError(err);
@@ -321,53 +321,79 @@ export class AugerSession {
 }
 
 /**
- * Rebuild the transcript from a snapshot (initial load and reconnect).
- * Tool results ride as separate `tool` messages that complete earlier cards;
- * trailing calls without results are still in flight or awaiting consent.
- * @param {SnapshotMessage[]} messages
+ * Rebuild the transcript from a trace snapshot (initial load and reconnect).
+ * Tool results and authorization events update the corresponding call card.
+ * @param {TraceEvent[]} events
  * @returns {UiItem[]}
  */
-function buildItems(messages) {
+function buildItems(events) {
 	/** @type {UiItem[]} */
 	const items = [];
 	/** @type {Map<string, UiToolCall>} */
 	const calls = new Map();
 
-	for (const m of messages) {
-		if (m.type === 'user') {
-			// Tool-results-only user messages have no text; skip the empty line.
-			if (m.text.trim().length > 0) {
-				items.push({ kind: 'user', id: nextId(), text: m.text });
+	for (const event of events) {
+		if (event.type === 'input_message') {
+			for (const content of event.content) {
+				if (content.type === 'text' && content.text.trim().length > 0) {
+					items.push({ kind: 'user', id: nextId(), text: content.text });
+				} else if (content.type === 'tool_result') {
+					const call = calls.get(content.tool_call_id);
+					if (call) {
+						call.status = 'done';
+						call.result = toolText(content.content);
+					}
+				}
 			}
-		} else if (m.type === 'assistant') {
+		} else if (event.type === 'assistant_message') {
+			const reasoning = event.content
+				.filter((content) => content.type === 'reasoning')
+				.map((content) => content.text)
+				.join('');
+			const text = event.content
+				.filter((content) => content.type === 'text')
+				.map((content) => content.text)
+				.join('');
 			items.push({
 				kind: 'assistant',
 				id: nextId(),
-				reasoning: m.reasoning ?? '',
-				content: m.content,
+				reasoning,
+				content: text,
 				streaming: false
 			});
-			for (const tc of m.tool_calls) {
-				const needsApproval = APPROVAL_REQUIRED_TOOLS.has(tc.name);
+			for (const content of event.content) {
+				if (content.type !== 'tool_call') continue;
+				const needsApproval = APPROVAL_REQUIRED_TOOLS.has(content.name);
 				/** @type {UiToolCall} */
 				const call = {
-					id: tc.id,
-					name: tc.name,
-					arguments: tc.arguments,
+					id: content.id,
+					name: content.name,
+					arguments: JSON.stringify(content.arguments),
 					status: needsApproval ? 'pending_approval' : 'running',
 					autoApproved: !needsApproval
 				};
-				calls.set(tc.id, call);
+				calls.set(content.id, call);
 				items.push({ kind: 'tool', id: nextId(), call });
 			}
-		} else if (m.type === 'tool') {
-			const call = calls.get(m.tool_call_id);
+		} else if (event.type === 'tool_authorization') {
+			const call = calls.get(event.tool_call_id);
+			if (call) call.status = event.decision === 'denied' ? 'denied' : 'running';
+		} else if (event.type === 'tool_call_result') {
+			const call = calls.get(event.tool_call_id);
 			if (call) {
-				call.status = 'done';
-				call.result = m.content;
+				call.status = event.status === 'success' ? 'done' : event.status;
+				call.result = toolText(event.content);
 			}
 		}
 	}
 
 	return items;
+}
+
+/** @param {import('./api.js').ToolData[]} content */
+function toolText(content) {
+	return content
+		.filter((item) => item.type === 'text')
+		.map((item) => item.text)
+		.join('');
 }

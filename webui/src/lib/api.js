@@ -10,7 +10,7 @@
 //   POST   /sessions/{id}/tool     (Bearer write) { tool_call_id, approved, message? }
 //   POST   /sessions/{id}/interrupt (Bearer write) -> { status: "ok" } (fire-and-forget)
 //   GET    /sessions/{id}/events   (Bearer read)  -> SSE, one SessionEvent JSON per frame
-//   GET    /sessions/{id}/snapshot (Bearer read)  -> { messages: SnapshotMessage[] }
+//   GET    /sessions/{id}/snapshot (Bearer read)  -> SessionRecord
 //
 // EventSource can't set an Authorization header, so the SSE stream is consumed
 // with fetch + a ReadableStream reader and parsed manually.
@@ -45,11 +45,19 @@ const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
  *   | { type: 'closed' }
  * )} SessionEvent
  *
- * @typedef {(
- *   | { type: 'user', text: string }
- *   | { type: 'assistant', reasoning: string | null, content: string, tool_calls: ToolCall[] }
- *   | { type: 'tool', tool_call_id: string, content: string }
- * )} SnapshotMessage
+ * @typedef {{ type: 'text', text: string } | { type: 'tool_result', tool_call_id: string,
+ *             content: ToolData[] }} InputContent
+ * @typedef {{ type: 'reasoning', text: string } | { type: 'text', text: string }
+ *             | { type: 'tool_call', id: string, name: string, arguments: unknown }} AssistantContent
+ * @typedef {{ type: 'text', text: string }} ToolData
+ * @typedef {{ type: 'input_message', content: InputContent[] }
+ *             | { type: 'assistant_message', status: 'completed' | 'interrupted' | 'failed',
+ *                 content: AssistantContent[] }
+ *             | { type: 'tool_authorization', tool_call_id: string,
+ *                 decision: 'approved' | 'denied' }
+ *             | { type: 'tool_call_result', tool_call_id: string,
+ *                 status: 'success' | 'denied' | 'error', content: ToolData[] }} TraceEvent
+ * @typedef {{ header: { session_id: string }, events: TraceEvent[] }} SessionRecord
  */
 
 export class ApiError extends Error {
@@ -168,7 +176,7 @@ export async function interruptSession(id, writeToken) {
 /**
  * @param {string} id
  * @param {string} token
- * @returns {Promise<{ messages: SnapshotMessage[] }>}
+ * @returns {Promise<SessionRecord>}
  */
 export async function getSnapshot(id, token) {
 	const res = await fetch(`${BASE}/sessions/${id}/snapshot`, {
