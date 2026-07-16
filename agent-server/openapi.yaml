@@ -189,10 +189,80 @@ components:
             session_id: { type: string, format: uuid }
             created_at: { type: string, format: date-time }
             cwd: { type: string }
-            model: { type: object }
+            model: { $ref: "#/components/schemas/ModelInfo" }
         events:
           type: array
-          items: { type: object }
+          items: { $ref: "#/components/schemas/TraceEvent" }
+    ModelInfo:
+      type: object
+      required: [provider_type]
+      properties:
+        provider_type:
+          type: string
+          enum: [Unknown, OpenAiResponses, OpenAiChatCompletions, AnthropicMessages]
+    ToolData:
+      oneOf:
+        - type: object
+          required: [type, text]
+          properties:
+            type: { const: text }
+            text: { type: string }
+    InputContent:
+      oneOf:
+        - type: object
+          required: [type, text]
+          properties:
+            type: { const: text }
+            text: { type: string }
+        - type: object
+          required: [type, tool_call_id, content]
+          properties:
+            type: { const: tool_result }
+            tool_call_id: { type: string }
+            content: { type: array, items: { $ref: "#/components/schemas/ToolData" } }
+    AssistantContent:
+      oneOf:
+        - type: object
+          required: [type, text]
+          properties: { type: { const: reasoning }, text: { type: string } }
+        - type: object
+          required: [type, text]
+          properties: { type: { const: text }, text: { type: string } }
+        - type: object
+          required: [type, id, name, arguments]
+          properties:
+            type: { const: tool_call }
+            id: { type: string }
+            name: { type: string }
+            arguments: {}
+    TraceEvent:
+      oneOf:
+        - type: object
+          required: [type, content]
+          properties:
+            type: { const: input_message }
+            content: { type: array, items: { $ref: "#/components/schemas/InputContent" } }
+        - type: object
+          required: [type, status, content]
+          properties:
+            type: { const: assistant_message }
+            status: { type: string, enum: [completed, interrupted, failed] }
+            content: { type: array, items: { $ref: "#/components/schemas/AssistantContent" } }
+        - type: object
+          required: [type, tool_call_id, decision, source, reason]
+          properties:
+            type: { const: tool_authorization }
+            tool_call_id: { type: string }
+            decision: { type: string, enum: [approved, denied] }
+            source: { type: string, enum: [user, policy] }
+            reason: { type: [string, "null"] }
+        - type: object
+          required: [type, tool_call_id, status, content]
+          properties:
+            type: { const: tool_call_result }
+            tool_call_id: { type: string }
+            status: { type: string, enum: [success, denied, error] }
+            content: { type: array, items: { $ref: "#/components/schemas/ToolData" } }
     SessionEvent:
       oneOf:
         - type: object

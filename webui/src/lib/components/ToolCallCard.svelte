@@ -221,7 +221,7 @@
 						<span class="text-[10px] font-semibold">{shellResult.exit_code}</span>
 					</div>
 				</div>
-			{:else if !isShell && call.result !== undefined}
+			{:else if call.result !== undefined}
 				<div>
 					<p class="mb-1 font-mono text-[10px] tracking-wider text-muted-foreground uppercase">
 						output

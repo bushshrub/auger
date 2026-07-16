@@ -55,7 +55,9 @@ impl TraceWriter {
         let path = path.into();
         let parent = path.parent().expect("trace path has a parent");
         fs::create_dir_all(parent)?;
+        set_owner_only_permissions(parent, true)?;
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        set_owner_only_permissions(&path, false)?;
         if file.metadata()?.len() == 0 {
             write_json_line(&mut file, record.header())?;
         }
@@ -94,11 +96,27 @@ impl TraceReader {
             }
             events.push(serde_json::from_str(&line)?);
         }
-        if header.record_type != "session" {
+        if header.record_type != "session" || header.version != 1 {
             return Err(TraceFileError::InvalidTrace(path.to_owned()));
         }
         Ok(SessionRecord { header, events })
     }
+}
+
+#[cfg(unix)]
+fn set_owner_only_permissions(path: &Path, directory: bool) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = if directory { 0o700 } else { 0o600 };
+    match fs::set_permissions(path, fs::Permissions::from_mode(mode)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(unix))]
+fn set_owner_only_permissions(_path: &Path, _directory: bool) -> Result<(), std::io::Error> {
+    Ok(())
 }
 
 fn write_json_line<T: serde::Serialize>(file: &mut File, value: &T) -> Result<(), TraceFileError> {
