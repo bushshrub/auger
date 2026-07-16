@@ -13,6 +13,7 @@ pub struct EventRecord {
     seq: u64,
     /// Timestamp at which this event occurred.
     timestamp: DateTime<Utc>,
+    #[serde(flatten)]
     event: Event,
 }
 
@@ -36,9 +37,12 @@ impl EventRecord {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputContent {
-    UserMessage(String),
-    ToolCallResult {
+    Text {
+        text: String,
+    },
+    ToolResult {
         tool_call_id: String,
         content: Vec<ToolData>,
     },
@@ -73,18 +77,56 @@ pub enum Event {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum AssistantContent {
-    Text(String),
-    ToolCallRequest {
-        tool_call_id: String,
-        tool_name: String,
-        args: serde_json::Value,
+    Text {
+        text: String,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: serde_json::Value,
     },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AssistantStatus {
     Completed,
     Interrupted,
     Failed,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn serializes_a_flat_tagged_tool_result() {
+        let record = EventRecord::new(
+            None,
+            1,
+            Event::ToolCallResult {
+                tool_call_id: "call_123".to_owned(),
+                status: ToolCallStatus::Success,
+                content: vec![ToolData::Text {
+                    text: "test passed".to_owned(),
+                }],
+            },
+        );
+
+        let value = serde_json::to_value(&record).unwrap();
+
+        assert_eq!(value["type"], "tool_call_result");
+        assert_eq!(value["seq"], 1);
+        assert_eq!(
+            value["content"],
+            json!([{"type": "text", "text": "test passed"}])
+        );
+        assert!(value.get("event").is_none());
+
+        let restored: EventRecord = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), value);
+    }
 }
