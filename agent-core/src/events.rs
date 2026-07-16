@@ -81,7 +81,7 @@ pub(crate) enum HarnessState {
     },
     /// LLM streaming came back and there are tool calls
     HasToolCalls {
-        agent: TypedAgent<WaitingForToolResponses>,
+        _agent: TypedAgent<WaitingForToolResponses>,
     },
     /// Tool call execution is in progress
     ToolCallsAreRunning { agent: TypedAgent<WaitingForToolResponses>,  cancel: CancellationToken },
@@ -102,7 +102,7 @@ impl From<StreamResult> for HarnessState {
             StreamResult::Interrupted(agent) => Self::StreamingInterrupted { agent },
             StreamResult::Failed(agent) => Self::StreamingFailed { agent },
             StreamResult::WaitingForUserMessage(agent) => Self::WaitingForUserMessage { agent },
-            StreamResult::WaitingForToolResponses(agent) => Self::HasToolCalls { agent },
+            StreamResult::WaitingForToolResponses(agent) => Self::HasToolCalls { _agent: agent },
         }
     }
 }

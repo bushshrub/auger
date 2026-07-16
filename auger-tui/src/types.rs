@@ -5,7 +5,6 @@ use uuid::Uuid;
 pub struct SessionInfo {
     pub session_id: Uuid,
     pub model: String,
-    pub created_at: u64,
     pub context_window: u64,
     pub write_token: String,
     pub read_token: String,
@@ -155,7 +154,8 @@ pub enum RawClankerEvent {
     },
     Done {
         usage: Option<RawUsage>,
-        stop_reason: Option<String>,
+        #[serde(rename = "stop_reason")]
+        _stop_reason: Option<String>,
     },
 }
 

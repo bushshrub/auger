@@ -14,7 +14,6 @@ pub enum View {
 
 pub struct App {
     pub view: View,
-    pub server: String,
     pub should_quit: bool,
 
     // Session list
@@ -42,12 +41,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(server: String) -> Self {
+    pub fn new() -> Self {
         let mut session_list_state = ListState::default();
         session_list_state.select(Some(0));
         Self {
             view: View::SessionList,
-            server,
             should_quit: false,
             sessions: vec![],
             session_list_state,
