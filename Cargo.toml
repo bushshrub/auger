@@ -13,3 +13,4 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 tokio = { version = "1", features = ["fs", "rt", "sync", "time"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3" }
+uuid = { version = "1.23.3" }
