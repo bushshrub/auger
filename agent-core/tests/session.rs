@@ -94,7 +94,7 @@ fn session_streams_all_provider_deltas() {
 }
 
 #[test]
-fn session_snapshots_committed_thread_without_changing_state() {
+fn session_snapshots_trace_without_changing_state() {
     let provider = DummyProvider::new_responses([]);
     let model = LlmModel::new(Arc::new(provider), "dummy");
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -112,11 +112,10 @@ fn session_snapshots_committed_thread_without_changing_state() {
             let first = handle.snapshot().unwrap();
             let second = handle.snapshot().unwrap();
 
-            assert!(matches!(
-                first.messages(),
-                [Message::System(system)] if system == "snapshot system"
-            ));
-            assert_eq!(format!("{:?}", first.messages()), format!("{:?}", second.messages()));
+            assert_eq!(
+                serde_json::to_value(&first).unwrap(),
+                serde_json::to_value(&second).unwrap()
+            );
             owner.stop();
             assert!(matches!(events.recv_event().unwrap(), SessionEvent::Closed));
         })
@@ -144,17 +143,15 @@ fn restores_session_id_and_committed_history() {
         )
         .unwrap();
         assert_eq!(handle.id().as_uuid(), id);
-        assert!(matches!(
-            handle.snapshot().unwrap().messages(),
-            [Message::System(system)] if system == "restored system"
-        ));
+        let trace = serde_json::to_value(handle.snapshot().unwrap()).unwrap();
+        assert_eq!(trace["header"]["session_id"], id.to_string());
         owner.stop();
         assert!(matches!(events.recv_event().unwrap(), SessionEvent::Closed));
     });
 }
 
 #[test]
-fn session_snapshots_committed_thread_while_streaming() {
+fn session_records_input_while_streaming() {
     let provider = DummyProvider::new_responses([DummyResponse::PendingStream(vec![Ok(
         StreamEvent::TextDelta("partial".to_string()),
     )])]);
@@ -178,11 +175,9 @@ fn session_snapshots_committed_thread_while_streaming() {
                 events.recv_event().unwrap(),
                 SessionEvent::StreamEvent(StreamEvent::TextDelta(_))
             ));
-            let snapshot = handle.snapshot().unwrap();
-            assert!(matches!(
-                snapshot.messages(),
-                [Message::System(_), Message::User { .. }]
-            ));
+            let trace = serde_json::to_value(handle.snapshot().unwrap()).unwrap();
+            assert_eq!(trace["events"][0]["type"], "input_message");
+            assert_eq!(trace["events"][0]["content"][0]["text"], "start");
             owner.stop();
         })
         .await
@@ -613,14 +608,9 @@ fn session_emits_interrupted_event_when_stream_is_interrupted() {
                 }
             }
 
-            // The partial response must survive into the snapshot so clients
-            // rebuilding from it (reload/reconnect) keep the interrupted text.
-            let snapshot = handle.snapshot().unwrap();
-            assert!(matches!(
-                snapshot.messages(),
-                [Message::System(_), Message::User { .. }, Message::Assistant { content, .. }]
-                    if content == "partial"
-            ));
+            let trace = serde_json::to_value(handle.snapshot().unwrap()).unwrap();
+            assert_eq!(trace["events"][1]["status"], "interrupted");
+            assert_eq!(trace["events"][1]["content"][0]["text"], "partial");
         })
         .await
         .unwrap();

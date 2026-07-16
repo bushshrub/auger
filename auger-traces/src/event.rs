@@ -79,6 +79,9 @@ pub enum Event {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AssistantContent {
+    Reasoning {
+        text: String,
+    },
     Text {
         text: String,
     },

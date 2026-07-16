@@ -5,8 +5,12 @@ use crate::tools::tool_decisions::{ToolAuthorization, UserToolDecisions};
 use crate::tools::tool_execution::ToolExecution;
 use crate::tools::tool_registry::ToolRegistry;
 use agent_tools::Tool;
+use auger_traces::{
+    AssistantContent, AssistantStatus, Event, InputContent, ModelInfo, ProviderType,
+    SessionRecord, ToolData, TraceWriter,
+};
 use auger_driver::{StreamResult, TypedAgent, WaitingForUserMessage};
-use provider::{LlmModel, UserPrompt};
+use provider::{LlmModel, Message, UserPrompt};
 use std::fmt;
 use std::sync::{mpsc, Arc};
 use std::sync::mpsc::Sender;
@@ -16,18 +20,6 @@ use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(uuid::Uuid);
-
-/// A read-only copy of the committed messages in a session thread.
-#[derive(Clone, Debug)]
-pub struct ThreadSnapshot {
-    messages: Vec<provider::Message>,
-}
-
-impl ThreadSnapshot {
-    pub fn messages(&self) -> &[provider::Message] {
-        &self.messages
-    }
-}
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum SnapshotError {
@@ -96,8 +88,8 @@ impl SessionHandle {
             .map_err(|_| ())
     }
 
-    /// Clone the committed conversation thread without changing session state.
-    pub fn snapshot(&self) -> Result<ThreadSnapshot, SnapshotError> {
+    /// Clone the recorded trace without changing session state.
+    pub fn snapshot(&self) -> Result<SessionRecord, SnapshotError> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.loop_event_tx
             .send(LoopMessage::Cmd(SessionCommand::Snapshot { reply_tx }))
@@ -164,6 +156,8 @@ pub struct Session {
     event_tx: mpsc::Sender<SessionEvent>,
     tool_registry: Arc<ToolRegistry>,
     auto_approval_policies: Arc<AutoApprovalPolicies>,
+    trace: SessionRecord,
+    trace_writer: TraceWriter,
 }
 
 impl Session {
@@ -252,6 +246,12 @@ impl Session {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
+        let trace = SessionRecord::new(
+            id.as_uuid(),
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            ModelInfo::new(ProviderType::Unknown),
+        );
+        let trace_writer = TraceWriter::open(&trace).expect("failed to initialize trace storage");
         let session = Self {
             id,
             cmd_rx,
@@ -259,6 +259,8 @@ impl Session {
             event_tx,
             tool_registry,
             auto_approval_policies: Arc::new(auto_approval_policies),
+            trace,
+            trace_writer,
         };
         let handle = SessionHandle::new(session.id, cmd_tx.clone());
         let owner = SessionOwner {
@@ -274,29 +276,26 @@ impl Session {
         Ok((owner, handle, events))
     }
 
-    fn run(self, rt: Handle, init_agent: TypedAgent<WaitingForUserMessage>) {
+    fn run(mut self, rt: Handle, init_agent: TypedAgent<WaitingForUserMessage>) {
         info!(session_id = %self.id, "Session started");
-        let mut thread_snapshot = ThreadSnapshot {
-            messages: init_agent.snapshot(),
-        };
         let mut curr_state = HarnessState::WaitingForUserMessage { agent: init_agent };
-        'session_loop: for msg in self.cmd_rx.iter() {
+        'session_loop: while let Ok(msg) = self.cmd_rx.recv() {
             match msg {
                 LoopMessage::Cmd(cmd) => {
                     match cmd {
                         SessionCommand::Stop => break 'session_loop,
                         SessionCommand::Snapshot { reply_tx } => {
-                            let _ = reply_tx.send(thread_snapshot.clone());
+                            let _ = reply_tx.send(self.trace.clone());
                         }
                         SessionCommand::SendMessage(prompt) => {
                             info!(session_id = %self.id, "Received user message {:?}", prompt);
                             curr_state = match curr_state {
                                 HarnessState::WaitingForUserMessage { agent } => {
+                                    self.record_input_message(&prompt);
                                     let event_tx = self.event_tx.clone();
                                     let new_agent = agent.add_message(prompt).add_event_callback(move |event| {
                                         let _ = event_tx.send(SessionEvent::StreamEvent(event));
                                     });
-                                    thread_snapshot = ThreadSnapshot { messages: new_agent.snapshot() };
                                     let inbox_tx = self.harness_internal_event_tx.clone();
                                     let stream_fut = new_agent.create_stream();
                                     let cancel = stream_fut.interrupt_handle();
@@ -308,13 +307,13 @@ impl Session {
                                     });
                                     HarnessState::Streaming { cancel }}
                                 HarnessState::StreamingInterrupted { agent } => {
+                                    self.record_input_message(&prompt);
                                     let event_tx = self.event_tx.clone();
                                     let new_agent = agent
                                         .add_message_to_continue(prompt, true)
                                         .add_event_callback(move |event| {
                                             let _ = event_tx.send(SessionEvent::StreamEvent(event));
                                         });
-                                    thread_snapshot = ThreadSnapshot { messages: new_agent.snapshot() };
                                     let inbox_tx = self.harness_internal_event_tx.clone();
                                     let stream_fut = new_agent.create_stream();
                                     let cancel = stream_fut.interrupt_handle();
@@ -325,13 +324,13 @@ impl Session {
                                     HarnessState::Streaming { cancel }
                                 }
                                 HarnessState::StreamingFailed { agent } => {
+                                    self.record_input_message(&prompt);
                                     let event_tx = self.event_tx.clone();
                                     let new_agent = agent
                                         .add_message_to_continue(prompt)
                                         .add_event_callback(move |event| {
                                             let _ = event_tx.send(SessionEvent::StreamEvent(event));
                                         });
-                                    thread_snapshot = ThreadSnapshot { messages: new_agent.snapshot() };
                                     let inbox_tx = self.harness_internal_event_tx.clone();
                                     let stream_fut = new_agent.create_stream();
                                     let cancel = stream_fut.interrupt_handle();
@@ -421,12 +420,14 @@ impl Session {
                                     let _ = self.event_tx.send(SessionEvent::StreamError {
                                         error: agent.error().to_string(),
                                     });
-                                    thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
+                                    let messages = agent.snapshot();
+                                    self.record_last_assistant(&messages, AssistantStatus::Failed);
                                     HarnessState::StreamingFailed { agent }
                                 }
                                 StreamResult::WaitingForToolResponses(agent) => {
                                     debug!(session_id = %self.id, "agent has called tools");
-                                    thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
+                                    let messages = agent.snapshot();
+                                    self.record_last_assistant(&messages, AssistantStatus::Completed);
                                     let tool_batch = agent.get_requested_tools();
                                     if self.auto_approval_policies.will_approve_all(&tool_batch) {
                                         info!(session_id=%self.id, "automatically running all tools");
@@ -459,7 +460,8 @@ impl Session {
                                 }
                                 StreamResult::WaitingForUserMessage(agent) => {
                                     info!(session_id=%self.id, "No tools called");
-                                    thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
+                                    let messages = agent.snapshot();
+                                    self.record_last_assistant(&messages, AssistantStatus::Completed);
                                     HarnessState::WaitingForUserMessage { agent }
                                 }
                             }
@@ -468,13 +470,13 @@ impl Session {
                             StreamResult::Interrupted(agent) => {
                                 match pending_message {
                                     Some(prompt) => {
+                                        self.record_input_message(&prompt);
                                         let event_tx = self.event_tx.clone();
                                         let new_agent = agent
                                             .add_message_to_continue(prompt, true)
                                             .add_event_callback(move |event| {
                                                 let _ = event_tx.send(SessionEvent::StreamEvent(event));
                                             });
-                                        thread_snapshot = ThreadSnapshot { messages: new_agent.snapshot() };
                                         let inbox_tx = self.harness_internal_event_tx.clone();
                                         let stream_fut = new_agent.create_stream();
                                         let cancel = stream_fut.interrupt_handle();
@@ -485,7 +487,8 @@ impl Session {
                                         HarnessState::Streaming { cancel }
                                     }
                                     None => {
-                                        thread_snapshot = ThreadSnapshot { messages: agent.snapshot() };
+                                        let messages = agent.snapshot();
+                                        self.record_last_assistant(&messages, AssistantStatus::Interrupted);
                                         let _ = self.event_tx.send(SessionEvent::Interrupted);
                                         HarnessState::StreamingInterrupted { agent }
                                     }
@@ -511,7 +514,8 @@ impl Session {
                         HarnessState::ToolCallsAreRunning { agent, cancel } => {
                             drop(cancel);
                             let new_agent = agent.add_all_tool_responses(tool_batch);
-                            thread_snapshot = ThreadSnapshot { messages: new_agent.snapshot() };
+                            let messages = new_agent.snapshot();
+                            self.record_last_input(&messages);
                             let event_tx = self.event_tx.clone();
                             let stream_fut = new_agent.add_event_callback(move |event| {
                                 let _ = event_tx.send(SessionEvent::StreamEvent(event));
@@ -526,7 +530,8 @@ impl Session {
                         }
                         HarnessState::InterruptingToolExecution { agent } => {
                             let new_agent = agent.add_all_tool_responses(tool_batch);
-                            thread_snapshot = ThreadSnapshot { messages: new_agent.snapshot() };
+                            let messages = new_agent.snapshot();
+                            self.record_last_input(&messages);
                             let event_tx = self.event_tx.clone();
                             let stream_fut = new_agent.add_event_callback(move |event| {
                                 let _ = event_tx.send(SessionEvent::StreamEvent(event));
@@ -548,6 +553,90 @@ impl Session {
 
         info!(session_id = %self.id, "Session exited");
         let _ = self.event_tx.send(SessionEvent::Closed);
+    }
+
+    /// Record a human input before it is submitted to the provider.
+    fn record_input_message(&mut self, prompt: &UserPrompt) {
+        self.append_trace_event(
+            Event::InputMessage {
+                content: vec![InputContent::Text {
+                    text: prompt.message().to_owned(),
+                }],
+            },
+        );
+    }
+
+    /// Record the provider input produced when completed tool results are resumed.
+    fn record_last_input(&mut self, messages: &[Message]) {
+        let Some(Message::User {
+            message,
+            tool_call_results,
+        }) = messages.last()
+        else {
+            return;
+        };
+
+        let mut content = Vec::new();
+        if !message.message().is_empty() {
+            content.push(InputContent::Text {
+                text: message.message().to_owned(),
+            });
+        }
+        content.extend(tool_call_results.iter().map(|result| InputContent::ToolResult {
+            tool_call_id: result.id().to_owned(),
+            content: vec![ToolData::Text {
+                text: result.content().to_owned(),
+            }],
+        }));
+
+        self.append_trace_event(Event::InputMessage { content });
+    }
+
+    /// Record the committed assistant turn with its terminal stream status.
+    fn record_last_assistant(&mut self, messages: &[Message], status: AssistantStatus) {
+        let Some(Message::Assistant {
+            reasoning,
+            content,
+            tool_calls,
+        }) = messages.last()
+        else {
+            return;
+        };
+
+        let mut trace_content = Vec::new();
+        if let Some(reasoning) = reasoning {
+            trace_content.push(AssistantContent::Reasoning {
+                text: reasoning.clone(),
+            });
+        }
+        if !content.is_empty() {
+            trace_content.push(AssistantContent::Text {
+                text: content.clone(),
+            });
+        }
+        trace_content.extend(tool_calls.iter().map(|call| AssistantContent::ToolCall {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            arguments: serde_json::from_str(&call.arguments)
+                .unwrap_or_else(|_| serde_json::Value::String(call.arguments.clone())),
+        }));
+
+        self.append_trace_event(
+            Event::AssistantMessage {
+                status,
+                content: trace_content,
+                provider_metadata: None,
+            },
+        );
+    }
+
+    /// Keep the in-memory trace and durable JSONL file in the same append order.
+    fn append_trace_event(&mut self, event: Event) {
+        self.trace.append_event(event);
+        let record = self.trace.events().last().expect("event was appended");
+        self.trace_writer
+            .append(record)
+            .expect("failed to persist trace event");
     }
 
 }
