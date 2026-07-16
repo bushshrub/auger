@@ -7,7 +7,7 @@ use crate::tools::tool_registry::ToolRegistry;
 use agent_tools::Tool;
 use auger_traces::{
     AssistantContent, AssistantStatus, AuthorizationSource, Event, InputContent, ModelInfo,
-    ProviderType, SessionRecord, ToolData, ToolDecision, TraceWriter,
+    ProviderType, SessionRecord, ToolData, ToolDecision, TraceReader, TraceWriter,
 };
 use auger_driver::{StreamResult, TypedAgent, WaitingForUserMessage};
 use provider::{LlmModel, Message, UserPrompt};
@@ -16,7 +16,7 @@ use std::sync::{mpsc, Arc};
 use std::sync::mpsc::Sender;
 use either::Either;
 use tokio::runtime::Handle;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(uuid::Uuid);
@@ -134,9 +134,11 @@ impl SessionHandle {
 impl SessionOwner {
     /// Stop the session.
     pub fn stop(self) {
+        let (reply_tx, reply_rx) = mpsc::channel();
         let _ = self
             .loop_event_tx
-            .send(LoopMessage::Cmd(SessionCommand::Stop));
+            .send(LoopMessage::Cmd(SessionCommand::Stop { reply_tx }));
+        let _ = reply_rx.recv();
     }
 }
 
@@ -232,9 +234,9 @@ impl Session {
         let tool_registry = Arc::new(tool_registry);
         let llm_tools = tool_registry.list_for_clanker();
         let init_agent = match messages {
-            Some(messages) => TypedAgent::<WaitingForUserMessage>::restore(
+            Some(ref messages) => TypedAgent::<WaitingForUserMessage>::restore(
                 model,
-                messages,
+                messages.clone(),
                 llm_tools,
             )?,
             None => TypedAgent::<WaitingForUserMessage>::new(
@@ -246,11 +248,48 @@ impl Session {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
-        let trace = SessionRecord::new(
-            id.as_uuid(),
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-            ModelInfo::new(ProviderType::Unknown),
-        );
+        let trace_path = auger_traces::session_trace_path(id.as_uuid()).expect("trace path should be available");
+        let mut trace = if trace_path.exists() {
+            TraceReader::read(&trace_path).expect("existing session trace should be valid")
+        } else {
+            SessionRecord::new(
+                id.as_uuid(),
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                ModelInfo::new(ProviderType::Unknown),
+            )
+        };
+        if trace.events().is_empty() {
+            if let Some(messages) = messages.as_ref() {
+                for message in messages {
+                    match message {
+                        Message::User { message, .. } => {
+                            trace.append_event(Event::InputMessage {
+                                content: vec![InputContent::Text { text: message.message().to_owned() }],
+                            });
+                        }
+                        Message::Assistant { reasoning, content: assistant_text, tool_calls } => {
+                            let mut trace_content = Vec::new();
+                            if let Some(reasoning) = reasoning {
+                                trace_content.push(AssistantContent::Reasoning { text: reasoning.clone() });
+                            }
+                            if !assistant_text.is_empty() {
+                                trace_content.push(AssistantContent::Text { text: assistant_text.clone() });
+                            }
+                            trace_content.extend(tool_calls.iter().map(|call| AssistantContent::ToolCall {
+                                id: call.id.clone(), name: call.name.clone(),
+                                arguments: serde_json::from_str(&call.arguments).unwrap_or_else(|_| serde_json::Value::String(call.arguments.clone())),
+                            }));
+                            trace.append_event(Event::AssistantMessage {
+                                status: AssistantStatus::Completed,
+                                content: trace_content,
+                                provider_metadata: None,
+                            });
+                        }
+                        Message::System(_) => {}
+                    }
+                }
+            }
+        }
         let trace_writer = TraceWriter::open(&trace).expect("failed to initialize trace storage");
         let session = Self {
             id,
@@ -283,7 +322,10 @@ impl Session {
             match msg {
                 LoopMessage::Cmd(cmd) => {
                     match cmd {
-                        SessionCommand::Stop => break 'session_loop,
+                        SessionCommand::Stop { reply_tx } => {
+                            let _ = reply_tx.send(());
+                            break 'session_loop;
+                        }
                         SessionCommand::Snapshot { reply_tx } => {
                             let _ = reply_tx.send(self.trace.clone());
                         }
@@ -584,13 +626,15 @@ impl Session {
 
     /// Record a human input before it is submitted to the provider.
     fn record_input_message(&mut self, prompt: &UserPrompt) {
-        self.append_trace_event(
+        if let Err(error) = self.append_trace_event(
             Event::InputMessage {
                 content: vec![InputContent::Text {
                     text: prompt.message().to_owned(),
                 }],
             },
-        );
+        ) {
+            self.report_trace_error(error);
+        }
     }
 
     /// Record the provider input produced when completed tool results are resumed.
@@ -616,7 +660,9 @@ impl Session {
             }],
         }));
 
-        self.append_trace_event(Event::InputMessage { content });
+        if let Err(error) = self.append_trace_event(Event::InputMessage { content }) {
+            self.report_trace_error(error);
+        }
     }
 
     /// Record the committed assistant turn with its terminal stream status.
@@ -648,13 +694,15 @@ impl Session {
                 .unwrap_or_else(|_| serde_json::Value::String(call.arguments.clone())),
         }));
 
-        self.append_trace_event(
+        if let Err(error) = self.append_trace_event(
             Event::AssistantMessage {
                 status,
                 content: trace_content,
                 provider_metadata: None,
             },
-        );
+        ) {
+            self.report_trace_error(error);
+        }
     }
 
     fn record_tool_authorization(
@@ -664,7 +712,7 @@ impl Session {
         source: AuthorizationSource,
         reason: Option<String>,
     ) {
-        self.append_trace_event(Event::ToolAuthorization {
+        if let Err(error) = self.append_trace_event(Event::ToolAuthorization {
             tool_call_id: tool_call_id.to_owned(),
             decision: if approved {
                 ToolDecision::Approved
@@ -673,16 +721,23 @@ impl Session {
             },
             source,
             reason,
-        });
+        }) {
+            self.report_trace_error(error);
+        }
     }
 
     /// Keep the in-memory trace and durable JSONL file in the same append order.
-    fn append_trace_event(&mut self, event: Event) {
+    fn append_trace_event(&mut self, event: Event) -> Result<(), auger_traces::TraceFileError> {
         self.trace.append_event(event);
         let record = self.trace.events().last().expect("event was appended");
-        self.trace_writer
-            .append(record)
-            .expect("failed to persist trace event");
+        self.trace_writer.append(record)
+    }
+
+    fn report_trace_error(&self, error: auger_traces::TraceFileError) {
+        error!(session_id = %self.id, error = %error, "failed to persist trace event");
+        let _ = self.event_tx.send(SessionEvent::StreamError {
+            error: format!("failed to persist session trace: {error}"),
+        });
     }
 
 }

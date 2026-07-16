@@ -132,7 +132,18 @@ fn restores_session_id_and_committed_history() {
         .build()
         .unwrap();
     let id = uuid::Uuid::new_v4();
-    let messages = vec![Message::System("restored system".to_string())];
+    let messages = vec![
+        Message::System("restored system".to_string()),
+        Message::User {
+            message: UserPrompt::new("restored user".to_string()),
+            tool_call_results: Vec::new(),
+        },
+        Message::Assistant {
+            reasoning: Some("restored reasoning".to_string()),
+            content: "restored assistant".to_string(),
+            tool_calls: Vec::new(),
+        },
+    ];
 
     runtime.block_on(async move {
         let (owner, handle, events) = Session::restore(
@@ -145,6 +156,13 @@ fn restores_session_id_and_committed_history() {
         assert_eq!(handle.id().as_uuid(), id);
         let trace = serde_json::to_value(handle.snapshot().unwrap()).unwrap();
         assert_eq!(trace["header"]["session_id"], id.to_string());
+        assert_eq!(trace["events"][0]["type"], "input_message");
+        assert_eq!(trace["events"][0]["seq"], 1);
+        assert_eq!(trace["events"][0]["content"][0]["text"], "restored user");
+        assert_eq!(trace["events"][1]["type"], "assistant_message");
+        assert_eq!(trace["events"][1]["seq"], 2);
+        assert_eq!(trace["events"][1]["parent_id"], trace["events"][0]["id"]);
+        assert_eq!(trace["events"][1]["content"][1]["text"], "restored assistant");
         owner.stop();
         assert!(matches!(events.recv_event().unwrap(), SessionEvent::Closed));
     });

@@ -263,11 +263,11 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<Uuid>) -> im
     let Some(entry) = state.sessions.read().await.get(&id).cloned() else {
         return StatusCode::NOT_FOUND;
     };
-    entry.archived.store(true, Ordering::Relaxed);
     let owner = entry.owner.lock().expect("session owner lock poisoned").take();
     if let Some(owner) = owner {
-        owner.stop();
+        tokio::task::spawn_blocking(move || owner.stop()).await.ok();
     }
+    entry.archived.store(true, Ordering::Release);
     StatusCode::NO_CONTENT
 }
 

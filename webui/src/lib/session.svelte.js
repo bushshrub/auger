@@ -354,13 +354,15 @@ function buildItems(events) {
 				.filter((content) => content.type === 'text')
 				.map((content) => content.text)
 				.join('');
-			items.push({
-				kind: 'assistant',
-				id: nextId(),
-				reasoning,
-				content: text,
-				streaming: false
-			});
+			if (reasoning.trim().length > 0 || text.trim().length > 0) {
+				items.push({
+					kind: 'assistant',
+					id: nextId(),
+					reasoning,
+					content: text,
+					streaming: false
+				});
+			}
 			for (const content of event.content) {
 				if (content.type !== 'tool_call') continue;
 				const needsApproval = APPROVAL_REQUIRED_TOOLS.has(content.name);

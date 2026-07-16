@@ -13,7 +13,7 @@ pub enum SessionCommand {
     /// Send a message
     SendMessage(UserPrompt),
     /// Stop the session.
-    Stop,
+    Stop { reply_tx: mpsc::Sender<()> },
     /// Clone the recorded session trace without changing session state.
     Snapshot {
         reply_tx: mpsc::Sender<SessionRecord>,

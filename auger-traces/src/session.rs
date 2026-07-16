@@ -46,9 +46,9 @@ impl SessionRecord {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SessionHeader {
-    #[serde(rename = "type", default = "session_record_type")]
+    #[serde(rename = "type")]
     pub(crate) record_type: String,
-    version: u32,
+    pub(crate) version: u32,
     session_id: Uuid,
     created_at: DateTime<Utc>,
     cwd: PathBuf,

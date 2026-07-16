@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use agent_core::{Session, SessionEvent, SystemPrompt};
 use auger_traces::{TraceReader, session_trace_path};
@@ -44,7 +45,12 @@ fn session_persists_a_replayable_trace() {
         let trace = (0..100)
             .find_map(|_| {
                 let trace = TraceReader::read(&path).ok()?;
-                (trace.events().len() == 2).then_some(trace)
+                if trace.events().len() == 2 {
+                    Some(trace)
+                } else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    None
+                }
             })
             .expect("session trace should contain the completed response");
         let value = serde_json::to_value(trace).unwrap();
