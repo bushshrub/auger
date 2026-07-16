@@ -47,6 +47,10 @@ impl UserToolDecisions<Resolving> {
         }
     }
 
+    pub(crate) fn is_undecided(&self, id: &str) -> bool {
+        self.undecided_tool_ids.contains(id)
+    }
+
     pub fn record_decision(
         mut self,
         id: String,

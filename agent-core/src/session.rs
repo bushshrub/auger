@@ -6,8 +6,8 @@ use crate::tools::tool_execution::ToolExecution;
 use crate::tools::tool_registry::ToolRegistry;
 use agent_tools::Tool;
 use auger_traces::{
-    AssistantContent, AssistantStatus, Event, InputContent, ModelInfo, ProviderType,
-    SessionRecord, ToolData, TraceWriter,
+    AssistantContent, AssistantStatus, AuthorizationSource, Event, InputContent, ModelInfo,
+    ProviderType, SessionRecord, ToolData, ToolDecision, TraceWriter,
 };
 use auger_driver::{StreamResult, TypedAgent, WaitingForUserMessage};
 use provider::{LlmModel, Message, UserPrompt};
@@ -371,6 +371,15 @@ impl Session {
                         SessionCommand::ToolDecision { id, approved, message } => {
                             curr_state = match curr_state {
                                 HarnessState::NeedToolConsent { agent, user_tool_decisions } => {
+                                    let valid_decision = user_tool_decisions.is_undecided(&id);
+                                    if valid_decision {
+                                        self.record_tool_authorization(
+                                            &id,
+                                            approved,
+                                            AuthorizationSource::User,
+                                            message.clone(),
+                                        );
+                                    }
                                     match user_tool_decisions.record_decision(id, approved, message) {
                                         Either::Left(not_all_decided) => {
                                             HarnessState::NeedToolConsent {
@@ -431,6 +440,14 @@ impl Session {
                                     let tool_batch = agent.get_requested_tools();
                                     if self.auto_approval_policies.will_approve_all(&tool_batch) {
                                         info!(session_id=%self.id, "automatically running all tools");
+                                        for call in &tool_batch {
+                                            self.record_tool_authorization(
+                                                &call.id,
+                                                true,
+                                                AuthorizationSource::Policy,
+                                                None,
+                                            );
+                                        }
                                         let execution = ToolExecution::new(
                                             agent.get_batch(),
                                             ToolAuthorization::AllAutoApproved,
@@ -446,6 +463,16 @@ impl Session {
                                         HarnessState::ToolCallsAreRunning { agent, cancel }
                                     } else {
                                         info!(session_id=%self.id, "Some tools require consent");
+                                        for call in &tool_batch {
+                                            if self.auto_approval_policies.is_approved(call) {
+                                                self.record_tool_authorization(
+                                                    &call.id,
+                                                    true,
+                                                    AuthorizationSource::Policy,
+                                                    None,
+                                                );
+                                            }
+                                        }
                                         let unapproved = self.auto_approval_policies.ids_needing_consent(&tool_batch);
                                         let tool_calls = agent
                                             .get_requested_tools()
@@ -628,6 +655,25 @@ impl Session {
                 provider_metadata: None,
             },
         );
+    }
+
+    fn record_tool_authorization(
+        &mut self,
+        tool_call_id: &str,
+        approved: bool,
+        source: AuthorizationSource,
+        reason: Option<String>,
+    ) {
+        self.append_trace_event(Event::ToolAuthorization {
+            tool_call_id: tool_call_id.to_owned(),
+            decision: if approved {
+                ToolDecision::Approved
+            } else {
+                ToolDecision::Denied
+            },
+            source,
+            reason,
+        });
     }
 
     /// Keep the in-memory trace and durable JSONL file in the same append order.
