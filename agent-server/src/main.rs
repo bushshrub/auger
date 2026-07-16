@@ -17,9 +17,10 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::server_types::{
-    ApproveRequest, CreateSessionRequest, SessionEntry, SnapshotMessage, UserInputRequest,
+    ApproveRequest, CreateSessionRequest, SessionEntry, UserInputRequest,
 };
 use agent_core::{AutoApprovalPolicies, Session, SessionEvent, SessionHandle, SystemPrompt};
+use auger_traces::{TraceReader, session_trace_path};
 use provider::{LlmModel, LlmProvider};
 
 mod server_types;
@@ -263,6 +264,10 @@ async fn stop_session(State(state): State<AppState>, Path(id): Path<Uuid>) -> im
         return StatusCode::NOT_FOUND;
     };
     entry.archived.store(true, Ordering::Relaxed);
+    let owner = entry.owner.lock().expect("session owner lock poisoned").take();
+    if let Some(owner) = owner {
+        owner.stop();
+    }
     StatusCode::NO_CONTENT
 }
 
@@ -307,18 +312,32 @@ async fn interrupt_session(
     Json(json!({ "status": "ok" }))
 }
 
-/// Get a point-in-time snapshot of the session's conversation history.
-async fn snapshot(Extension(session_handle): Extension<SessionHandle>) -> impl IntoResponse {
+/// Get a trace from its running session or, after archival, its JSONL file.
+async fn snapshot(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Extension(session_handle): Extension<SessionHandle>,
+) -> impl IntoResponse {
+    let archived = state
+        .sessions
+        .read()
+        .await
+        .get(&id)
+        .is_some_and(|entry| entry.archived.load(Ordering::Relaxed));
+
+    if archived {
+        return match tokio::task::spawn_blocking(move || {
+            TraceReader::read(session_trace_path(id)?)
+        })
+        .await
+        {
+            Ok(Ok(trace)) => Json(trace).into_response(),
+            _ => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot failed").into_response(),
+        };
+    }
+
     match tokio::task::spawn_blocking(move || session_handle.snapshot()).await {
-        Ok(Ok(snapshot)) => {
-            let snapshot: Vec<SnapshotMessage> = snapshot
-                .messages()
-                .iter()
-                .cloned()
-                .flat_map(SnapshotMessage::from_provider)
-                .collect();
-            Json(json!({ "messages": snapshot })).into_response()
-        }
+        Ok(Ok(snapshot)) => Json(snapshot).into_response(),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot failed").into_response(),
     }
 }
@@ -441,7 +460,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let snapshot: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(snapshot["messages"], json!([]));
+        assert_eq!(snapshot["header"]["session_id"], id);
+        assert_eq!(snapshot["events"], json!([]));
 
         let response = app
             .clone()
@@ -462,10 +482,25 @@ mod tests {
                     .header(header::AUTHORIZATION, format!("Bearer {write_token}"))
                     .body(Body::empty())
                     .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/sessions/{id}/snapshot"))
+                    .header(header::AUTHORIZATION, format!("Bearer {read_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let snapshot: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(snapshot["header"]["session_id"], id);
 
         let response = app
             .oneshot(Request::get("/sessions").body(Body::empty()).unwrap())

@@ -67,6 +67,7 @@ impl SessionHeader {
         }
     }
 
+    /// Return the ID shared by the trace header and its storage path.
     pub fn session_id(&self) -> Uuid {
         self.session_id
     }

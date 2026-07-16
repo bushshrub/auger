@@ -83,15 +83,15 @@ paths:
         "404": { description: Session not found }
   /sessions/{id}/snapshot:
     get:
-      summary: Get committed conversation history
+      summary: Get a session trace snapshot
       security: [{ bearerAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/SessionId" }]
       responses:
         "200":
-          description: Conversation snapshot
+          description: Session trace snapshot
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/SnapshotResponse" }
+              schema: { $ref: "#/components/schemas/TraceSnapshot" }
         "401": { description: Invalid read token }
         "404": { description: Session not found }
   /sessions/{id}/events:
@@ -176,31 +176,23 @@ components:
           properties:
             read: { type: string, format: uuid }
             write: { type: string, format: uuid }
-    SnapshotResponse:
+    TraceSnapshot:
       type: object
-      required: [messages]
+      required: [header, events]
       properties:
-        messages:
+        header:
+          type: object
+          required: [type, version, session_id, created_at, cwd, model]
+          properties:
+            type: { const: session }
+            version: { type: integer }
+            session_id: { type: string, format: uuid }
+            created_at: { type: string, format: date-time }
+            cwd: { type: string }
+            model: { type: object }
+        events:
           type: array
-          items: { $ref: "#/components/schemas/SnapshotMessage" }
-    SnapshotMessage:
-      oneOf:
-        - type: object
-          required: [type, text]
-          properties: { type: { const: user }, text: { type: string } }
-        - type: object
-          required: [type, content, tool_calls]
-          properties:
-            type: { const: assistant }
-            reasoning: { type: [string, "null"] }
-            content: { type: string }
-            tool_calls: { type: array, items: { $ref: "#/components/schemas/ToolCall" } }
-        - type: object
-          required: [type, tool_call_id, content]
-          properties:
-            type: { const: tool }
-            tool_call_id: { type: string }
-            content: { type: string }
+          items: { type: object }
     SessionEvent:
       oneOf:
         - type: object
