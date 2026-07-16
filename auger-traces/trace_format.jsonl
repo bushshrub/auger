@@ -76,7 +76,7 @@
   "parent_id": "019f5e78-6f24-7c39-bfa1-82de286b5544",
   "type": "tool_authorization",
   "tool_call_id": "call_123",
-  "decision": "allow",
+  "decision": "approved",
   "source": "policy", // or user. policy = automated decision
   "reason": null // optional string value. if user provided a reason.
 }
@@ -88,7 +88,7 @@
   "parent_id": "019f5e78-6f24-7c39-bfa1-82de286b5544",
   "type": "tool_authorization",
   "tool_call_id": "call_456",
-  "decision": "deny",
+  "decision": "denied",
   "source": "user", // or user. policy = automated decision
   "reason": "That file does not contain that issue" // optional string value. if user provided a reason.
 }
@@ -178,7 +178,7 @@
   "seq": 8,
   "timestamp": "2026-07-13T22:30:10Z",
   "tool_call_id": "call_789",
-  "decision": "allow",
+  "decision": "approved",
   "source": "policy",
   "reason": null
 }
@@ -190,7 +190,7 @@
   "seq": 9,
   "timestamp": "2026-07-13T22:30:10Z",
   "tool_call_id": "call_987",
-  "decision": "allow",
+  "decision": "approved",
   "source": "policy",
   "reason": null
 }
