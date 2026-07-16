@@ -567,6 +567,20 @@ fn session_lets_user_approve_one_tool_and_deny_another() {
             assert!(results.iter().any(|result| {
                 result.id() == "call-deny" && result.content().contains("Denied")
             }));
+            let trace = serde_json::to_value(handle.snapshot().unwrap()).unwrap();
+            assert!(trace["events"].as_array().unwrap().iter().any(|event| {
+                event["type"] == "tool_authorization"
+                    && event["tool_call_id"] == "call-approve"
+                    && event["decision"] == "approved"
+                    && event["source"] == "user"
+            }));
+            assert!(trace["events"].as_array().unwrap().iter().any(|event| {
+                event["type"] == "tool_authorization"
+                    && event["tool_call_id"] == "call-deny"
+                    && event["decision"] == "denied"
+                    && event["source"] == "user"
+                    && event["reason"] == "Denied by user"
+            }));
         })
         .await
         .expect("session interaction task should complete");
@@ -736,6 +750,19 @@ fn session_runs_mixed_batch_of_auto_approved_and_consented_tools() {
             assert_eq!(text, "finished");
             result_events.sort();
             assert_eq!(result_events, vec!["call-auto", "call-consent"]);
+            let trace = serde_json::to_value(handle.snapshot().unwrap()).unwrap();
+            assert!(trace["events"].as_array().unwrap().iter().any(|event| {
+                event["type"] == "tool_authorization"
+                    && event["tool_call_id"] == "call-auto"
+                    && event["decision"] == "approved"
+                    && event["source"] == "policy"
+            }));
+            assert!(trace["events"].as_array().unwrap().iter().any(|event| {
+                event["type"] == "tool_authorization"
+                    && event["tool_call_id"] == "call-consent"
+                    && event["decision"] == "approved"
+                    && event["source"] == "user"
+            }));
         })
         .await
         .expect("session interaction task should complete");
