@@ -17,7 +17,7 @@ impl SystemPrompt {
         Self { base: new_base }
     }
 
-    pub fn add_skill(self, skill: Skill) -> Self {
+    pub fn add_skill(self, _skill: Skill) -> Self {
         todo!()
     }
 }
