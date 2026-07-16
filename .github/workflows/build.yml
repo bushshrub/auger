@@ -123,8 +123,8 @@ jobs:
           TARGET_BIN="target/${{ matrix.target }}/release/agent-server"
           cp "$TARGET_BIN" "$PKG_DIR/"
 
-          # Copy webui build output
-          cp -r webui/build "$PKG_DIR/webui-build"
+          # Copy the SvelteKit adapter output
+          cp -r webui/.svelte-kit/output "$PKG_DIR/webui-build"
 
           # Copy configuration files
           cp agent-server/config.toml "$PKG_DIR/" 2>/dev/null || true
