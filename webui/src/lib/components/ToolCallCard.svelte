@@ -84,6 +84,28 @@
 	const summary = $derived(argSummary(call.name, args));
 	const isPending = $derived(call.status === 'pending_approval');
 	const isEdit = $derived(call.name === 'edit_file' && 'old_string' in args && 'new_string' in args);
+	const isShell = $derived(call.name === 'shell');
+
+	/**
+	 * @param {string | undefined} raw
+	 * @returns {{ stdout: string, stderr: string, exit_code: number } | null}
+	 */
+	function parseShellResult(raw) {
+		if (!raw) return null;
+		try {
+			const parsed = JSON.parse(raw);
+			if (typeof parsed === 'object' && parsed !== null && 'exit_code' in parsed) {
+				return {
+					stdout: String(parsed.stdout ?? ''),
+					stderr: String(parsed.stderr ?? ''),
+					exit_code: Number(parsed.exit_code ?? 0)
+				};
+			}
+		} catch {}
+		return null;
+	}
+
+	const shellResult = $derived(isShell ? parseShellResult(call.result) : null);
 
 	// Auto-open the card whenever it needs a decision.
 	$effect(() => {
@@ -172,6 +194,9 @@
 					newContent={String(args.new_string ?? '')}
 					fileName={String(args.path ?? '')}
 				/>
+			{:else if isShell}
+				<pre
+					class="overflow-x-auto rounded-md bg-sidebar p-2.5 font-mono text-xs text-foreground/80 auger-scroll">{String(args.command ?? '')}</pre>
 			{:else}
 				<pre
 					class="overflow-x-auto rounded-md bg-sidebar p-2.5 font-mono text-xs text-foreground/80 auger-scroll">{JSON.stringify(
@@ -181,7 +206,22 @@
 					)}</pre>
 			{/if}
 
-			{#if call.result !== undefined}
+			{#if isShell && shellResult !== null}
+				<div class="overflow-hidden rounded-md bg-sidebar font-mono text-xs">
+					{#if shellResult.stdout || shellResult.stderr}
+						<pre
+							class="max-h-96 overflow-auto p-2.5 leading-relaxed whitespace-pre-wrap text-foreground/80 auger-scroll">{shellResult.stdout}{shellResult.stderr
+								? (shellResult.stdout ? '\n' : '') + shellResult.stderr
+								: ''}</pre>
+					{/if}
+					<div
+						class={`flex items-center gap-1.5 border-t border-border/50 px-2.5 py-1.5 ${shellResult.exit_code === 0 ? 'text-success' : 'text-destructive'}`}
+					>
+						<span class="text-[10px] text-muted-foreground">exit</span>
+						<span class="text-[10px] font-semibold">{shellResult.exit_code}</span>
+					</div>
+				</div>
+			{:else if !isShell && call.result !== undefined}
 				<div>
 					<p class="mb-1 font-mono text-[10px] tracking-wider text-muted-foreground uppercase">
 						output
