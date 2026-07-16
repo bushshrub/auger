@@ -39,7 +39,6 @@ pub async fn list_sessions(server: &str) -> anyhow::Result<Vec<SessionInfo>> {
         .filter_map(|s| {
             let session_id = s["session_id"].as_str()?.parse::<Uuid>().ok()?;
             let model = s["model"].as_str().unwrap_or("unknown").to_string();
-            let created_at = s["created_at"].as_u64().unwrap_or(0);
             let context_window = s["context_window"].as_u64().unwrap_or(8192);
             // agent-server returns tokens.read / tokens.write (not owner_token/viewer_token)
             let write_token = s["tokens"]["write"].as_str().unwrap_or("").to_string();
@@ -47,7 +46,6 @@ pub async fn list_sessions(server: &str) -> anyhow::Result<Vec<SessionInfo>> {
             Some(SessionInfo {
                 session_id,
                 model,
-                created_at,
                 context_window,
                 write_token,
                 read_token,

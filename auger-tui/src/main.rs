@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
         })
         .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
 
-    let mut app = App::new(server.clone());
+    let mut app = App::new();
 
     // Unified event channel: terminal input + async app events.
     // Large buffer so fast SSE streams don't block the producer.
