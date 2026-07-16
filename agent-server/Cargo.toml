@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-agent-core = { version = "0.1.0", path = "../agent-core" }
+agent-core.workspace = true
 builtin-tools = { path = "../builtin-tools" }
 axum = { version = "0.8.9", features = ["macros"] }
 futures.workspace = true
-provider = { path = "../provider" }
-provider-openai-chatcompletions = { path = "../provider-openai-chatcompletions" }
-provider-openai-responses = { path = "../provider-openai-responses" }
-provider-anthropic = { path = "../provider-anthropic" }
+provider.workspace = true
+provider-openai-chatcompletions.workspace = true
+provider-openai-responses.workspace = true
+provider-anthropic.workspace = true
 reqwest.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -19,10 +19,10 @@ tokio = { workspace = true, features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["sync"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-uuid = { version = "1.23.3", features = ["serde", "v4"] }
-agent-tools = { version = "0.1.0", path = "../agent-tools" }
+uuid = { workspace = true, features = ["serde", "v4"] }
+agent-tools.workspace = true
 toml = "1.1.2"
-auger-traces = { version = "0.1.0", path = "../auger-traces" }
+auger-traces.workspace = true
 
 [dev-dependencies]
 tower = "0.5.3"

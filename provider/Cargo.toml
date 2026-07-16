@@ -10,4 +10,4 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 futures-core.workspace = true
-either = "1.16.0"
+either.workspace = true

@@ -3,14 +3,26 @@ resolver = "3"
 members = ["agent-core","agent-server","agent-tools","builtin-tools", "auger-tui","provider", "provider-anthropic","provider-openai-chatcompletions", "provider-openai-responses", "tool-call-healer", "auger-driver", "provider-dummy", "auger-traces"]
 
 [workspace.dependencies]
+agent-core = { version = "0.1.0", path = "agent-core" }
+agent-tools = { version = "0.1.0", path = "agent-tools" }
+auger-driver = { version = "0.1.0", path = "auger-driver" }
+auger-traces = { version = "0.1.0", path = "auger-traces" }
+provider = { version = "0.1.0", path = "provider" }
+provider-anthropic = { version = "0.1.0", path = "provider-anthropic" }
+provider-dummy = { version = "0.1.0", path = "provider-dummy" }
+provider-openai-chatcompletions = { version = "0.1.0", path = "provider-openai-chatcompletions" }
+provider-openai-responses = { version = "0.1.0", path = "provider-openai-responses" }
 async-trait = "0.1.89"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0"
+serde_json = "1.0.150"
 futures = "0.3.32"
 futures-core = "0.3.32"
 thiserror = "2.0"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 tokio = { version = "1", features = ["fs", "rt", "sync", "time"] }
+tokio-util = "0.7.18"
+async-stream = "0.3"
+either = "1.16.0"
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3" }
-uuid = { version = "1.23.3" }
+uuid = { version = "1.23.4" }
