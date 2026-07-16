@@ -5,8 +5,10 @@ edition = "2024"
 
 [dependencies]
 agent-tools = { version = "0.1.0", path = "../agent-tools" }
-futures.workspace = true
 provider = { version = "0.1.0", path = "../provider" }
+auger-traces = { path = "../auger-traces" }
+
+futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
