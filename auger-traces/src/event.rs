@@ -29,6 +29,10 @@ impl EventRecord {
             event,
         }
     }
+
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
