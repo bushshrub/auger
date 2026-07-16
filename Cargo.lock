@@ -9,6 +9,7 @@ dependencies = [
  "agent-tools",
  "async-trait",
  "auger-driver",
+ "auger-traces",
  "builtin-tools",
  "either",
  "futures",
