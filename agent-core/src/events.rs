@@ -1,7 +1,7 @@
 //! Events and command types for a session
 
-use crate::session::ThreadSnapshot;
 use crate::tools::tool_decisions::{Resolving, UserToolDecisions};
+use auger_traces::SessionRecord;
 use auger_driver::{LlmStreamingFailed, LlmStreamingInterrupted, Resolved, StreamResult, ToolBatch, TypedAgent, WaitingForToolResponses, WaitingForUserMessage};
 use provider::UserPrompt;
 use std::sync::mpsc;
@@ -14,9 +14,9 @@ pub enum SessionCommand {
     SendMessage(UserPrompt),
     /// Stop the session.
     Stop,
-    /// Clone the committed conversation thread without changing session state.
+    /// Clone the recorded session trace without changing session state.
     Snapshot {
-        reply_tx: mpsc::Sender<ThreadSnapshot>,
+        reply_tx: mpsc::Sender<SessionRecord>,
     },
     /// Interrupt the current activity on the stream
     Interrupt,
