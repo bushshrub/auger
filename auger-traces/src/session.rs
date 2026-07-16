@@ -1,4 +1,4 @@
-use crate::{EventRecord, ModelInfo};
+use crate::{Event, EventRecord, ModelInfo};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -16,6 +16,13 @@ impl SessionRecord {
             header: SessionHeader::new(session_id, cwd, model),
             events: Vec::new(),
         }
+    }
+
+    pub fn add_event(&mut self, parent_id: Option<Uuid>, event: Event) -> Uuid {
+        let record = EventRecord::new(parent_id, self.events.len() as u64 + 1, event);
+        let id = record.id();
+        self.events.push(record);
+        id
     }
 }
 
