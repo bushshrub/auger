@@ -1,7 +1,7 @@
 use async_stream::stream;
 use futures::StreamExt;
 use provider::{
-    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage,
+    CompletedLlmResponse, LlmError, LlmProvider, LlmRequest, LlmStream, StreamEvent, TokenUsage,
     ToolCallRequest,
 };
 use reqwest::Client;
@@ -361,7 +361,11 @@ fn stop_reason(status: Option<&str>, has_tool_calls: bool) -> Option<String> {
 
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiResponsesProvider {
-    async fn complete(&self, model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError> {
+    async fn complete(
+        &self,
+        model: &str,
+        request: LlmRequest,
+    ) -> Result<CompletedLlmResponse, LlmError> {
         let body = ResponsesRequest {
             model: model.to_string(),
             input: messages_to_input(request.messages()),
@@ -400,7 +404,7 @@ impl LlmProvider for OpenAiResponsesProvider {
         let tool_calls = extract_tool_calls(&data.output);
         let has_tool_calls = tool_calls.is_some();
 
-        Ok(LlmResponse {
+        Ok(CompletedLlmResponse {
             content: extract_text(&data.output),
             reasoning: extract_reasoning(&data.output),
             tool_calls,

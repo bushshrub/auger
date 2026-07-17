@@ -2,7 +2,7 @@ use async_stream::stream;
 use futures::StreamExt;
 use provider::types::Message;
 use provider::{
-    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage,
+    CompletedLlmResponse, LlmError, LlmProvider, LlmRequest, LlmStream, StreamEvent, TokenUsage,
     ToolCallRequest,
 };
 use reqwest::Client;
@@ -172,7 +172,7 @@ fn parse_usage(u: &Value) -> Option<TokenUsage> {
     })
 }
 
-fn parse_response(data: &Value) -> LlmResponse {
+fn parse_response(data: &Value) -> CompletedLlmResponse {
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
@@ -204,7 +204,7 @@ fn parse_response(data: &Value) -> LlmResponse {
         }
     }
 
-    LlmResponse {
+    CompletedLlmResponse {
         content: text,
         reasoning: if reasoning.is_empty() {
             None
@@ -223,7 +223,11 @@ fn parse_response(data: &Value) -> LlmResponse {
 
 #[async_trait::async_trait]
 impl LlmProvider for AnthropicProvider {
-    async fn complete(&self, model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError> {
+    async fn complete(
+        &self,
+        model: &str,
+        request: LlmRequest,
+    ) -> Result<CompletedLlmResponse, LlmError> {
         let body = build_body(model, request, false);
 
         let resp = self

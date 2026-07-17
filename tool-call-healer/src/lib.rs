@@ -1,10 +1,10 @@
-use provider::{LlmResponse, ToolCallRequest};
+use provider::{CompletedLlmResponse, ToolCallRequest};
 use uuid::Uuid;
 
 pub struct XmlStyleToolCallHealer;
 
 impl XmlStyleToolCallHealer {
-    pub fn heal(&self, mut response: LlmResponse) -> LlmResponse {
+    pub fn heal(&self, mut response: CompletedLlmResponse) -> CompletedLlmResponse {
         let mut healed_tool_calls: Vec<ToolCallRequest> = Vec::new();
         let mut content = response.content.clone();
 
@@ -51,8 +51,8 @@ fn parse_tool_call(json: &str) -> Option<ToolCallRequest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn base_response(content: &str) -> LlmResponse {
-        LlmResponse {
+    fn base_response(content: &str) -> CompletedLlmResponse {
+        CompletedLlmResponse {
             content: content.to_string(),
             reasoning: None,
             tool_calls: None,

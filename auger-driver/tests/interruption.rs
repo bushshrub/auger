@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use auger_driver::{StreamResult, TypedAgent, WaitingForUserMessage};
-use provider::{LlmModel, LlmResponse, Message, StreamEvent, UserPrompt};
+use provider::{CompletedLlmResponse, LlmModel, Message, StreamEvent, UserPrompt};
 use provider_dummy::{DummyProvider, DummyResponse};
 
 #[tokio::test]
 async fn continues_after_interruption_with_partial_response() {
     let provider = DummyProvider::new_responses([
         DummyResponse::PendingStream(vec![Ok(StreamEvent::TextDelta("partial".to_string()))]),
-        DummyResponse::Response(LlmResponse {
+        DummyResponse::Response(CompletedLlmResponse {
             content: "continued".to_string(),
             reasoning: None,
             tool_calls: None,

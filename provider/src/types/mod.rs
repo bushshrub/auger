@@ -27,8 +27,8 @@ pub enum Message {
     },
 }
 
-impl From<LlmResponse> for Message {
-    fn from(response: LlmResponse) -> Self {
+impl From<CompletedLlmResponse> for Message {
+    fn from(response: CompletedLlmResponse) -> Self {
         let tool_calls = response.tool_calls.unwrap_or_default();
         Message::Assistant {
             reasoning: None,

@@ -48,8 +48,18 @@ pub struct ClankerMessage {
     content: String,
 }
 
-impl From<LlmResponse> for ClankerMessage {
-    fn from(response: LlmResponse) -> Self {
+impl From<CompletedLlmResponse> for ClankerMessage {
+    fn from(response: CompletedLlmResponse) -> Self {
+        Self {
+            reasoning: response.reasoning,
+            tool_calls: response.tool_calls.unwrap_or_default(),
+            content: response.content,
+        }
+    }
+}
+
+impl From<PartialLlmResponse> for ClankerMessage {
+    fn from(response: PartialLlmResponse) -> Self {
         Self {
             reasoning: response.reasoning,
             tool_calls: response.tool_calls.unwrap_or_default(),
@@ -69,7 +79,7 @@ impl From<ClankerMessage> for Message {
 }
 
 #[derive(Debug, Clone)]
-pub struct LlmResponse {
+pub struct PartialLlmResponse {
     pub content: String,
     /// Optional reasoning output, if the model supports reasoning.
     pub reasoning: Option<String>,
@@ -83,14 +93,35 @@ pub struct LlmResponse {
     pub stop_reason: Option<String>,
 }
 
-/// Convert a stream of events into a single LlmResponse.
-impl From<Vec<StreamEvent>> for LlmResponse {
-    fn from(events: Vec<StreamEvent>) -> Self {
+#[derive(Debug, Clone)]
+pub struct CompletedLlmResponse {
+    pub content: String,
+    /// Optional reasoning output, if the model supports reasoning.
+    pub reasoning: Option<String>,
+    /// Tool calls requested by the model.
+    pub tool_calls: Option<Vec<ToolCallRequest>>,
+    /// Token usage details after this response is complete.
+    /// May be None if the provider doesn't expose token usage details
+    pub usage: Option<TokenUsage>,
+    /// The reason why the model stopped generating output.
+    pub stop_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum LlmResponse {
+    Partial(PartialLlmResponse),
+    Completed(CompletedLlmResponse),
+}
+
+impl LlmResponse {
+    /// Collect stream events and select a partial or completed response.
+    pub fn from_events(events: Vec<StreamEvent>) -> Self {
         let mut content = String::new();
         let mut reasoning = None;
         let mut tool_calls = Vec::new();
         let mut usage = None;
         let mut stop_reason = None;
+        let mut completed = false;
 
         for event in events {
             match event {
@@ -115,20 +146,42 @@ impl From<Vec<StreamEvent>> for LlmResponse {
                 } => {
                     usage = u;
                     stop_reason = sr;
+                    completed = true;
                 }
             }
         }
 
-        Self {
-            content,
-            reasoning,
-            tool_calls: if tool_calls.is_empty() {
-                None
-            } else {
-                Some(tool_calls)
-            },
-            usage,
-            stop_reason,
+        let tool_calls = if tool_calls.is_empty() {
+            None
+        } else {
+            Some(tool_calls)
+        };
+
+        if completed {
+            Self::Completed(CompletedLlmResponse {
+                content,
+                reasoning,
+                tool_calls,
+                usage,
+                stop_reason,
+            })
+        } else {
+            Self::Partial(PartialLlmResponse {
+                content,
+                reasoning,
+                tool_calls,
+                usage,
+                stop_reason,
+            })
+        }
+    }
+}
+
+impl From<LlmResponse> for ClankerMessage {
+    fn from(response: LlmResponse) -> Self {
+        match response {
+            LlmResponse::Partial(response) => response.into(),
+            LlmResponse::Completed(response) => response.into(),
         }
     }
 }
@@ -174,3 +227,23 @@ impl Stream for LlmStream {
 }
 
 impl Unpin for LlmStream {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_without_done_is_partial() {
+        let response = LlmResponse::from_events(vec![StreamEvent::TextDelta("partial".into())]);
+        assert!(matches!(response, LlmResponse::Partial(_)));
+    }
+
+    #[test]
+    fn response_with_done_is_completed() {
+        let response = LlmResponse::from_events(vec![StreamEvent::Done {
+            usage: None,
+            stop_reason: None,
+        }]);
+        assert!(matches!(response, LlmResponse::Completed(_)));
+    }
+}

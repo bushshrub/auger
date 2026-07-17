@@ -115,7 +115,22 @@ pub(crate) async fn run_stream(
         }
     }
 
-    let response = provider::LlmResponse::from(events);
+    let response = match provider::LlmResponse::from_events(events.clone()) {
+        provider::LlmResponse::Completed(response) => response,
+        provider::LlmResponse::Partial(_) => {
+            return StreamResult::Failed(TypedAgent {
+                model,
+                tools,
+                state: LlmStreamingFailed::new(
+                    thread,
+                    events,
+                    provider::LlmError {
+                        message: "provider stream ended without a done event".to_string(),
+                    },
+                ),
+            });
+        }
+    };
     let clanker_message = provider::ClankerMessage::from(response);
 
     match thread.add_clanker_reply(clanker_message) {
