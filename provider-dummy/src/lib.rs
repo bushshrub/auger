@@ -1,6 +1,7 @@
 use futures::{StreamExt, stream};
 use provider::{
-    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, ToolCallRequest,
+    CompletedLlmResponse, LlmError, LlmProvider, LlmRequest, LlmStream, StreamEvent,
+    ToolCallRequest,
 };
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -19,20 +20,20 @@ struct DummyProviderState {
 
 #[derive(Debug, Clone)]
 pub enum DummyResponse {
-    Response(LlmResponse),
+    Response(CompletedLlmResponse),
     Error(LlmError),
     Stream(Vec<Result<StreamEvent, LlmError>>),
     PendingStream(Vec<Result<StreamEvent, LlmError>>),
 }
 
-impl From<LlmResponse> for DummyResponse {
-    fn from(response: LlmResponse) -> Self {
+impl From<CompletedLlmResponse> for DummyResponse {
+    fn from(response: CompletedLlmResponse) -> Self {
         Self::Response(response)
     }
 }
 
 impl DummyProvider {
-    pub fn new(responses: impl IntoIterator<Item = LlmResponse>) -> Self {
+    pub fn new(responses: impl IntoIterator<Item = CompletedLlmResponse>) -> Self {
         Self::new_responses(responses.into_iter().map(DummyResponse::from))
     }
 
@@ -64,7 +65,11 @@ impl DummyProvider {
 
 #[async_trait::async_trait]
 impl LlmProvider for DummyProvider {
-    async fn complete(&self, model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError> {
+    async fn complete(
+        &self,
+        model: &str,
+        request: LlmRequest,
+    ) -> Result<CompletedLlmResponse, LlmError> {
         debug!(model, "dummy provider complete called");
         match self.next_response(request)? {
             DummyResponse::Response(response) => Ok(response),
@@ -112,7 +117,9 @@ fn finite_stream(
     )
 }
 
-fn response_to_stream_events(response: LlmResponse) -> Vec<Result<StreamEvent, LlmError>> {
+fn response_to_stream_events(
+    response: CompletedLlmResponse,
+) -> Vec<Result<StreamEvent, LlmError>> {
     let mut events = Vec::new();
 
     if !response.content.is_empty() {

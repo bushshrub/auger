@@ -2,13 +2,15 @@ use std::sync::Arc;
 
 use auger_driver::{StreamResult, TypedAgent, WaitingForUserMessage};
 use either::Either;
-use provider::{LlmModel, LlmResponse, ToolCallRequest, ToolDefinition, ToolResult, UserPrompt};
+use provider::{
+    CompletedLlmResponse, LlmModel, ToolCallRequest, ToolDefinition, ToolResult, UserPrompt,
+};
 use provider_dummy::DummyProvider;
 
 #[tokio::test]
 async fn completes_one_tool_call_iteration() {
     let provider = DummyProvider::new([
-        LlmResponse {
+        CompletedLlmResponse {
             content: String::new(),
             reasoning: None,
             tool_calls: Some(vec![ToolCallRequest {
@@ -19,7 +21,7 @@ async fn completes_one_tool_call_iteration() {
             usage: None,
             stop_reason: Some("tool_calls".to_string()),
         },
-        LlmResponse {
+        CompletedLlmResponse {
             content: "The file has been read.".to_string(),
             reasoning: None,
             tool_calls: None,

@@ -31,7 +31,7 @@ impl TypedAgent<LlmStreamingInterrupted> {
     pub fn snapshot(&self) -> Vec<provider::Message> {
         let mut messages = self.state.thread.messages().to_vec();
         if !self.state.events.is_empty() {
-            let response = provider::LlmResponse::from(self.state.events.clone());
+            let response = provider::LlmResponse::from_events(self.state.events.clone());
             messages.push(provider::ClankerMessage::from(response).into());
         }
         messages
@@ -45,7 +45,7 @@ impl TypedAgent<LlmStreamingInterrupted> {
         leave_partial_response: bool,
     ) -> TypedAgent<ReadyToStream> {
         let thread = if leave_partial_response {
-            let response = provider::LlmResponse::from(self.state.events);
+            let response = provider::LlmResponse::from_events(self.state.events);
             let reply = provider::ClankerMessage::from(response);
 
             match self.state.thread.add_clanker_reply(reply) {

@@ -2,7 +2,7 @@ use async_openai::Client;
 use async_openai::config::OpenAIConfig;
 use futures::StreamExt;
 use provider::{
-    LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream, StreamEvent, TokenUsage,
+    CompletedLlmResponse, LlmError, LlmProvider, LlmRequest, LlmStream, StreamEvent, TokenUsage,
     ToolCallRequest,
 };
 use serde_json::{Value, json};
@@ -168,7 +168,11 @@ fn extract_reasoning(v: &Value) -> Option<String> {
 
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiChatCompletionsProvider {
-    async fn complete(&self, model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError> {
+    async fn complete(
+        &self,
+        model: &str,
+        request: LlmRequest,
+    ) -> Result<CompletedLlmResponse, LlmError> {
         let body = json!({
             "model": model,
             "messages": messages_to_json(request.messages()),
@@ -190,7 +194,7 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
             .as_str()
             .map(str::to_string);
 
-        Ok(LlmResponse {
+        Ok(CompletedLlmResponse {
             content: msg["content"].as_str().unwrap_or("").to_string(),
             reasoning: extract_reasoning(msg),
             tool_calls,

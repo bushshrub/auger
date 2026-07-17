@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use auger_driver::{StreamResult, TypedAgent, WaitingForUserMessage};
-use provider::{LlmError, LlmModel, LlmResponse, Message, StreamEvent, UserPrompt};
+use provider::{CompletedLlmResponse, LlmError, LlmModel, Message, StreamEvent, UserPrompt};
 use provider_dummy::{DummyProvider, DummyResponse};
 
 #[tokio::test]
@@ -13,7 +13,7 @@ async fn retries_failed_stream_without_partial_response() {
                 message: "stream failed".to_string(),
             }),
         ]),
-        DummyResponse::Response(LlmResponse {
+        DummyResponse::Response(CompletedLlmResponse {
             content: "retried".to_string(),
             reasoning: None,
             tool_calls: None,
