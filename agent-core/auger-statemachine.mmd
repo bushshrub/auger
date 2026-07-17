@@ -1,6 +1,7 @@
 
 stateDiagram-v2
-[*] --> WaitingForUserMessage
+[*] --> WaitingForUserMessage: New session or restored at user boundary
+[*] --> NeedToolConsent: Restored with unresolved tool approvals
 
 WaitingForUserMessage --> Streaming: SendMessage
 
