@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
+/// A record of an auger session
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SessionRecord {
     pub(crate) header: SessionHeader,

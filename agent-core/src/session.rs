@@ -1,5 +1,5 @@
 use crate::SystemPrompt;
-use crate::events::{HarnessState, LoopMessage, SessionCommand, SessionEvent};
+use crate::events::{LoopMessage, SessionCommand, SessionEvent};
 use crate::tools::auto_approval::AutoApprovalPolicies;
 use crate::tools::tool_decisions::{ToolAuthorization, UserToolDecisions};
 use crate::tools::tool_execution::ToolExecution;
@@ -17,6 +17,7 @@ use std::sync::mpsc::Sender;
 use either::Either;
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
+use crate::states::HarnessState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(uuid::Uuid);
@@ -167,16 +168,8 @@ impl Session {
         model: LlmModel,
         system_prompt: SystemPrompt,
         rt: Handle,
-    ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
-        Self::start_with_tools(model, system_prompt, rt, Vec::new(), Vec::new())
-    }
-
-    pub fn start_with_tools(
-        model: LlmModel,
-        system_prompt: SystemPrompt,
-        rt: Handle,
         tools: Vec<Box<dyn Tool>>,
-        auto_approval_policies: impl Into<AutoApprovalPolicies>,
+        auto_approval_policies: impl Into<AutoApprovalPolicies>
     ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
         Self::spawn(
             SessionId::new(),
@@ -189,28 +182,21 @@ impl Session {
         ).expect("new session history is valid")
     }
 
-    /// Restore a session from committed history at a user-input boundary.
+    /// Restore a session from a SessionRecord
     pub fn restore(
-        id: SessionId,
         model: LlmModel,
-        messages: Vec<provider::Message>,
-        rt: Handle,
-    ) -> Result<(SessionOwner, SessionHandle, SessionEventReceiver), provider::RestoreThreadError> {
-        Self::restore_with_tools(id, model, messages, rt, Vec::new(), Vec::new())
-    }
-
-    pub fn restore_with_tools(
-        id: SessionId,
-        model: LlmModel,
-        messages: Vec<provider::Message>,
+        record: SessionRecord,
+        system_prompt: SystemPrompt,
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: impl Into<AutoApprovalPolicies>,
     ) -> Result<(SessionOwner, SessionHandle, SessionEventReceiver), provider::RestoreThreadError> {
+        let id = record.header().session_id();
+        let messages = record.events();
         Self::spawn(
-            id,
+            SessionId(id),
             model,
-            SystemPrompt::new(String::new()),
+            system_prompt,
             Some(messages),
             rt,
             tools,
