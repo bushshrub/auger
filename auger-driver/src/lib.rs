@@ -46,6 +46,7 @@ pub(crate) mod persistence;
 
 pub use agent::{ReadyToStream, State, TypedAgent, WaitingForUserMessage};
 pub use interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
+pub use persistence::{RestoreState, RestoredAgent, restore};
 pub use streaming::{LlmStreaming, StreamResult};
 pub use tool_batch::{AddToolResponseIssue, Resolved, Resolving, ToolBatch, ToolBatchState};
 pub use waiting_for_tools::WaitingForToolResponses;
