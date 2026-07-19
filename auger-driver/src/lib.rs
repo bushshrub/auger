@@ -42,6 +42,7 @@ pub(crate) mod interrupt_states;
 pub(crate) mod streaming;
 pub(crate) mod tool_batch;
 pub(crate) mod waiting_for_tools;
+pub(crate) mod persistence;
 
 pub use agent::{ReadyToStream, State, TypedAgent, WaitingForUserMessage};
 pub use interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
