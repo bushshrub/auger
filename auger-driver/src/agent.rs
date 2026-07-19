@@ -1,7 +1,6 @@
 use crate::streaming::LlmStreaming as LlmStreamingFuture;
 use getset::Getters;
-use provider::thread::{ClankerTurn, UserTurn};
-use provider::{LlmModel, LlmThread, Message, RestoreThreadError, ToolDefinition, UserPrompt};
+use provider::{LlmModel, Message, ToolDefinition, UserPrompt};
 use tokio_util::sync::CancellationToken;
 /// Synchronous state machine for the auger driver.
 /// This is the main state machine.
@@ -12,6 +11,7 @@ pub struct TypedAgent<S: State> {
     /// The messages in the agent's current session so far.
     /// Note that this crate guarantees the messages in here are aligned with
     /// the state. It is a bug if that is untrue.
+    #[get = "pub"]
     pub(crate) messages: Vec<Message>,
     pub(crate) tools: Vec<ToolDefinition>,
     #[get = "pub"]
@@ -71,7 +71,7 @@ impl TypedAgent<ReadyToStream> {
             self.model,
             self.tools,
             self.messages,
-            cb,
+            Box::new(cb),
             cancellation,
         )
     }
