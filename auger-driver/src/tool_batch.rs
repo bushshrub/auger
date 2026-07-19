@@ -20,7 +20,9 @@ pub enum AddToolResponseIssue {
 /// The state of a tool batch.
 pub trait ToolBatchState {}
 
+/// Some tools don't yet have a response
 pub struct Resolving;
+/// All tools have a response.
 pub struct Resolved;
 
 impl ToolBatchState for Resolving {}
@@ -52,14 +54,7 @@ impl ToolBatch<Resolving> {
         self.pending_calls.values()
     }
 
-    /// Add a result for one requested call.
-    pub fn add_result(
-        mut self,
-        call_id: impl Into<ToolCallId>,
-        result: ToolResult,
-    ) -> Result<Either<Self, ToolBatch<Resolved>>, AddToolResponseIssue> {
-        let call_id = call_id.into();
-
+    pub fn add_result(&mut self, call_id: ToolCallId, result: ToolResult) -> Result<(), AddToolResponseIssue> {
         if self.results.contains_key(&call_id) {
             return Err(AddToolResponseIssue::AlreadyProvided(call_id));
         }
@@ -69,57 +64,7 @@ impl ToolBatch<Resolving> {
             .ok_or_else(|| AddToolResponseIssue::NotRequested(call_id.clone()))?;
 
         self.results.insert(call_id, result);
-
-        if self.pending_calls.is_empty() {
-            Ok(Either::Right(ToolBatch {
-                pending_calls: self.pending_calls,
-                results: self.results,
-                _state: PhantomData,
-            }))
-        } else {
-            Ok(Either::Left(self))
-        }
-    }
-
-    /// Resolve every requested tool call into a completed batch.
-    pub fn resolve_all(
-        self,
-        results: impl IntoIterator<Item = ToolResult>,
-    ) -> Result<ToolBatch<Resolved>, AddToolResponseIssue> {
-        let results = results.into_iter().collect::<Vec<_>>();
-        let mut seen = HashSet::new();
-        for result in &results {
-            let id = result.id();
-            if !self.pending_calls.contains_key(id) {
-                return Err(AddToolResponseIssue::NotRequested(id.to_string()));
-            }
-            if !seen.insert(id.to_string()) {
-                return Err(AddToolResponseIssue::AlreadyProvided(id.to_string()));
-            }
-        }
-
-        if seen.len() != self.pending_calls.len() {
-            return Err(AddToolResponseIssue::Incomplete(
-                self.pending_calls
-                    .keys()
-                    .filter(|id| !seen.contains(*id))
-                    .cloned()
-                    .collect(),
-            ));
-        }
-
-        let mut batch = self;
-
-        for result in results {
-            batch = match batch.add_result(result.id().to_string(), result)? {
-                Either::Left(batch) => batch,
-                Either::Right(batch) => return Ok(batch),
-            };
-        }
-
-        Err(AddToolResponseIssue::Incomplete(
-            batch.pending_calls.into_keys().collect(),
-        ))
+        Ok(())
     }
 
     /// Mark all unresolved calls as interrupted without executing them.
@@ -138,6 +83,20 @@ impl ToolBatch<Resolving> {
             pending_calls: HashMap::new(),
             results: self.results,
             _state: PhantomData,
+        }
+    }
+
+    /// Try to convert the resolving batch into a resolved batch.
+    /// If there are still pending tool calls, this will just return itself.
+    pub fn into_resolved(self) -> Either<Self, ToolBatch<Resolved>> {
+        if self.pending_calls.is_empty() {
+            Either::Right(ToolBatch {
+                pending_calls: self.pending_calls,
+                results: self.results,
+                _state: PhantomData,
+            })
+        } else {
+            Either::Left(self)
         }
     }
 }

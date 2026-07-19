@@ -1,27 +1,20 @@
 use crate::agent::{ReadyToStream, State, TypedAgent};
 use crate::tool_batch::{Resolved, Resolving, ToolBatch};
-use provider::thread::ToolResultsPending;
-use provider::{LlmThread, ToolCallRequest};
+use provider::{ToolCallRequest};
 
 /// The LLM has requested tool calls and the driver
 /// is waiting for the tool call's results to be provided back.
-pub struct WaitingForToolResponses {
-    pub(crate) thread: LlmThread<ToolResultsPending>,
-}
+pub struct WaitingForToolResponses;
 
 impl State for WaitingForToolResponses {}
 
 impl TypedAgent<WaitingForToolResponses> {
-    /// Clone the committed messages in the current thread.
-    pub fn snapshot(&self) -> Vec<provider::Message> {
-        self.state.thread.messages().to_vec()
-    }
 
     /// Get all the tool names from the tool calls that were requested.
     pub fn tool_names_requested(&self) -> Vec<String> {
-        self.state
-            .thread
-            .get_pending_tool_calls()
+        let last_message = self.messages.last().expect("there should be at least one message in the thread");
+        last_message
+            .tool_calls()
             .iter()
             .map(|call| call.name.clone())
             .collect()
@@ -41,22 +34,6 @@ impl TypedAgent<WaitingForToolResponses> {
         self,
         responses: ToolBatch<Resolved>,
     ) -> TypedAgent<ReadyToStream> {
-        let mut thread = self.state.thread;
-
-        for response in responses.drain() {
-            thread = match thread.add_tool_result(response) {
-                Ok(either::Either::Left(thread)) => thread,
-                Ok(either::Either::Right(thread)) => {
-                    return TypedAgent {
-                        model: self.model,
-                        tools: self.tools,
-                        state: ReadyToStream::new(thread),
-                    };
-                }
-                Err(error) => panic!("completed tool batch contained invalid result: {error}"),
-            };
-        }
-
-        panic!("completed tool batch did not resolve all requested calls");
+        // prepare a provider::Message User variant with tool responess.
     }
 }

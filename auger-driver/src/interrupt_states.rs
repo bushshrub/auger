@@ -4,14 +4,13 @@
 //! or by the stream failing midway.
 
 use crate::agent::{ReadyToStream, State, TypedAgent};
+use crate::ToolBatch;
 use getset::Getters;
-use provider::thread::ClankerTurn;
-use provider::{LlmThread, UserPrompt};
+use provider::{ClankerMessage, LlmResponse, Message, UserPrompt};
 
 /// The LLM stream was interrupted midway.
 #[derive(Getters)]
 pub struct LlmStreamingInterrupted {
-    thread: LlmThread<ClankerTurn>,
     #[getset(get = "pub")]
     events: Vec<provider::StreamEvent>,
 }
@@ -19,50 +18,40 @@ pub struct LlmStreamingInterrupted {
 impl State for LlmStreamingInterrupted {}
 
 impl LlmStreamingInterrupted {
-    pub(crate) fn new(thread: LlmThread<ClankerTurn>, events: Vec<provider::StreamEvent>) -> Self {
-        Self { thread, events }
+    pub(crate) fn new(events: Vec<provider::StreamEvent>) -> Self {
+        Self {  events }
     }
 }
 
 impl TypedAgent<LlmStreamingInterrupted> {
-    /// Clone the committed messages in the current thread, plus the partial
-    /// response accumulated before the interruption (which is committed for
-    /// real when the conversation continues).
-    pub fn snapshot(&self) -> Vec<provider::Message> {
-        let mut messages = self.state.thread.messages().to_vec();
-        if !self.state.events.is_empty() {
-            let response = provider::LlmResponse::from_events(self.state.events.clone());
-            messages.push(provider::ClankerMessage::from(response).into());
-        }
-        messages
-    }
 
     /// Add a new user message.
     /// Choose whether the stream should be left with the partial response or not.
     pub fn add_message_to_continue(
-        self,
+        mut self,
         msg: UserPrompt,
         leave_partial_response: bool,
     ) -> TypedAgent<ReadyToStream> {
-        let thread = if leave_partial_response {
-            let response = provider::LlmResponse::from_events(self.state.events);
-            let reply = provider::ClankerMessage::from(response);
-
-            match self.state.thread.add_clanker_reply(reply) {
-                either::Either::Left(thread) => thread.add_user_message(msg),
-                either::Either::Right(thread) => thread.abort_pending_tool_calls(msg),
-            }
+        let user_message = if leave_partial_response {
+            let response = LlmResponse::from_events(self.state.events);
+            let reply = ClankerMessage::from(response);
+            let tool_call_results = if !reply.tool_calls().is_empty() {
+                ToolBatch::new(reply.tool_calls().to_vec()).interrupt_remaining().drain()
+            } else {
+                Vec::new()
+            };
+            Message::User { message: msg, tool_call_results }
         } else {
-            self.state
-                .thread
-                .abandon_clanker_turn()
-                .add_user_message(msg)
+            msg.into()
         };
+
+        self.messages.push(user_message);
 
         TypedAgent {
             model: self.model,
             tools: self.tools,
-            state: ReadyToStream::new(thread),
+            messages: self.messages,
+            state: ReadyToStream {},
         }
     }
 }
@@ -70,7 +59,6 @@ impl TypedAgent<LlmStreamingInterrupted> {
 /// The LLM stream failed midway.
 #[derive(Getters)]
 pub struct LlmStreamingFailed {
-    thread: LlmThread<ClankerTurn>,
     #[getset(get = "pub")]
     events: Vec<provider::StreamEvent>,
     #[getset(get = "pub")]
@@ -81,11 +69,10 @@ impl State for LlmStreamingFailed {}
 
 impl LlmStreamingFailed {
     pub(crate) fn new(
-        thread: LlmThread<ClankerTurn>,
         events: Vec<provider::StreamEvent>,
         error: provider::LlmError,
     ) -> Self {
-        Self { thread, events, error }
+        Self {events, error }
     }
 }
 
@@ -95,22 +82,14 @@ impl TypedAgent<LlmStreamingFailed> {
         self.state.error()
     }
 
-    /// Clone the committed messages in the current thread.
-    pub fn snapshot(&self) -> Vec<provider::Message> {
-        self.state.thread.messages().to_vec()
-    }
-
     /// Add a new user message after abandoning the failed partial response.
-    pub fn add_message_to_continue(self, msg: UserPrompt) -> TypedAgent<ReadyToStream> {
-        let thread = self
-            .state
-            .thread
-            .abandon_clanker_turn()
-            .add_user_message(msg);
+    pub fn add_message_to_continue(mut self, msg: UserPrompt) -> TypedAgent<ReadyToStream> {
+        self.messages.push(msg.into());
         TypedAgent {
             model: self.model,
             tools: self.tools,
-            state: ReadyToStream::new(thread),
+            messages: self.messages,
+            state: ReadyToStream {},
         }
     }
 
@@ -119,7 +98,8 @@ impl TypedAgent<LlmStreamingFailed> {
         TypedAgent {
             model: self.model,
             tools: self.tools,
-            state: ReadyToStream::new(self.state.thread),
+            messages: self.messages,
+            state: ReadyToStream {},
         }
     }
 }
