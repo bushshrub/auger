@@ -1,19 +1,30 @@
-//! Persistence for auger-driver sessions
+//! Restore support for auger-driver sessions.
+
+use crate::{LlmStreamingFailed, LlmStreamingInterrupted, TypedAgent, WaitingForToolResponses, WaitingForUserMessage};
 use provider::{LlmError, LlmModel, Message, StreamEvent, ToolDefinition};
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
-use crate::{LlmStreamingFailed, LlmStreamingInterrupted, TypedAgent, WaitingForToolResponses, WaitingForUserMessage};
 
-/// State of agent which can be persisted to disk.
-#[derive(Debug, Deserialize, Serialize)]
-pub enum PersistedState {
-    WaitingForUserMessage,
-    WaitingForToolResponses,
-    Interrupted { events: Vec<StreamEvent> },
-    Failed { events: Vec<StreamEvent>, error: LlmError },
+/// Driver state reconstructed by the persistence owner.
+#[derive(Debug, Serialize, Deserialize)]
+pub enum RestoreState {
+    WaitingForUserMessage {
+        messages: Vec<Message>,
+    },
+    WaitingForToolResponses {
+        messages: Vec<Message>,
+    },
+    Interrupted {
+        messages: Vec<Message>,
+        events: Vec<StreamEvent>,
+    },
+    Failed {
+        messages: Vec<Message>,
+        events: Vec<StreamEvent>,
+        error: LlmError,
+    },
 }
 
-/// An agent restored from persistent storage.
+/// An agent restored from persistent state.
 pub enum RestoredAgent {
     WaitingForUserMessage(TypedAgent<WaitingForUserMessage>),
     WaitingForToolResponses(TypedAgent<WaitingForToolResponses>),
@@ -21,32 +32,35 @@ pub enum RestoredAgent {
     Failed(TypedAgent<LlmStreamingFailed>),
 }
 
-#[derive(Debug, Error)]
-pub enum RestoreError {
-    #[error("The persisted state doesn't align with the last message")]
-    StateMismatch
-}
+/// Restore an agent into the state selected by the persistence owner.
+pub fn restore(
+    model: LlmModel,
+    tools: Vec<ToolDefinition>,
+    state: RestoreState,
+) -> RestoredAgent {
+    macro_rules! agent {
+        ($messages:expr, $state:expr) => {
+            TypedAgent {
+                model,
+                messages: $messages,
+                tools,
+                state: $state,
+            }
+        };
+    }
 
-impl RestoredAgent {
-    pub fn restore(
-        model: LlmModel,
-        messages: Vec<Message>,
-        tools: Vec<ToolDefinition>,
-        state: PersistedState,
-    ) -> Result<Self, RestoreError> {
-        macro_rules! agent { ($s:expr) => {
-            TypedAgent { model, messages, tools, state: $s }
-        }}
-        // TODO: this needs to validate messages against the state...?
-        match state {
-            PersistedState::WaitingForUserMessage =>
-                Ok(Self::WaitingForUserMessage(agent!(WaitingForUserMessage))),
-            PersistedState::WaitingForToolResponses =>
-                Ok(Self::WaitingForToolResponses(agent!(WaitingForToolResponses))),
-            PersistedState::Interrupted { events } =>
-                Ok(Self::Interrupted(agent!(LlmStreamingInterrupted::new(events)))),
-            PersistedState::Failed { events, error } =>
-                Ok(Self::Failed(agent!(LlmStreamingFailed::new(events, error)))),
+    match state {
+        RestoreState::WaitingForUserMessage { messages } => {
+            RestoredAgent::WaitingForUserMessage(agent!(messages, WaitingForUserMessage))
+        }
+        RestoreState::WaitingForToolResponses { messages } => {
+            RestoredAgent::WaitingForToolResponses(agent!(messages, WaitingForToolResponses))
+        }
+        RestoreState::Interrupted { messages, events } => {
+            RestoredAgent::Interrupted(agent!(messages, LlmStreamingInterrupted::new(events)))
+        }
+        RestoreState::Failed { messages, events, error } => {
+            RestoredAgent::Failed(agent!(messages, LlmStreamingFailed::new(events, error)))
         }
     }
 }
