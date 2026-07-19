@@ -6,21 +6,19 @@ use crate::tools::tool_decisions::{ToolAuthorization, UserToolDecisions};
 use crate::tools::tool_execution::ToolExecution;
 use crate::tools::tool_registry::ToolRegistry;
 use agent_tools::Tool;
-use auger_traces::{
-    AssistantContent, AssistantStatus, AuthorizationSource, Event, InputContent, ModelInfo,
-    ProviderType, SessionRecord, ToolData, ToolDecision, TraceReader, TraceWriter,
-};
 use auger_driver::{restore, RestoredAgent, StreamResult, TypedAgent, WaitingForUserMessage};
 use provider::{LlmModel, Message, UserPrompt};
 use std::fmt;
 use std::sync::{mpsc, Arc};
 use std::sync::mpsc::Sender;
 use either::Either;
+use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
-use crate::states::HarnessState;
+use crate::session::history::{AuthorizationSource, EventId, RecordableEvent, SessionRecord};
+use crate::session::states::HarnessState;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SessionId(uuid::Uuid);
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -90,15 +88,6 @@ impl SessionHandle {
             .map_err(|_| ())
     }
 
-    /// Clone the recorded trace without changing session state.
-    pub fn snapshot(&self) -> Result<SessionRecord, SnapshotError> {
-        let (reply_tx, reply_rx) = mpsc::channel();
-        self.loop_event_tx
-            .send(LoopMessage::Cmd(SessionCommand::Snapshot { reply_tx }))
-            .map_err(|_| SnapshotError::SessionClosed)?;
-        reply_rx.recv().map_err(|_| SnapshotError::SessionClosed)
-    }
-
     pub fn approve_tool_call(&self, id: impl Into<String>) -> Result<(), ()> {
         self.tool_decision(id, true, None)
     }
@@ -160,8 +149,7 @@ pub struct Session {
     event_tx: mpsc::Sender<SessionEvent>,
     tool_registry: Arc<ToolRegistry>,
     auto_approval_policies: Arc<AutoApprovalPolicies>,
-    trace: SessionRecord,
-    trace_writer: TraceWriter,
+    record: SessionRecord,
 }
 
 impl Session {
@@ -176,7 +164,7 @@ impl Session {
         Self::start_from(
             model,
             // TODO: Hardcoded provider type
-            SessionRecord::new(id.0, current_dir().expect("no cwd"), ModelInfo::new(ProviderType::OpenAiChatCompletions)),
+            SessionRecord::new(id, current_dir().expect("no cwd")),
             system_prompt,
             rt,
             tools,
@@ -193,14 +181,13 @@ impl Session {
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: impl Into<AutoApprovalPolicies>,
     ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
-        let id = record.header().session_id();
-        let messages = record.events();
         todo!("restore the session");
     }
 
     fn spawn(
         id: SessionId,
         rt: Handle,
+        record: SessionRecord,
         initial_agent: RestoredAgent,
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: AutoApprovalPolicies,
@@ -221,8 +208,7 @@ impl Session {
             event_tx,
             tool_registry,
             auto_approval_policies: Arc::new(auto_approval_policies),
-            trace,
-            trace_writer,
+            record
         };
         let handle = SessionHandle::new(session.id, cmd_tx.clone());
         let owner = SessionOwner {
@@ -241,6 +227,7 @@ impl Session {
     fn run(mut self, rt: Handle, init_agent: RestoredAgent) {
         info!(session_id = %self.id, "Session started");
         let mut curr_state = init_agent.into();
+        let mut previous_event_id: Option<EventId> = None;
         'session_loop: while let Ok(msg) = self.cmd_rx.recv() {
             match msg {
                 LoopMessage::Cmd(cmd) => {
@@ -250,20 +237,21 @@ impl Session {
                             break 'session_loop;
                         }
                         SessionCommand::Snapshot { reply_tx } => {
-                            let _ = reply_tx.send(self.trace.clone());
+                            let _ = reply_tx.send(self.record.clone());
                         }
                         SessionCommand::SendMessage(prompt) => {
                             info!(session_id = %self.id, "Received user message {:?}", prompt);
                             curr_state = match curr_state {
                                 HarnessState::WaitingForUserMessage { agent } => {
                                     let event_tx = self.event_tx.clone();
-                                    let new_agent = agent.add_message(prompt);
+                                    let new_agent = agent.add_message(prompt.clone());
                                     let inbox_tx = self.harness_internal_event_tx.clone();
                                     let stream_fut = new_agent.create_stream(move |event| {
                                         let _ = event_tx.send(SessionEvent::StreamEvent(event));
                                     });
                                     let cancel = stream_fut.interrupt_handle();
                                     let sess_id = self.id;
+                                    previous_event_id = Some(self.record.record_event(RecordableEvent::user_prompt(prompt), previous_event_id));
                                     rt.spawn(async move {
                                         info!(session_id=%sess_id, "Starting stream");
                                         let res = stream_fut.await;
@@ -333,7 +321,7 @@ impl Session {
                                 HarnessState::NeedToolConsent { agent, user_tool_decisions } => {
                                     let valid_decision = user_tool_decisions.is_undecided(&id);
                                     if valid_decision {
-                                        // record tool authorization
+                                        previous_event_id = Some(self.record.record_event(RecordableEvent::tool_decision(id.clone(), approved, AuthorizationSource::User, message.clone()), previous_event_id))
                                     }
                                     match user_tool_decisions.record_decision(id, approved, message) {
                                         Either::Left(not_all_decided) => {
@@ -412,6 +400,7 @@ impl Session {
                                         for call in &tool_batch {
                                             if self.auto_approval_policies.is_approved(call) {
                                                 // record tool authorization
+                                                // TODO: Continue here
                                             }
                                         }
                                         let unapproved = self.auto_approval_policies.ids_needing_consent(&tool_batch);
