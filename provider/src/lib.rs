@@ -1,6 +1,5 @@
 pub mod capabilities;
 pub mod model;
-pub mod thread;
 pub mod types;
 
 pub use capabilities::{ModelCatalog, ModelId, ModelInfo};
