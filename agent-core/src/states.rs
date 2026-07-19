@@ -1,4 +1,4 @@
-use auger_driver::{LlmStreamingFailed, LlmStreamingInterrupted, StreamResult, TypedAgent, WaitingForToolResponses, WaitingForUserMessage};
+use auger_driver::{LlmStreamingFailed, LlmStreamingInterrupted, RestoredAgent, StreamResult, TypedAgent, WaitingForToolResponses, WaitingForUserMessage};
 use tokio_util::sync::CancellationToken;
 use provider::UserPrompt;
 use crate::tools::tool_decisions::{Resolving, UserToolDecisions};
@@ -68,6 +68,17 @@ impl From<StreamResult> for HarnessState {
             StreamResult::Failed(agent) => Self::StreamingFailed { agent },
             StreamResult::WaitingForUserMessage(agent) => Self::WaitingForUserMessage { agent },
             StreamResult::WaitingForToolResponses(agent) => Self::HasToolCalls { _agent: agent },
+        }
+    }
+}
+
+impl From<RestoredAgent> for HarnessState {
+    fn from(agent: RestoredAgent) -> Self {
+        match agent {
+            RestoredAgent::WaitingForUserMessage(agent) => HarnessState::WaitingForUserMessage { agent },
+            RestoredAgent::WaitingForToolResponses(agent) => HarnessState::HasToolCalls { _agent: agent },
+            RestoredAgent::Interrupted(agent) => HarnessState::StreamingInterrupted { agent },
+            RestoredAgent::Failed(agent) => HarnessState::StreamingFailed { agent },
         }
     }
 }

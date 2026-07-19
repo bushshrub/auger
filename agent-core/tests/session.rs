@@ -146,7 +146,7 @@ fn restores_session_id_and_committed_history() {
     ];
 
     runtime.block_on(async move {
-        let (owner, handle, events) = Session::restore(
+        let (owner, handle, events) = Session::start_from(
             SessionId::from_uuid(id),
             model,
             messages,
