@@ -190,7 +190,7 @@ impl Session {
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: impl Into<AutoApprovalPolicies>,
-    ) -> Result<(SessionOwner, SessionHandle, SessionEventReceiver), provider::RestoreThreadError> {
+    ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
         let id = record.header().session_id();
         let messages = record.events();
         Self::spawn(
@@ -208,29 +208,22 @@ impl Session {
         id: SessionId,
         model: LlmModel,
         system_prompt: SystemPrompt,
-        messages: Option<Vec<provider::Message>>,
+        messages: Vec<Message>,
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: AutoApprovalPolicies,
-    ) -> Result<(SessionOwner, SessionHandle, SessionEventReceiver), provider::RestoreThreadError> {
+    ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
         let mut tool_registry = ToolRegistry::new();
         for tool in tools {
             tool_registry.register(tool);
         }
         let tool_registry = Arc::new(tool_registry);
         let llm_tools = tool_registry.list_for_clanker();
-        let init_agent = match messages {
-            Some(ref messages) => TypedAgent::<WaitingForUserMessage>::restore(
-                model,
-                messages.clone(),
-                llm_tools,
-            )?,
-            None => TypedAgent::<WaitingForUserMessage>::new(
-                model,
-                system_prompt.into(),
-                llm_tools,
-            ),
-        };
+        let init_agent = TypedAgent::<WaitingForUserMessage>::restore(
+            model,
+            messages.clone(),
+            llm_tools,
+        );
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 

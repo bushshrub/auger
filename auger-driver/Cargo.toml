@@ -14,6 +14,7 @@ thiserror.workspace = true
 tokio-util.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "macros"] }
 getset = "0.1.7"
+serde = { version = "1.0.228", features = ["derive"] }
 
 [dev-dependencies]
 provider-dummy.workspace = true
