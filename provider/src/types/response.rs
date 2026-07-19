@@ -18,7 +18,7 @@ pub struct TokenUsage {
 }
 
 /// Events that can be emitted while streaming a response from the clanker.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum StreamEvent {
     TextDelta(String),
     /// Thinking output from clanker
@@ -191,7 +191,7 @@ impl From<LlmResponse> for ClankerMessage {
     }
 }
 
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Serialize, Deserialize, Debug, Clone)]
 pub struct LlmError {
     pub message: String,
 }

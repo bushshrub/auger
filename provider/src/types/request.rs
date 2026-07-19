@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use crate::types::{Message, ToolDefinition};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserPrompt {
     message: String,
 }
@@ -25,7 +26,7 @@ impl From<UserPrompt> for Message {
 }
 
 /// A result from a tool call which can be sent back to the model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ToolResult {
     /// The ID of the tool call that this is a result for
     tool_call_id: String,

@@ -1,6 +1,6 @@
 //! Events and command types for a session
 
-use auger_traces::SessionRecord;
+use crate::session::SessionRecord;
 use auger_driver::{Resolved, StreamResult, ToolBatch};
 use provider::UserPrompt;
 use std::sync::mpsc;

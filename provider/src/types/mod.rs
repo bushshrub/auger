@@ -2,11 +2,12 @@ mod request;
 mod response;
 mod tool;
 
+use serde::{Deserialize, Serialize};
 pub use request::*;
 pub use response::*;
 pub use tool::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
     /// The system prompt
     System(String),

@@ -2,7 +2,6 @@ mod session;
 mod system_prompt;
 mod tools;
 mod events;
-mod states;
 
 pub use events::{SessionCommand, SessionEvent};
 pub use session::{
