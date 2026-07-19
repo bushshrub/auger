@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+getset = "0.1.7"
 async-trait.workspace = true
 futures.workspace = true
 serde.workspace = true

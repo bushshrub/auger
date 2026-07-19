@@ -4,8 +4,7 @@
 use crate::agent::{TypedAgent, WaitingForUserMessage};
 use crate::interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
 use crate::waiting_for_tools::WaitingForToolResponses;
-use provider::thread::ClankerTurn;
-use provider::{LlmModel, LlmThread, ToolDefinition};
+use provider::{LlmModel, LlmRequest, ToolDefinition};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -23,14 +22,14 @@ impl LlmStreaming {
     pub(crate) fn new(
         model: LlmModel,
         tools: Vec<ToolDefinition>,
-        thread: LlmThread<ClankerTurn>,
+        messages_so_far: Vec<provider::Message>,
         event_callback: Box<dyn Fn(provider::StreamEvent) + Send + Sync>,
         cancellation: CancellationToken,
     ) -> Self {
         let inner = Box::pin(run_stream(
             model,
             tools,
-            thread,
+            messages_so_far,
             event_callback,
             cancellation.clone(),
         ));
@@ -57,12 +56,12 @@ impl Future for LlmStreaming {
 pub(crate) async fn run_stream(
     model: LlmModel,
     tools: Vec<ToolDefinition>,
-    thread: LlmThread<ClankerTurn>,
+    mut messages_so_far: Vec<provider::Message>,
     event_callback: impl Fn(provider::StreamEvent) + Send + Sync + 'static,
     cancellation: CancellationToken,
 ) -> StreamResult {
     let mut events = Vec::new();
-    let request = thread.create_request(tools.clone());
+    let request = LlmRequest::new(messages_so_far.clone(), tools.clone());
     let mut stream = tokio::select! {
         result = model.stream(request) => match result {
             Ok(stream) => stream,
@@ -71,7 +70,8 @@ pub(crate) async fn run_stream(
                 return StreamResult::Failed(TypedAgent {
                     model,
                     tools,
-                    state: LlmStreamingFailed::new(thread, events, error),
+                    messages: messages_so_far,
+                    state: LlmStreamingFailed::new(events, error),
                 });
             }
         },
@@ -79,7 +79,8 @@ pub(crate) async fn run_stream(
             return StreamResult::Interrupted(TypedAgent {
                 model,
                 tools,
-                state: LlmStreamingInterrupted::new(thread, events),
+                messages: messages_so_far,
+                state: LlmStreamingInterrupted::new(events),
             });
         },
     };
@@ -93,7 +94,8 @@ pub(crate) async fn run_stream(
                 return StreamResult::Interrupted(TypedAgent {
                     model,
                     tools,
-                state: LlmStreamingInterrupted::new(thread, events),
+                    messages: messages_so_far,
+                    state: LlmStreamingInterrupted::new(events),
                 });
             }
         };
@@ -108,7 +110,8 @@ pub(crate) async fn run_stream(
                 return StreamResult::Failed(TypedAgent {
                     model,
                     tools,
-                    state: LlmStreamingFailed::new(thread, events, error),
+                    messages: messages_so_far,
+                    state: LlmStreamingFailed::new(events, error),
                 });
             }
             None => break,
@@ -121,8 +124,8 @@ pub(crate) async fn run_stream(
             return StreamResult::Failed(TypedAgent {
                 model,
                 tools,
+                messages: messages_so_far,
                 state: LlmStreamingFailed::new(
-                    thread,
                     events,
                     provider::LlmError {
                         message: "provider stream ended without a done event".to_string(),
@@ -132,18 +135,22 @@ pub(crate) async fn run_stream(
         }
     };
     let clanker_message = provider::ClankerMessage::from(response);
-
-    match thread.add_clanker_reply(clanker_message) {
-        either::Either::Left(thread) => StreamResult::WaitingForUserMessage(TypedAgent {
+    let has_tool_calls = !clanker_message.tool_calls().is_empty();
+    messages_so_far.push(clanker_message.into());
+    if !has_tool_calls {
+        StreamResult::WaitingForUserMessage(TypedAgent {
             model,
             tools,
-            state: WaitingForUserMessage { thread },
-        }),
-        either::Either::Right(thread) => StreamResult::WaitingForToolResponses(TypedAgent {
+            messages: messages_so_far,
+            state: WaitingForUserMessage {}
+        })
+    } else {
+        StreamResult::WaitingForToolResponses(TypedAgent {
             model,
             tools,
-            state: WaitingForToolResponses { thread },
-        }),
+            messages: messages_so_far,
+            state: WaitingForToolResponses {}
+        })
     }
 }
 

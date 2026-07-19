@@ -4,6 +4,7 @@ use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use getset::Getters;
 use thiserror::Error;
 
 /// Token usage details
@@ -42,11 +43,15 @@ pub enum StreamEvent {
     },
 }
 
+#[derive(Debug, Getters)]
 pub struct ClankerMessage {
     reasoning: Option<String>,
+    #[get = "pub"]
     pub(crate) tool_calls: Vec<ToolCallRequest>,
     content: String,
 }
+
+
 
 impl From<CompletedLlmResponse> for ClankerMessage {
     fn from(response: CompletedLlmResponse) -> Self {
