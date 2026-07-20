@@ -42,11 +42,11 @@ pub(crate) mod interrupt_states;
 pub(crate) mod streaming;
 pub(crate) mod tool_batch;
 pub(crate) mod waiting_for_tools;
-pub(crate) mod persistence;
+pub(crate) mod restore;
 
 pub use agent::{ReadyToStream, State, TypedAgent, WaitingForUserMessage};
 pub use interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
-pub use persistence::{RestoreState, RestoredAgent, restore};
+pub use restore::{RestoreState, RestoredAgent, restore};
 pub use streaming::{LlmStreaming, StreamResult};
 pub use tool_batch::{AddToolResponseIssue, Resolved, Resolving, ToolBatch, ToolBatchState};
 pub use waiting_for_tools::WaitingForToolResponses;
