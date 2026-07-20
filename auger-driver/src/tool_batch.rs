@@ -106,4 +106,8 @@ impl ToolBatch<Resolved> {
     pub fn drain(self) -> Vec<ToolResult> {
         self.results.into_values().collect()
     }
+
+    pub fn results(&self) -> Vec<&ToolResult> {
+        self.results.values().collect()
+    }
 }

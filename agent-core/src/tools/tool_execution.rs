@@ -9,6 +9,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::{Arc, mpsc};
 use std::task::{Context, Poll};
+use either::Either;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) trait ToolExecutionState {}
@@ -154,9 +155,12 @@ impl Future for ToolExecutionFuture {
 
 impl ToolExecution<Completed> {
     pub(crate) fn resolve(self) -> ToolBatch<Resolved> {
-        self.batch
-            .resolve_all(self.results)
-            .expect("tool execution must produce one result per call")
+        match self.batch
+            .into_resolved() {
+            Either::Right(resolved) => resolved,
+            Either::Left(_) => panic!("this is a bug")
+        }
+
     }
 }
 

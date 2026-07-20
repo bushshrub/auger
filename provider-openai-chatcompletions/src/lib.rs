@@ -72,7 +72,7 @@ fn messages_to_json(messages: &[provider::Message]) -> Vec<Value> {
                 for tr in tool_call_results {
                     out.push(json!({
                         "role": "tool",
-                        "tool_call_id": tr.id(),
+                        "tool_call_id": tr.tool_call_id(),
                         "content": tr.content(),
                     }));
                 }
