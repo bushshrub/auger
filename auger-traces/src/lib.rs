@@ -1,3 +1,3 @@
 
 mod trace_file;
-mod schema;
+pub mod schema;
