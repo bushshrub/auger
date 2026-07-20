@@ -1,3 +1,4 @@
+use getset::Getters;
 use serde::{Deserialize, Serialize};
 use crate::types::{Message, ToolDefinition};
 
@@ -26,11 +27,13 @@ impl From<UserPrompt> for Message {
 }
 
 /// A result from a tool call which can be sent back to the model.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Getters)]
 pub struct ToolResult {
     /// The ID of the tool call that this is a result for
+    #[get = "pub"]
     tool_call_id: String,
     /// The output of the tool call.
+    #[get = "pub"]
     content: String,
 }
 
@@ -42,13 +45,6 @@ impl ToolResult {
         }
     }
 
-    pub fn id(&self) -> &str {
-        &self.tool_call_id
-    }
-
-    pub fn content(&self) -> &str {
-        &self.content
-    }
 }
 
 /// A request to get a response from the clanker

@@ -81,7 +81,7 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
                 for tr in tool_call_results {
                     blocks.push(json!({
                         "type": "tool_result",
-                        "tool_use_id": tr.id(),
+                        "tool_use_id": tr.tool_call_id(),
                         "content": tr.content(),
                     }));
                 }

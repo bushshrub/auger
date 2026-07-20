@@ -229,7 +229,7 @@ fn messages_to_input(messages: &[provider::Message]) -> Vec<Value> {
                 for tr in tool_call_results {
                     items.push(serde_json::json!({
                         "type": "function_call_output",
-                        "call_id": tr.id(),
+                        "call_id": tr.tool_call_id(),
                         "output": tr.content(),
                     }));
                 }
