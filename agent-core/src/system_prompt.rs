@@ -1,3 +1,5 @@
+use provider::Message;
+
 #[derive(Clone, Debug)]
 pub struct SystemPrompt {
     base: String,
@@ -32,4 +34,11 @@ impl From<SystemPrompt> for String {
     fn from(value: SystemPrompt) -> Self {
         value.base
     }
+}
+
+impl Into<Message> for SystemPrompt {
+    fn into(self) -> Message {
+        Message::System(self.into())
+    }
+
 }

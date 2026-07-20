@@ -100,6 +100,51 @@ impl SessionRecord {
 
     }
 
+    pub fn as_messages(&self) -> Vec<provider::Message> {
+        let mut messages = Vec::new();
+        let mut curr_turn_id = self.previous_turn_id;
+        loop {
+            let turn = self.get_turn(&curr_turn_id);
+            if let Some(turn) = turn {
+                match turn.turn() {
+                    RecordableTurn::InputMessage { content } => {
+                        let mut msg = String::new();
+                        let tool_calls = content.iter().filter_map(|c| {
+                            match c {
+                                InputContent::Text { text } => {
+                                    msg.push_str(text.as_str());
+                                    None
+                                }
+                                InputContent::ToolResult { tool_call_id, content } => {
+                                    let tool_result_content = content.iter().fold(String::new(), |mut acc, c| {
+                                        match c {
+                                            ToolData::Text { text } => {
+                                                acc.push_str(text.as_str());
+                                            }
+                                        }
+                                        acc
+                                    });
+                                    Some(ToolResult::new(tool_call_id.clone().0, tool_result_content))
+                                }
+                            }
+                        }).collect();
+                        messages.push(provider::Message::User {
+                            message: UserPrompt::new(msg),
+                            tool_call_results: tool_calls
+                        })
+                    }
+                    RecordableTurn::AssistantMessage { status, content } => {
+                        messages.push(turn.turn().clone().try_into().expect("Failed to convert turn to message"));
+                    }
+                }
+                curr_turn_id = turn.parent_id();
+            } else {
+                break;
+            }
+        }
+        messages
+    }
+
 }
 
 /// ID of an event in an auger session.
@@ -155,8 +200,9 @@ pub struct TurnRecord {
     turn_id: TurnId,
     timestamp: DateTime<Utc>,
     /// Parent of the turn
+    #[getset(get_copy = "pub")]
     parent_id: TurnId,
-
+    #[getset(get = "pub")]
     turn: RecordableTurn,
     /// The events that occurred during the turn.
     events: HashMap<EventId, EventRecord>,
@@ -344,6 +390,52 @@ impl RecordableTurn {
                     assistant_content.push(tool_call.into());
                 }
                 Ok(Self::AssistantMessage { status, content: assistant_content })
+            },
+            _ => Err(())
+        }
+    }
+}
+
+impl TryFrom<RecordableTurn> for provider::Message {
+    type Error = ();
+
+    fn try_from(value: RecordableTurn) -> Result<Self, Self::Error> {
+        match value {
+            RecordableTurn::AssistantMessage { content, .. } => {
+                let mut reasoning = None;
+                let mut text = String::new();
+                let mut tool_calls = Vec::new();
+                for item in content {
+                    match item {
+                        AssistantContent::Reasoning { text: r } => reasoning = Some(r),
+                        AssistantContent::Text { text: t } => text = t,
+                        AssistantContent::ToolCall { id, name, arguments } => {
+                            tool_calls.push(ToolCallRequest { id: id.0, name, arguments });
+                        }
+                    }
+                }
+                Ok(provider::Message::Assistant { reasoning, content: text, tool_calls })
+            }
+            _ => Err(())
+        }
+    }
+}
+
+impl TryFrom<provider::Message> for RecordableTurn {
+    type Error = ();
+
+    fn try_from(value: provider::Message) -> Result<Self, Self::Error> {
+        match value {
+            provider::Message::Assistant { reasoning, content, tool_calls } => {
+                let mut assistant_content = Vec::new();
+                if let Some(reasoning) = reasoning {
+                    assistant_content.push(AssistantContent::Reasoning { text: reasoning });
+                }
+                assistant_content.push(AssistantContent::Text { text: content });
+                for tool_call in tool_calls {
+                    assistant_content.push(tool_call.into());
+                }
+                Ok(Self::AssistantMessage { status: AssistantStatus::Completed, content: assistant_content })
             },
             _ => Err(())
         }

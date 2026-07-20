@@ -1,3 +1,4 @@
+use mpsc::Receiver;
 use std::env::current_dir;
 use crate::SystemPrompt;
 use crate::events::{LoopMessage, SessionCommand, SessionEvent};
@@ -6,8 +7,8 @@ use crate::tools::tool_decisions::{ToolAuthorization, UserToolDecisions};
 use crate::tools::tool_execution::ToolExecution;
 use crate::tools::tool_registry::ToolRegistry;
 use agent_tools::Tool;
-use auger_driver::{restore, RestoredAgent, StreamResult, TypedAgent, WaitingForUserMessage};
-use provider::{LlmModel, Message, UserPrompt};
+use auger_driver::{restore, RestoreState, RestoredAgent, StreamResult, TypedAgent, WaitingForUserMessage};
+use provider::{LlmError, LlmModel, Message, ToolDefinition, UserPrompt};
 use std::fmt;
 use std::sync::{mpsc, Arc};
 use std::sync::mpsc::Sender;
@@ -61,7 +62,7 @@ pub struct SessionOwner {
 
 /// The unique receiver for events emitted by a session.
 pub struct SessionEventReceiver {
-    event_rx: mpsc::Receiver<SessionEvent>,
+    event_rx: Receiver<SessionEvent>,
 }
 
 impl SessionHandle {
@@ -143,10 +144,10 @@ impl SessionEventReceiver {
 pub struct Session {
     id: SessionId,
     /// Receiver to receive session commands and agent events from
-    cmd_rx: mpsc::Receiver<LoopMessage>,
+    cmd_rx: Receiver<LoopMessage>,
     harness_internal_event_tx: Sender<LoopMessage>,
     /// Sender for the session to emit events through
-    event_tx: mpsc::Sender<SessionEvent>,
+    event_tx: Sender<SessionEvent>,
     tool_registry: Arc<ToolRegistry>,
     auto_approval_policies: Arc<AutoApprovalPolicies>,
     record: SessionRecord,
@@ -182,27 +183,64 @@ impl Session {
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: impl Into<AutoApprovalPolicies>,
     ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
-        let session_id = record.session_id();
-
-        // Self::spawn(
-        //     session_id,
-        //     rt,
-        //     record,
-        //     RestoredAgent::new(model, system_prompt),
-        //     tools,
-        //     auto_approval_policies.into(),
-        // )
-        todo!("restore")
+        Self::spawn(rt, system_prompt, record, model, tools, auto_approval_policies.into())
     }
 
+    fn create_initial_agent(system_prompt: SystemPrompt, record: &SessionRecord, model: LlmModel, tools: Vec<ToolDefinition>) -> RestoredAgent {
+        let last_turn = record.get_previous_turn();
+        let restore_state = match last_turn {
+            Some(turn) => {
+                match turn.turn() {
+                    RecordableTurn::InputMessage { content } => {
+                        panic!("Can't start on a user turn")
+                    }
+                    RecordableTurn::AssistantMessage { status, content } => {
+                        match status {
+                            AssistantStatus::Completed => {
+                                let mut messages = record.as_messages();
+                                messages.insert(0, system_prompt.into());
+                                RestoreState::from_messages(messages)
+                            }
+                            AssistantStatus::Interrupted => {
+                                let mut messages = record.as_messages();
+                                messages.insert(0, system_prompt.into());
+                                RestoreState::Interrupted {
+                                    messages,
+                                    events: Vec::new() // TODO: insert actual interrupted partial message
+                                }
+                            }
+                            AssistantStatus::Failed => {
+                                let mut messages = record.as_messages();
+                                messages.insert(0, system_prompt.into());
+                                RestoreState::Failed {
+                                    messages,
+                                    events: Vec::new(),
+                                    error: LlmError { message: "fake error".to_string() } // TODO: real error
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            None => {
+                RestoreState::WaitingForUserMessage {
+                    messages: vec![system_prompt.into()],
+                }
+            }
+        };
+        restore(model, tools, restore_state)
+    }
+
+
     fn spawn(
-        id: SessionId,
         rt: Handle,
+        system_prompt: SystemPrompt,
         record: SessionRecord,
-        initial_agent: RestoredAgent,
+        model: LlmModel,
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: AutoApprovalPolicies,
     ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
+        let id = record.session_id();
         let mut tool_registry = ToolRegistry::new();
         for tool in tools {
             tool_registry.register(tool);
@@ -226,6 +264,8 @@ impl Session {
             loop_event_tx: cmd_tx,
         };
         let events = SessionEventReceiver { event_rx };
+
+        let initial_agent = Self::create_initial_agent(system_prompt, &session.record, model, llm_tools);
 
         std::thread::Builder::new()
             .name(format!("auger-session-{}", session.id.0))

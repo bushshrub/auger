@@ -24,6 +24,12 @@ pub enum RestoreState {
     },
 }
 
+impl RestoreState {
+    pub fn from_messages(messages: Vec<Message>) -> Self {
+        todo!()
+    }
+}
+
 /// An agent restored from persistent state.
 pub enum RestoredAgent {
     WaitingForUserMessage(TypedAgent<WaitingForUserMessage>),
