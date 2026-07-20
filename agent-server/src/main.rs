@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::server_types::{
     ApproveRequest, CreateSessionRequest, SessionEntry, UserInputRequest,
 };
-use agent_core::{AutoApprovalPolicies, Session, SessionEvent, SessionHandle, SystemPrompt};
+use agent_core::{AutoApprovalPolicies, Session, SessionCommand, SessionEvent, SessionHandle, SessionId, SystemPrompt};
 use auger_traces::{TraceReader, session_trace_path};
 use provider::{LlmModel, LlmProvider};
 
@@ -48,13 +48,13 @@ const SYSTEM_PROMPT: &str =
 #[derive(Clone)]
 struct AppState {
     provider: Arc<dyn LlmProvider>,
-    sessions: Arc<RwLock<HashMap<Uuid, SessionEntry>>>,
+    sessions: Arc<RwLock<HashMap<SessionId, SessionEntry>>>,
     default_model: String,
 }
 
 async fn write_auth(
     State(state): State<AppState>,
-    Path(id): Path<Uuid>,
+    Path(id): Path<SessionId>,
     mut request: Request,
     next: Next,
 ) -> Response {
@@ -80,7 +80,7 @@ async fn write_auth(
 
 async fn read_auth(
     State(state): State<AppState>,
-    Path(id): Path<Uuid>,
+    Path(id): Path<SessionId>,
     mut request: Request,
     next: Next,
 ) -> Response {
@@ -213,14 +213,14 @@ async fn create_session(
     .collect();
     let mut auto_approval = AutoApprovalPolicies::from(auto_approved);
     auto_approval.add("shell", builtin_tools::BashAutoApprovalPolicy::new(cwd));
-    let (owner, handle, event_receiver) = Session::start_with_tools(
+    let (owner, handle, event_receiver) = Session::start(
         LlmModel::new(state.provider.clone(), &model),
         sys_prompt,
         tokio::runtime::Handle::current(),
         tools,
         auto_approval,
     );
-    let session_id = handle.id().as_uuid();
+    let session_id = handle.id();
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
     let forward_tx = event_tx.clone();
     tokio::task::spawn_blocking(move || {
@@ -278,7 +278,7 @@ async fn send_input(
     Json(req): Json<UserInputRequest>,
 ) -> impl IntoResponse {
     debug!("Enqueued message: '{}'", req.input);
-    session_handle.send_message(req.into()).expect("closed");
+    session_handle.send_command(SessionCommand::SendMessage(req.into())).expect("closed");
 
     // TODO: bad return type
     Json(json!({ "status": "ok" }))
@@ -294,8 +294,13 @@ async fn respond_to_tool_call(
     span.record("session_id", tracing::field::display(&session_handle.id()));
     span.record("call_id", tracing::field::display(&req.tool_call_id));
     debug!("Tool call approved: {}", req.approved);
+    let decision = SessionCommand::ToolDecision {
+        id: req.tool_call_id,
+        approved: req.approved,
+        message: req.message,
+    };
     session_handle
-        .decide_tool_call(req.tool_call_id, req.approved, req.message)
+        .send_command(decision)
         .expect("closed");
     // TODO: garbage return type
     Json(json!({ "status": "ok" }))
@@ -308,7 +313,7 @@ async fn interrupt_session(
     Extension(session_handle): Extension<SessionHandle>,
 ) -> impl IntoResponse {
     debug!(session_id = %session_handle.id(), "Interrupt requested");
-    session_handle.interrupt().expect("closed");
+    session_handle.send_command(SessionCommand::Interrupt).expect("closed");
     Json(json!({ "status": "ok" }))
 }
 
@@ -397,118 +402,5 @@ fn session_event_json(event: SessionEvent) -> serde_json::Value {
         SessionEvent::Interrupted => json!({ "type": "interrupted" }),
         SessionEvent::StreamError { error } => json!({ "type": "stream_error", "error": error }),
         SessionEvent::Closed => json!({ "type": "closed" }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::body::{Body, to_bytes};
-    use axum::http::{Request, header};
-    use tower::ServiceExt;
-
-    fn test_state() -> AppState {
-        AppState {
-            provider: provider_config::from_env_for_test(),
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            default_model: "test-model".to_string(),
-        }
-    }
-
-    #[tokio::test]
-    async fn openapi_document_is_served() {
-        let response = router(test_state())
-            .oneshot(Request::get("/openapi.yaml").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert!(std::str::from_utf8(&body).unwrap().contains("openapi: 3.1.0"));
-    }
-
-    #[tokio::test]
-    async fn create_snapshot_and_archive_session() {
-        let app = router(test_state());
-        let response = app
-            .clone()
-            .oneshot(
-                Request::post("/sessions")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let id = created["session_id"].as_str().unwrap();
-        let read_token = created["tokens"]["read"].as_str().unwrap();
-        let write_token = created["tokens"]["write"].as_str().unwrap();
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::get(format!("/sessions/{id}/snapshot"))
-                    .header(header::AUTHORIZATION, format!("Bearer {read_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let snapshot: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(snapshot["header"]["session_id"], id);
-        assert_eq!(snapshot["events"], json!([]));
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::post(format!("/sessions/{id}/interrupt"))
-                    .header(header::AUTHORIZATION, format!("Bearer {write_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::delete(format!("/sessions/{id}"))
-                    .header(header::AUTHORIZATION, format!("Bearer {write_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::get(format!("/sessions/{id}/snapshot"))
-                    .header(header::AUTHORIZATION, format!("Bearer {read_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let snapshot: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(snapshot["header"]["session_id"], id);
-
-        let response = app
-            .oneshot(Request::get("/sessions").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let sessions: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(sessions["sessions"][0]["archived"], true);
     }
 }

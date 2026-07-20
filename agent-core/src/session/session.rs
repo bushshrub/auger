@@ -13,6 +13,7 @@ use std::fmt;
 use std::sync::{mpsc, Arc};
 use std::sync::mpsc::Sender;
 use either::Either;
+use getset::CopyGetters;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
@@ -49,8 +50,9 @@ impl SessionId {
 }
 
 /// A handle to a running auger session
-#[derive(Clone)]
+#[derive(Clone, CopyGetters)]
 pub struct SessionHandle {
+    #[get_copy = "pub"]
     id: SessionId,
     loop_event_tx: Sender<LoopMessage>,
 }
@@ -73,51 +75,9 @@ impl SessionHandle {
         }
     }
 
-    pub fn id(&self) -> SessionId {
-        self.id
-    }
-
-    pub fn send_message(&self, prompt: UserPrompt) -> Result<(), ()> {
+    pub fn send_command(&self, cmd: SessionCommand) -> Result<(), ()> {
         self.loop_event_tx
-            .send(LoopMessage::Cmd(SessionCommand::SendMessage(prompt)))
-            .map_err(|_| ())
-    }
-
-    pub fn interrupt(&self) -> Result<(), ()> {
-        self.loop_event_tx
-            .send(LoopMessage::Cmd(SessionCommand::Interrupt))
-            .map_err(|_| ())
-    }
-
-    pub fn approve_tool_call(&self, id: impl Into<String>) -> Result<(), ()> {
-        self.tool_decision(id, true, None)
-    }
-
-    pub fn deny_tool_call(&self, id: impl Into<String>) -> Result<(), ()> {
-        self.tool_decision(id, false, Some("Denied by user".to_string()))
-    }
-
-    pub fn decide_tool_call(
-        &self,
-        id: impl Into<String>,
-        approved: bool,
-        message: Option<String>,
-    ) -> Result<(), ()> {
-        self.tool_decision(id, approved, message)
-    }
-
-    fn tool_decision(
-        &self,
-        id: impl Into<String>,
-        approved: bool,
-        message: Option<String>,
-    ) -> Result<(), ()> {
-        self.loop_event_tx
-            .send(LoopMessage::Cmd(SessionCommand::ToolDecision {
-                id: id.into(),
-                approved,
-                message,
-            }))
+            .send(LoopMessage::Cmd(cmd))
             .map_err(|_| ())
     }
 
