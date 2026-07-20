@@ -11,6 +11,7 @@ use provider::{ToolCallRequest, ToolResult, UserPrompt};
 /// A record of an auger session
 #[derive(Serialize, Deserialize, Debug, Clone, Getters, CopyGetters)]
 pub struct SessionRecord {
+    #[getset(get_copy = "pub")]
     session_id: SessionId,
     /// The root "event ID"
     #[getset(get_copy = "pub")]

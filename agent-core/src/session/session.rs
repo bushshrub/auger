@@ -181,7 +181,17 @@ impl Session {
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: impl Into<AutoApprovalPolicies>,
     ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
-        todo!("restore the session");
+        let session_id = record.session_id();
+
+        // Self::spawn(
+        //     session_id,
+        //     rt,
+        //     record,
+        //     RestoredAgent::new(model, system_prompt),
+        //     tools,
+        //     auto_approval_policies.into(),
+        // )
+        todo!("restore")
     }
 
     fn spawn(
@@ -240,68 +250,44 @@ impl Session {
                         }
                         SessionCommand::SendMessage(prompt) => {
                             info!(session_id = %self.id, "Received user message {:?}", prompt);
-                            curr_state = match curr_state {
+                            let new_agent = match curr_state {
                                 HarnessState::WaitingForUserMessage { agent } => {
-                                    let event_tx = self.event_tx.clone();
-                                    let new_agent = agent.add_message(prompt.clone());
-                                    let inbox_tx = self.harness_internal_event_tx.clone();
-                                    let stream_fut = new_agent.create_stream(move |event| {
-                                        let _ = event_tx.send(SessionEvent::StreamEvent(event));
-                                    });
-                                    let cancel = stream_fut.interrupt_handle();
-                                    let sess_id = self.id;
-
-                                    self.record.record_turn(RecordableTurn::user_prompt(prompt.into())).expect("previous turn to have been assistant/session start");
-                                    rt.spawn(async move {
-                                        info!(session_id=%sess_id, "Starting stream");
-                                        let res = stream_fut.await;
-                                        inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
-                                    });
-                                    HarnessState::Streaming { cancel }}
+                                    agent.add_message(prompt.clone())
+                                }
                                 HarnessState::StreamingInterrupted { agent } => {
-                                    let event_tx = self.event_tx.clone();
-                                    let new_agent = agent
-                                        .add_message_to_continue(prompt.clone(), true);
-                                    let inbox_tx = self.harness_internal_event_tx.clone();
-                                    let stream_fut = new_agent.create_stream(move |event| {
-                                        let _ = event_tx.send(SessionEvent::StreamEvent(event));
-                                    });
-                                    let cancel = stream_fut.interrupt_handle();
-
-                                    self.record.record_turn(RecordableTurn::user_prompt(prompt.into())).expect("previous turn to have been assistant");
-                                    rt.spawn(async move {
-                                        let res = stream_fut.await;
-                                        inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
-                                    });
-                                    HarnessState::Streaming { cancel }
+                                    agent.add_message_to_continue(prompt.clone(), true)
                                 }
                                 HarnessState::StreamingFailed { agent } => {
-                                    let event_tx = self.event_tx.clone();
-                                    let new_agent = agent
-                                        .add_message_to_continue(prompt.clone());
-                                    let inbox_tx = self.harness_internal_event_tx.clone();
-                                    let stream_fut = new_agent.create_stream(move |event| {
-                                        let _ = event_tx.send(SessionEvent::StreamEvent(event));
-                                    });
-                                    let cancel = stream_fut.interrupt_handle();
-                                    self.record.record_turn(RecordableTurn::user_prompt(prompt.into())).expect("previous turn to have been assistant");
-                                    rt.spawn(async move {
-                                        let res = stream_fut.await;
-                                        inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
-                                    });
-                                    HarnessState::Streaming { cancel }
+                                    agent.add_message_to_continue(prompt.clone())
                                 }
                                 HarnessState::InterruptingStream { pending_message: None } => {
-                                    HarnessState::InterruptingStream {
+                                    curr_state = HarnessState::InterruptingStream {
                                         pending_message: Some(prompt),
-                                    }
+                                    };
+                                    return;
                                 }
-                                _ => {
+                                other => {
                                     warn!(session_id = %self.id, command = "send_message", "Ignoring command in invalid harness state");
-                                    curr_state
+                                    curr_state = other;
+                                    return;
                                 }
-                            }
+                            };
 
+                            let event_tx = self.event_tx.clone();
+                            let inbox_tx = self.harness_internal_event_tx.clone();
+                            let stream_fut = new_agent.create_stream(move |event| {
+                                let _ = event_tx.send(SessionEvent::StreamEvent(event));
+                            });
+                            let cancel = stream_fut.interrupt_handle();
+                            let sess_id = self.id;
+
+                            self.record.record_turn(RecordableTurn::user_prompt(prompt.into())).expect("previous turn to have been assistant/session start");
+                            rt.spawn(async move {
+                                info!(session_id=%sess_id, "Starting stream");
+                                let res = stream_fut.await;
+                                inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
+                            });
+                            curr_state = HarnessState::Streaming { cancel };
                         }
                         SessionCommand::Interrupt => {
                             curr_state = match curr_state {
