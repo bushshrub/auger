@@ -15,7 +15,7 @@ use either::Either;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
-use crate::session::history::{AssistantStatus, AuthorizationSource, EventId, RecordableEvent, RecordableTurn, SessionRecord};
+use crate::session::history::{AssistantStatus, AuthorizationSource, EventId, ModelInfo, RecordableEvent, RecordableTurn, SessionRecord};
 use crate::session::states::HarnessState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -161,10 +161,11 @@ impl Session {
         auto_approval_policies: impl Into<AutoApprovalPolicies>
     ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
         let id = SessionId::new();
+        let model_name = model.name().to_string();
         Self::start_from(
             model,
-            // TODO: Hardcoded provider type
-            SessionRecord::new(id, current_dir().expect("no cwd")),
+            // TODO: modelinfo
+            SessionRecord::new(id, current_dir().expect("no cwd"), ModelInfo::new("to-be-added".to_string(), model_name)),
             system_prompt,
             rt,
             tools,

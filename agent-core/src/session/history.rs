@@ -4,9 +4,21 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::{NoContext, Timestamp, Uuid};
-use crate::{SessionEvent, SessionId};
+use crate::{SessionId};
 use getset::{CopyGetters, Getters};
 use provider::{ToolCallRequest, ToolResult, UserPrompt};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    provider: String,
+    id: String,
+}
+
+impl ModelInfo {
+    pub(crate) fn new(provider: String, id: String) -> Self {
+        ModelInfo { provider, id }
+    }
+}
 
 /// A record of an auger session
 #[derive(Serialize, Deserialize, Debug, Clone, Getters, CopyGetters)]
@@ -19,6 +31,7 @@ pub struct SessionRecord {
     created_at: DateTime<Utc>,
     cwd: PathBuf,
     turns: HashMap<TurnId, TurnRecord>,
+    model_info: ModelInfo,
 
     previous_turn_id: TurnId
 }
@@ -26,7 +39,7 @@ pub struct SessionRecord {
 impl SessionRecord {
     /// Initialize a new session record. This should be called
     /// at the start of the session.
-    pub(crate) fn new(session_id: SessionId, cwd: PathBuf) -> Self {
+    pub(crate) fn new(session_id: SessionId, cwd: PathBuf, model_info: ModelInfo) -> Self {
         let created_at = Utc::now();
         let turns = HashMap::new();
         let root_id = TurnId::new(created_at);
@@ -36,6 +49,7 @@ impl SessionRecord {
             created_at,
             cwd,
             turns,
+            model_info,
             previous_turn_id: root_id,
         }
     }
@@ -48,16 +62,16 @@ impl SessionRecord {
         self.turns.get_mut(turn_id)
     }
 
-    pub(crate) fn get_previous_turn(&self) -> Option<&TurnRecord> {
+    pub fn get_previous_turn(&self) -> Option<&TurnRecord> {
         // should only be None if the session JUST started.
         self.get_turn(&self.previous_turn_id)
     }
 
-    pub(crate) fn get_previous_turn_mut(&mut self) -> Option<&mut TurnRecord> {
+    pub fn get_previous_turn_mut(&mut self) -> Option<&mut TurnRecord> {
         self.get_turn_mut(&self.previous_turn_id.clone())
     }
 
-    pub(crate) fn record_turn(&mut self, turn: RecordableTurn) -> Result<TurnId, ()> {
+    pub fn record_turn(&mut self, turn: RecordableTurn) -> Result<TurnId, ()> {
         let previous_turn = self.turns.get(&self.previous_turn_id);
         match previous_turn {
             Some(prev_turn) => {
@@ -85,36 +99,6 @@ impl SessionRecord {
         }
 
     }
-
-
-    // /// Records an event for the previous turn. Errors if the previous turn was a user turn, or if the session JUST started.
-    // pub(crate) fn record_event(&mut self, event: RecordableEvent, parent_event_id: EventId) -> Result<EventId, ()> {
-    //     let event_id = EventId::new(Utc::now());
-    //     let event_record = EventRecord {
-    //         parent_id: Some(parent_event_id),
-    //         timestamp: Utc::now(),
-    //         event_id,
-    //         event
-    //     };
-    //     // disallow recording events if the previous turn is a user turn
-    //     let previous_turn = self.turns.get_mut(&self.previous_turn_id);
-    //     match previous_turn {
-    //         Some(turn) => {
-    //             match &mut turn.turn {
-    //                 RecordableTurn::InputMessage {..} => {
-    //                     Err(())
-    //                 },
-    //                 RecordableTurn::AssistantMessage {..} => {
-    //                     turn.events.insert(event_id, event_record);
-    //                     Ok(event_id)
-    //                 }
-    //             }
-    //         },
-    //         None => {
-    //             Err(())
-    //         }
-    //     }
-    // }
 
 }
 
