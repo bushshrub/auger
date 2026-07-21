@@ -28,6 +28,7 @@ pub struct SessionRecord {
     /// The root "event ID"
     #[getset(get_copy = "pub")]
     root_id: TurnId,
+    #[getset(get_copy = "pub")]
     created_at: DateTime<Utc>,
     cwd: PathBuf,
     turns: HashMap<TurnId, TurnRecord>,

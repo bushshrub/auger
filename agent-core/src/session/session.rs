@@ -12,6 +12,7 @@ use provider::{LlmError, LlmModel, Message, ToolDefinition, UserPrompt};
 use std::fmt;
 use std::sync::{mpsc, Arc};
 use std::sync::mpsc::Sender;
+use chrono::{DateTime, Utc};
 use either::Either;
 use getset::CopyGetters;
 use serde::{Deserialize, Serialize};
@@ -55,13 +56,19 @@ pub struct SessionHandle {
     #[get_copy = "pub"]
     id: SessionId,
     loop_event_tx: Sender<LoopMessage>,
+
+    // TODO: This REALLY does not belong here.
+    // But SessionRecord is owned by Session...
+    #[get_copy = "pub"]
+    created_at: DateTime<Utc>
 }
 
 impl SessionHandle {
-    fn new(id: SessionId, command_tx: mpsc::Sender<LoopMessage>) -> Self {
+    fn new(id: SessionId, command_tx: Sender<LoopMessage>, created_at: DateTime<Utc>) -> Self {
         Self {
             id,
             loop_event_tx: command_tx,
+            created_at,
         }
     }
 
@@ -94,7 +101,7 @@ impl Session {
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: impl Into<AutoApprovalPolicies>
-    ) -> SessionHandle {
+    ) -> (SessionHandle, Receiver<SessionEvent>) {
         let id = SessionId::new();
         let model_name = model.name().to_string();
         Self::start_from(
@@ -116,7 +123,7 @@ impl Session {
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: impl Into<AutoApprovalPolicies>,
-    ) -> SessionHandle {
+    ) -> (SessionHandle, Receiver<SessionEvent>) {
         Self::spawn(rt, system_prompt, record, model, tools, auto_approval_policies.into())
     }
 
@@ -173,8 +180,9 @@ impl Session {
         model: LlmModel,
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: AutoApprovalPolicies,
-    ) -> SessionHandle {
+    ) -> (SessionHandle, Receiver<SessionEvent>) {
         let id = record.session_id();
+        let creation_time = record.created_at();
         let mut tool_registry = ToolRegistry::new();
         for tool in tools {
             tool_registry.register(tool);
@@ -193,7 +201,7 @@ impl Session {
             auto_approval_policies: Arc::new(auto_approval_policies),
             record
         };
-        let handle = SessionHandle::new(session.id, cmd_tx.clone());
+        let handle = SessionHandle::new(session.id, cmd_tx.clone(), creation_time);
 
         let initial_agent = Self::create_initial_agent(system_prompt, &session.record, model, llm_tools);
 
@@ -202,7 +210,7 @@ impl Session {
             .spawn(move || session.run(rt, initial_agent))
             .expect("failed to spawn session thread");
 
-        handle
+        (handle, event_rx)
     }
 
     fn run(mut self, rt: Handle, init_agent: RestoredAgent) {

@@ -20,7 +20,6 @@ use crate::server_types::{
     ApproveRequest, CreateSessionRequest, SessionEntry, UserInputRequest,
 };
 use agent_core::{AutoApprovalPolicies, Session, SessionCommand, SessionEvent, SessionHandle, SessionId, SystemPrompt};
-use auger_traces::{TraceReader, session_trace_path};
 use provider::{LlmModel, LlmProvider};
 
 mod server_types;
@@ -52,59 +51,6 @@ struct AppState {
     default_model: String,
 }
 
-async fn write_auth(
-    State(state): State<AppState>,
-    Path(id): Path<SessionId>,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    let token = match request.headers().get("Authorization") {
-        Some(v) => v
-            .to_str()
-            .unwrap_or_default()
-            .strip_prefix("Bearer ")
-            .unwrap_or_default()
-            .to_owned(),
-        None => return (StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response(),
-    };
-    let entry = match state.sessions.read().await.get(&id).cloned() {
-        Some(e) => e,
-        None => return (StatusCode::NOT_FOUND, "Session not found").into_response(),
-    };
-    if token != entry.write_token.to_string() {
-        return (StatusCode::UNAUTHORIZED, "Invalid write token").into_response();
-    }
-    request.extensions_mut().insert(entry.handle);
-    next.run(request).await
-}
-
-async fn read_auth(
-    State(state): State<AppState>,
-    Path(id): Path<SessionId>,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    let token = match request.headers().get("Authorization") {
-        Some(v) => v
-            .to_str()
-            .unwrap_or_default()
-            .strip_prefix("Bearer ")
-            .unwrap_or_default()
-            .to_owned(),
-        None => return (StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response(),
-    };
-    let entry = match state.sessions.read().await.get(&id).cloned() {
-        Some(e) => e,
-        None => return (StatusCode::NOT_FOUND, "Session not found").into_response(),
-    };
-    if token != entry.read_token.to_string() && token != entry.write_token.to_string() {
-        return (StatusCode::UNAUTHORIZED, "Invalid read token").into_response();
-    }
-    request.extensions_mut().insert(entry.handle);
-    request.extensions_mut().insert(entry.events);
-    next.run(request).await
-}
-
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -133,13 +79,12 @@ fn router(state: AppState) -> Router {
         .route("/sessions/{id}", delete(stop_session))
         .route("/sessions/{id}/input", post(send_input))
         .route("/sessions/{id}/tool", post(respond_to_tool_call))
-        .route("/sessions/{id}/interrupt", post(interrupt_session))
-        .route_layer(middleware::from_fn_with_state(state.clone(), write_auth));
+        .route("/sessions/{id}/interrupt", post(interrupt_session));
 
     let read_routes = Router::new()
         .route("/sessions/{id}/events", get(event_stream))
-        .route("/sessions/{id}/snapshot", get(snapshot))
-        .route_layer(middleware::from_fn_with_state(state.clone(), read_auth));
+        .route("/sessions/{id}/snapshot", get(snapshot));
+
 
     Router::new()
         .route("/openapi.yaml", get(openapi))
@@ -165,7 +110,7 @@ async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
             json!({
                 "session_id": e.handle.id().as_uuid(),
                 "model": e.model,
-                "created_at": e.created_at,
+                "created_at": e.handle.created_at(),
                 "archived": e.archived.load(Ordering::Relaxed),
                 "context_window": DEFAULT_CONTEXT_WINDOW,
                 "tokens": {
@@ -213,7 +158,7 @@ async fn create_session(
     .collect();
     let mut auto_approval = AutoApprovalPolicies::from(auto_approved);
     auto_approval.add("shell", builtin_tools::BashAutoApprovalPolicy::new(cwd));
-    let (owner, handle, event_receiver) = Session::start(
+    let (handle, event_rx) = Session::start(
         LlmModel::new(state.provider.clone(), &model),
         sys_prompt,
         tokio::runtime::Handle::current(),
@@ -224,7 +169,7 @@ async fn create_session(
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
     let forward_tx = event_tx.clone();
     tokio::task::spawn_blocking(move || {
-        while let Ok(event) = event_receiver.recv_event() {
+        while let Ok(event) = event_rx.recv() {
             let closed = matches!(event, SessionEvent::Closed);
             let _ = forward_tx.send(event);
             if closed {
@@ -234,18 +179,12 @@ async fn create_session(
     });
     let read_token = Uuid::new_v4();
     let write_token = Uuid::new_v4();
-    let created_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
     state.sessions.write().await.insert(
         session_id,
         SessionEntry {
             handle,
-            owner: Arc::new(std::sync::Mutex::new(Some(owner))),
             events: event_tx,
             model,
-            created_at,
             read_token,
             write_token,
             archived: Arc::new(AtomicBool::new(false)),
@@ -306,8 +245,7 @@ async fn respond_to_tool_call(
     Json(json!({ "status": "ok" }))
 }
 
-/// Interrupt in-flight generation or tool execution. Fire-and-forget: the
-/// outcome is observed on the event stream (`interrupted` / tool_call_error).
+/// Interrupt what the session is doing right now
 #[tracing::instrument(skip(session_handle))]
 async fn interrupt_session(
     Extension(session_handle): Extension<SessionHandle>,
