@@ -8,7 +8,7 @@ use axum::{Json, Router, middleware};
 use futures::StreamExt;
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
@@ -198,14 +198,13 @@ async fn create_session(
     )
 }
 
-async fn stop_session(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
+async fn stop_session(State(state): State<AppState>, Path(id): Path<SessionId>) -> impl IntoResponse {
     let Some(entry) = state.sessions.read().await.get(&id).cloned() else {
         return StatusCode::NOT_FOUND;
     };
-    let owner = entry.owner.lock().expect("session owner lock poisoned").take();
-    if let Some(owner) = owner {
-        tokio::task::spawn_blocking(move || owner.stop()).await.ok();
-    }
+    let (reply_tx, reply_rx) = mpsc::channel::<>();
+    tokio::task::spawn_blocking(move || entry.handle.send_command(SessionCommand::Stop { reply_tx })).await.ok();
+    // do I wait for reply_rx? idk.
     entry.archived.store(true, Ordering::Release);
     StatusCode::NO_CONTENT
 }
@@ -258,7 +257,7 @@ async fn interrupt_session(
 /// Get a trace from its running session or, after archival, its JSONL file.
 async fn snapshot(
     State(state): State<AppState>,
-    Path(id): Path<Uuid>,
+    Path(id): Path<SessionId>,
     Extension(session_handle): Extension<SessionHandle>,
 ) -> impl IntoResponse {
     let archived = state
@@ -269,18 +268,17 @@ async fn snapshot(
         .is_some_and(|entry| entry.archived.load(Ordering::Relaxed));
 
     if archived {
-        return match tokio::task::spawn_blocking(move || {
-            TraceReader::read(session_trace_path(id)?)
-        })
-        .await
-        {
-            Ok(Ok(trace)) => Json(trace).into_response(),
-            _ => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot failed").into_response(),
-        };
+        return (StatusCode::INTERNAL_SERVER_ERROR, "can't read archived yet").into_response()
     }
 
-    match tokio::task::spawn_blocking(move || session_handle.snapshot()).await {
-        Ok(Ok(snapshot)) => Json(snapshot).into_response(),
+    let (snapshot_tx, snapshot_rx) = mpsc::channel();
+    // what do I do with snapshot_rx?
+    match tokio::task::spawn_blocking(move || session_handle.send_command(SessionCommand::Snapshot { reply_tx: snapshot_tx })).await {
+        Ok(Ok(())) => match snapshot_rx.recv() {
+            // TODO: we should be sending back the schema, not the actual record.
+            Ok(record) => Json(record).into_response(),
+            Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot channel dropped").into_response()
+        },
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot failed").into_response(),
     }
 }
