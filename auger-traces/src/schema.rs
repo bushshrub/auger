@@ -32,10 +32,21 @@ pub struct ModelInfo {
 pub struct TurnRecord {
     id: TurnId,
     parent_turn_id: Option<TurnId>,
-    seq: u64,
+    // TODO: Add a sequence number when the source history records one.
     timestamp: DateTime<Utc>,
     #[serde(flatten)]
     turn: Turn,
+}
+
+impl TurnRecord {
+    pub fn new(id: TurnId, parent_turn_id: Option<TurnId>, timestamp: DateTime<Utc>, turn: Turn) -> Self {
+        Self {
+            id,
+            parent_turn_id,
+            timestamp,
+            turn,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,12 +61,28 @@ pub struct InputMessage {
     content: Vec<InputContent>,
 }
 
+impl InputMessage {
+    pub fn new(content: Vec<InputContent>) -> Self {
+        Self { content }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantMessage {
     status: AssistantStatus,
     content: Vec<AssistantContent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_metadata: Option<Value>,
+}
+
+impl AssistantMessage {
+    pub fn new(status: AssistantStatus, content: Vec<AssistantContent>) -> Self {
+        Self {
+            status,
+            content,
+            provider_metadata: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,8 +95,17 @@ pub enum InputContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputToolResult {
     tool_call_id: ToolCallId,
-    status: ToolCallStatus,
+    // TODO: Persist the tool result status.
     content: Vec<ToolData>,
+}
+
+impl InputToolResult {
+    pub fn new(tool_call_id: ToolCallId, content: Vec<ToolData>) -> Self {
+        Self {
+            tool_call_id,
+            content,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,7 +120,13 @@ pub enum AssistantContent {
 pub struct AssistantToolCall {
     id: ToolCallId,
     name: String,
-    arguments: Value,
+    arguments: String,
+}
+
+impl AssistantToolCall {
+    pub fn new(id: ToolCallId, name: String, arguments: String) -> Self {
+        Self { id, name, arguments }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,10 +142,28 @@ pub struct EventRecord {
     id: EventId,
     turn_id: TurnId,
     parent_event_id: Option<EventId>,
-    seq: u64,
+    // TODO: Add a sequence number when the source history records one.
     timestamp: DateTime<Utc>,
     #[serde(flatten)]
     event: Event,
+}
+
+impl EventRecord {
+    pub fn new(
+        id: EventId,
+        turn_id: TurnId,
+        parent_event_id: Option<EventId>,
+        timestamp: DateTime<Utc>,
+        event: Event,
+    ) -> Self {
+        Self {
+            id,
+            turn_id,
+            parent_event_id,
+            timestamp,
+            event,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,7 +178,17 @@ pub enum Event {
 pub struct ToolCallRequested {
     tool_call_id: ToolCallId,
     tool_name: String,
-    arguments: Value,
+    arguments: String,
+}
+
+impl ToolCallRequested {
+    pub fn new(tool_call_id: ToolCallId, tool_name: String, arguments: String) -> Self {
+        Self {
+            tool_call_id,
+            tool_name,
+            arguments,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,11 +199,36 @@ pub struct ToolAuthorization {
     reason: Option<String>,
 }
 
+impl ToolAuthorization {
+    pub fn new(
+        tool_call_id: ToolCallId,
+        decision: ToolDecision,
+        source: AuthorizationSource,
+        reason: Option<String>,
+    ) -> Self {
+        Self {
+            tool_call_id,
+            decision,
+            source,
+            reason,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallResult {
     tool_call_id: ToolCallId,
-    status: ToolCallStatus,
+    // TODO: Persist the tool result status.
     content: Vec<ToolData>,
+}
+
+impl ToolCallResult {
+    pub fn new(tool_call_id: ToolCallId, content: Vec<ToolData>) -> Self {
+        Self {
+            tool_call_id,
+            content,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +240,12 @@ pub enum ToolData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextData {
     text: String,
+}
+
+impl TextData {
+    pub fn new(text: String) -> Self {
+        Self { text }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -173,10 +274,28 @@ pub enum AuthorizationSource {
 #[serde(transparent)]
 pub struct TurnId(Uuid);
 
+impl From<Uuid> for TurnId {
+    fn from(value: Uuid) -> Self {
+        Self(value)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct EventId(Uuid);
 
+impl From<Uuid> for EventId {
+    fn from(value: Uuid) -> Self {
+        Self(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ToolCallId(String);
+
+impl From<String> for ToolCallId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
