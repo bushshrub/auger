@@ -3,7 +3,7 @@ mod history;
 mod states;
 
 pub use session::{
-    Session, SessionEventReceiver, SessionHandle, SessionId, SessionOwner, SnapshotError,
+    Session, SessionHandle, SessionId, SnapshotError,
 };
 
 pub use history::SessionRecord;

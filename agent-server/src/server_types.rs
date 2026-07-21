@@ -1,5 +1,5 @@
 //! Request and response types for the agent server API
-use agent_core::{SessionEvent, SessionHandle, SessionOwner};
+use agent_core::{SessionEvent, SessionHandle};
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
@@ -10,10 +10,8 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub(crate) struct SessionEntry {
     pub(crate) handle: SessionHandle,
-    pub(crate) owner: Arc<Mutex<Option<SessionOwner>>>,
     pub(crate) events: broadcast::Sender<SessionEvent>,
     pub(crate) model: String,
-    pub(crate) created_at: u64,
     pub(crate) read_token: Uuid,
     pub(crate) write_token: Uuid,
     pub(crate) archived: Arc<AtomicBool>,
