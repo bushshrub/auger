@@ -41,10 +41,10 @@ pub struct SessionRecord {
 }
 
 type TurnHook = Hook<dyn Fn(TurnId, &TurnRecord)  + Send + Sync>;
-type EventHook = Hook<dyn Fn(EventId, &EventRecord) + Send + Sync>;
+type EventHook = Hook<dyn Fn(TurnId, &EventRecord) + Send + Sync>;
 
 pub type TurnCallback = Arc<dyn Fn(TurnId, &TurnRecord)  + Send + Sync>;
-pub type EventCallback = Arc<dyn Fn(EventId, &EventRecord) + Send + Sync>;
+pub type EventCallback = Arc<dyn Fn(TurnId, &EventRecord) + Send + Sync>;
 
 struct Hook<T: ?Sized>(Option<Arc<T>>);
 
@@ -268,7 +268,7 @@ impl TurnRecord {
                     };
                     let record = EventRecord::new(None, timestamp, event);
                     if let Some(on_event) = on_event.0.clone() {
-                        on_event(record.event_id, &record)
+                        on_event(parent_id, &record)
                     }
                     Some(record)
                 }
@@ -300,7 +300,7 @@ impl TurnRecord {
                         let event_id = EventId::new(self.timestamp);
                         let record = EventRecord::new(parent_id, self.timestamp, event);
                         if let Some(on_event) = self.on_event.0.clone() {
-                            on_event(record.event_id, &record)
+                            on_event(self.turn_id, &record)
                         }
                         self.events.insert(record.event_id, record);
                         Ok(event_id)
@@ -562,3 +562,4 @@ fn uuid_v7_from(dt: DateTime<Utc>) -> Uuid {
     let nanos = dt.timestamp_subsec_nanos();
     Uuid::new_v7(Timestamp::from_unix(NoContext, secs, nanos))
 }
+
