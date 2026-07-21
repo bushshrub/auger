@@ -104,7 +104,7 @@ impl Session {
         Self::start_from(
             model,
             // TODO: modelinfo
-            SessionRecord::new(id, current_dir().expect("no cwd"), ModelInfo::new("to-be-added".to_string(), model_name)),
+            SessionRecord::new(id, current_dir().expect("no cwd"), ModelInfo::new("to-be-added".to_string(), model_name), Arc::new(|_, _| {}), Arc::new(|_, _| {})),
             system_prompt,
             rt,
             tools,
