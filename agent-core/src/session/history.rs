@@ -200,18 +200,39 @@ impl EventId {
     }
 }
 
+impl Into<Uuid> for TurnId {
+    fn into(self) -> Uuid {
+        self.0
+    }
+}
+
+impl Into<Uuid> for EventId {
+    fn into(self) -> Uuid {
+        self.0
+    }
+}
+
 /// A record of an event that occurred during an auger session.
 /// Only events that the harness actually processed will be recorded.
 #[derive(Serialize, Deserialize, Debug, Clone, CopyGetters, Getters)]
 pub struct EventRecord {
     /// The logical parent of this event.
+    #[getset(get_copy = "pub")]
     parent_id: Option<EventId>,
     /// Timestamp at which this event occurred.
+    #[getset(get = "pub")]
     timestamp: DateTime<Utc>,
     /// Id of this event
+    #[getset(get_copy = "pub")]
     event_id: EventId,
     /// The actual event itself
+    #[getset(get = "pub")]
     event: RecordableEvent,
+}
+
+pub(crate) struct TurnEvent {
+    pub(crate) turn_id: TurnId,
+    pub(crate) record: EventRecord,
 }
 
 impl EventRecord {
@@ -224,13 +245,16 @@ impl EventRecord {
             event,
         }
     }
+
 }
 
 // TODO: should be enum, since only assistant turns can technically have events attached to it.
 #[derive(Serialize, Deserialize, Debug, Clone, CopyGetters, Getters)]
 pub struct TurnRecord {
     /// The ID of the turn.
+    #[getset(get_copy = "pub")]
     turn_id: TurnId,
+    #[getset(get = "pub")]
     timestamp: DateTime<Utc>,
     /// Parent of the turn
     #[getset(get_copy = "pub")]
@@ -238,6 +262,7 @@ pub struct TurnRecord {
     #[getset(get = "pub")]
     turn: RecordableTurn,
     /// The events that occurred during the turn.
+    #[getset(get = "pub")]
     events: HashMap<EventId, EventRecord>,
     /// A callback to be invoked when an event occurs in the turn.
     #[serde(skip)] on_event: EventHook
@@ -349,6 +374,7 @@ impl TurnRecord {
 
 
     }
+
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
@@ -358,6 +384,12 @@ pub struct ToolCallId(String);
 impl From<String> for ToolCallId {
     fn from(s: String) -> Self {
         Self(s)
+    }
+}
+
+impl From<ToolCallId> for String {
+    fn from(id: ToolCallId) -> Self {
+        id.0
     }
 }
 
@@ -562,4 +594,3 @@ fn uuid_v7_from(dt: DateTime<Utc>) -> Uuid {
     let nanos = dt.timestamp_subsec_nanos();
     Uuid::new_v7(Timestamp::from_unix(NoContext, secs, nanos))
 }
-
