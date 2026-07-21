@@ -57,16 +57,6 @@ pub struct SessionHandle {
     loop_event_tx: Sender<LoopMessage>,
 }
 
-/// The unique capability to stop a running session.
-pub struct SessionOwner {
-    loop_event_tx: Sender<LoopMessage>,
-}
-
-/// The unique receiver for events emitted by a session.
-pub struct SessionEventReceiver {
-    event_rx: Receiver<SessionEvent>,
-}
-
 impl SessionHandle {
     fn new(id: SessionId, command_tx: mpsc::Sender<LoopMessage>) -> Self {
         Self {
@@ -83,23 +73,7 @@ impl SessionHandle {
 
 }
 
-impl SessionOwner {
-    /// Stop the session.
-    pub fn stop(self) {
-        let (reply_tx, reply_rx) = mpsc::channel();
-        let _ = self
-            .loop_event_tx
-            .send(LoopMessage::Cmd(SessionCommand::Stop { reply_tx }));
-        let _ = reply_rx.recv();
-    }
-}
 
-impl SessionEventReceiver {
-    /// Receive the next event emitted by the session.
-    pub fn recv_event(&self) -> Result<SessionEvent, mpsc::RecvError> {
-        self.event_rx.recv()
-    }
-}
 
 pub struct Session {
     id: SessionId,
@@ -120,7 +94,7 @@ impl Session {
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: impl Into<AutoApprovalPolicies>
-    ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
+    ) -> SessionHandle {
         let id = SessionId::new();
         let model_name = model.name().to_string();
         Self::start_from(
@@ -142,7 +116,7 @@ impl Session {
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: impl Into<AutoApprovalPolicies>,
-    ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
+    ) -> SessionHandle {
         Self::spawn(rt, system_prompt, record, model, tools, auto_approval_policies.into())
     }
 
@@ -199,7 +173,7 @@ impl Session {
         model: LlmModel,
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: AutoApprovalPolicies,
-    ) -> (SessionOwner, SessionHandle, SessionEventReceiver) {
+    ) -> SessionHandle {
         let id = record.session_id();
         let mut tool_registry = ToolRegistry::new();
         for tool in tools {
@@ -220,10 +194,6 @@ impl Session {
             record
         };
         let handle = SessionHandle::new(session.id, cmd_tx.clone());
-        let owner = SessionOwner {
-            loop_event_tx: cmd_tx,
-        };
-        let events = SessionEventReceiver { event_rx };
 
         let initial_agent = Self::create_initial_agent(system_prompt, &session.record, model, llm_tools);
 
@@ -232,7 +202,7 @@ impl Session {
             .spawn(move || session.run(rt, initial_agent))
             .expect("failed to spawn session thread");
 
-        (owner, handle, events)
+        handle
     }
 
     fn run(mut self, rt: Handle, init_agent: RestoredAgent) {
