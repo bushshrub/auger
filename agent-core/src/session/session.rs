@@ -44,10 +44,6 @@ impl SessionId {
     pub fn as_uuid(self) -> uuid::Uuid {
         self.0
     }
-
-    pub fn from_uuid(id: uuid::Uuid) -> Self {
-        Self(id)
-    }
 }
 
 /// A handle to a running auger session
@@ -72,6 +68,7 @@ impl SessionHandle {
         }
     }
 
+    // TODO: Deal with error types
     pub fn send_command(&self, cmd: SessionCommand) -> Result<(), ()> {
         self.loop_event_tx
             .send(LoopMessage::Cmd(cmd))
