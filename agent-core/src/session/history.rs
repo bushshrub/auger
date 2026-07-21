@@ -1,6 +1,7 @@
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::{NoContext, Timestamp, Uuid};
@@ -33,14 +34,37 @@ pub struct SessionRecord {
     cwd: PathBuf,
     turns: HashMap<TurnId, TurnRecord>,
     model_info: ModelInfo,
+    previous_turn_id: TurnId,
 
-    previous_turn_id: TurnId
+    #[serde(skip)] on_turn:  TurnHook,
+    #[serde(skip)] on_event: EventHook,
+}
+
+type TurnHook = Hook<dyn Fn(TurnId, &TurnRecord)  + Send + Sync>;
+type EventHook = Hook<dyn Fn(EventId, &EventRecord) + Send + Sync>;
+
+pub type TurnCallback = Arc<dyn Fn(TurnId, &TurnRecord)  + Send + Sync>;
+pub type EventCallback = Arc<dyn Fn(EventId, &EventRecord) + Send + Sync>;
+
+struct Hook<T: ?Sized>(Option<Arc<T>>);
+
+impl<T: ?Sized> std::fmt::Debug for Hook<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "Hook(set)" } else { "Hook(unset)" })
+    }
+}
+impl<T: ?Sized> Clone for Hook<T> {
+    fn clone(&self) -> Self { Hook(self.0.clone()) }  // Arc clone, no T: Clone needed
+}
+
+impl<T: ?Sized> Default for Hook<T> {
+    fn default() -> Self { Hook(None) }
 }
 
 impl SessionRecord {
     /// Initialize a new session record. This should be called
     /// at the start of the session.
-    pub(crate) fn new(session_id: SessionId, cwd: PathBuf, model_info: ModelInfo) -> Self {
+    pub(crate) fn new(session_id: SessionId, cwd: PathBuf, model_info: ModelInfo, on_turn: TurnCallback, on_event: EventCallback) -> Self {
         let created_at = Utc::now();
         let turns = HashMap::new();
         let root_id = TurnId::new(created_at);
@@ -52,6 +76,8 @@ impl SessionRecord {
             turns,
             model_info,
             previous_turn_id: root_id,
+            on_turn: Hook(Some(on_turn)),
+            on_event: Hook(Some(on_event)),
         }
     }
 
@@ -78,7 +104,10 @@ impl SessionRecord {
             Some(prev_turn) => {
                 match (&turn, &prev_turn.turn) {
                     (RecordableTurn::InputMessage {..}, RecordableTurn::AssistantMessage {..}) | (RecordableTurn::AssistantMessage {..}, RecordableTurn::InputMessage {..}) => {
-                        let tr = TurnRecord::new(turn, self.previous_turn_id);
+                        let tr = TurnRecord::new(turn, self.previous_turn_id, self.on_event.clone());
+                        if let Some(on_turn) = self.on_turn.0.clone() {
+                            on_turn(tr.turn_id, &tr);
+                        }
                         self.previous_turn_id = tr.turn_id;
                         Ok(tr.turn_id)
                     }
@@ -90,7 +119,10 @@ impl SessionRecord {
                 // This should only happen if the session just started and this is the first turn.
                 match &turn {
                     RecordableTurn::InputMessage {..} => {
-                        let tr = TurnRecord::new(turn, self.previous_turn_id);
+                        let tr = TurnRecord::new(turn, self.previous_turn_id, self.on_event.clone());
+                        if let Some(on_turn) = self.on_turn.0.clone() {
+                            on_turn(tr.turn_id, &tr);
+                        }
                         self.previous_turn_id = tr.turn_id;
                         Ok(tr.turn_id)
                     },
@@ -207,10 +239,12 @@ pub struct TurnRecord {
     turn: RecordableTurn,
     /// The events that occurred during the turn.
     events: HashMap<EventId, EventRecord>,
+    /// A callback to be invoked when an event occurs in the turn.
+    #[serde(skip)] on_event: EventHook
 }
 
 impl TurnRecord {
-    pub(crate) fn new(turn: RecordableTurn, parent_id: TurnId) -> Self {
+    fn new(turn: RecordableTurn, parent_id: TurnId, on_event: EventHook) -> Self {
         let timestamp = Utc::now();
         let turn_id = TurnId::new(timestamp);
 
@@ -233,6 +267,9 @@ impl TurnRecord {
                         arguments: arguments.clone(),
                     };
                     let record = EventRecord::new(None, timestamp, event);
+                    if let Some(on_event) = on_event.0.clone() {
+                        on_event(record.event_id, &record)
+                    }
                     Some(record)
                 }
                 _ => None
@@ -247,6 +284,7 @@ impl TurnRecord {
             parent_id,
             turn,
             events,
+            on_event
         }
 
     }
@@ -261,6 +299,9 @@ impl TurnRecord {
                     AssistantStatus::Completed => {
                         let event_id = EventId::new(self.timestamp);
                         let record = EventRecord::new(parent_id, self.timestamp, event);
+                        if let Some(on_event) = self.on_event.0.clone() {
+                            on_event(record.event_id, &record)
+                        }
                         self.events.insert(record.event_id, record);
                         Ok(event_id)
                     }
