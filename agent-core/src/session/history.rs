@@ -36,6 +36,7 @@ pub struct SessionRecord {
     model_info: ModelInfo,
     previous_turn_id: TurnId,
 
+    // TODO: These shouldn't be responsibility of SessionRecord.
     #[serde(skip)] on_turn:  TurnHook,
     #[serde(skip)] on_event: EventHook,
 }
