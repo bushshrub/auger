@@ -112,11 +112,19 @@ fn router(state: AppState) -> Router {
         .route("/sessions/{id}", delete(stop_session))
         .route("/sessions/{id}/input", post(send_input))
         .route("/sessions/{id}/tool", post(respond_to_tool_call))
-        .route("/sessions/{id}/interrupt", post(interrupt_session));
+        .route("/sessions/{id}/interrupt", post(interrupt_session))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            resolve_session_extensions,
+        ));
 
     let read_routes = Router::new()
         .route("/sessions/{id}/events", get(event_stream))
-        .route("/sessions/{id}/snapshot", get(snapshot));
+        .route("/sessions/{id}/snapshot", get(snapshot))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            resolve_session_extensions,
+        ));
 
 
     Router::new()
@@ -125,6 +133,21 @@ fn router(state: AppState) -> Router {
         .merge(write_routes)
         .merge(read_routes)
         .with_state(state)
+}
+
+async fn resolve_session_extensions(
+    State(state): State<AppState>,
+    Path(id): Path<SessionId>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let Some(entry) = state.sessions.read().await.get(&id).cloned() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    request.extensions_mut().insert(entry.handle);
+    request.extensions_mut().insert(entry.events);
+    next.run(request).await
 }
 
 async fn openapi() -> impl IntoResponse {
@@ -342,8 +365,7 @@ async fn snapshot(
     // what do I do with snapshot_rx?
     match tokio::task::spawn_blocking(move || session_handle.send_command(SessionCommand::Snapshot { reply_tx: snapshot_tx })).await {
         Ok(Ok(())) => match snapshot_rx.recv() {
-            // TODO: we should be sending back the schema, not the actual record.
-            Ok(record) => Json(record).into_response(),
+            Ok(record) => Json(record.turns().cloned().collect::<Vec<_>>()).into_response(),
             Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot channel dropped").into_response()
         },
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot failed").into_response(),

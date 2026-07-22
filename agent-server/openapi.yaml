@@ -91,7 +91,11 @@ paths:
           description: Session trace snapshot
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/TraceSnapshot" }
+              schema:
+                type: array
+                items:
+                  type: object
+                  description: Ordered session turn record, including its events.
         "401": { description: Invalid read token }
         "404": { description: Session not found }
   /sessions/{id}/events:
