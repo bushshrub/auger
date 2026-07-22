@@ -312,7 +312,8 @@ impl TurnRecord {
             RecordableTurn::AssistantMessage { status, .. } => {
                 match status {
                     AssistantStatus::Completed => {
-                        let record = EventRecord::new(parent_id, self.timestamp, event);
+                        let ts = Utc::now();
+                        let record = EventRecord::new(parent_id, ts, event);
                         self.events.insert(record.event_id, record.clone());
                         Ok(record)
                     }
