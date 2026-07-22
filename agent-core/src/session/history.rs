@@ -121,6 +121,31 @@ impl SessionRecord {
         }
     }
 
+    /// The full trace-record stream for this session in JSONL order: the
+    /// session header, then each turn followed by the events recorded during
+    /// it. This is the exact shape persisted to `trace.jsonl`, so the snapshot
+    /// API and the on-disk trace share one representation.
+    pub fn trace_records(&self) -> Vec<auger_traces::schema::TraceRecord> {
+        use auger_traces::schema as trace;
+        let mut records = Vec::new();
+        let root_turn_id: Uuid = self.root_id.into();
+        let header = trace::SessionHeader::new(
+            1,
+            self.session_id.as_uuid(),
+            trace::TurnId::from(root_turn_id),
+            self.created_at,
+            self.cwd.clone(),
+            trace::ModelInfo::new(self.model_info.provider.clone(), self.model_info.id.clone()),
+        );
+        records.push(trace::TraceRecord::Session(header));
+        for turn in self.turns() {
+            records.push(trace::TraceRecord::Turn(turn.clone().into()));
+            let events: Vec<trace::EventRecord> = turn.into();
+            records.extend(events.into_iter().map(trace::TraceRecord::Event));
+        }
+        records
+    }
+
     pub fn as_messages(&self) -> Vec<provider::Message> {
         let mut messages = Vec::new();
         let mut curr_turn_id = self.previous_turn_id;

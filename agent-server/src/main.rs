@@ -365,7 +365,7 @@ async fn snapshot(
     // what do I do with snapshot_rx?
     match tokio::task::spawn_blocking(move || session_handle.send_command(SessionCommand::Snapshot { reply_tx: snapshot_tx })).await {
         Ok(Ok(())) => match snapshot_rx.recv() {
-            Ok(record) => Json(record.turns().cloned().collect::<Vec<_>>()).into_response(),
+            Ok(record) => Json(record.trace_records()).into_response(),
             Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot channel dropped").into_response()
         },
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot failed").into_response(),

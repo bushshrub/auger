@@ -20,10 +20,12 @@ impl From<TurnRecord> for trace::TurnRecord {
 
 impl From<&TurnRecord> for Vec<trace::EventRecord> {
     fn from(record: &TurnRecord) -> Self {
-        record
-            .events()
-            .values()
-            .cloned()
+        let mut events: Vec<_> = record.events().values().cloned().collect();
+        // Events are stored in a map; replay them in the order they occurred so
+        // the snapshot matches the on-disk trace (event ids are time-ordered).
+        events.sort_by_key(|event| event.event_id());
+        events
+            .into_iter()
             .map(|event| TurnEvent::new(record.turn_id(), event).into())
             .collect()
     }
