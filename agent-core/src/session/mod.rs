@@ -6,7 +6,9 @@ mod recorder;
 mod session_builder;
 
 pub use session::{
-    Session, SessionHandle, SessionId, SnapshotError,
+    SessionHandle, SessionId, SnapshotError
 };
+
+pub use session_builder::SessionBuilder;
 
 pub use history::SessionRecord;
