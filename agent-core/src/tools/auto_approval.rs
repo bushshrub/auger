@@ -7,6 +7,10 @@ pub trait AutoApprovalPolicy: Send + Sync {
     fn is_approved(&self, tool_call: &ToolCallRequest) -> bool;
 }
 
+// TODO: Introduce new finer-grained auto approval policy system.
+// Needs more design. At a high level, based on layers.
+// Each tool can decide whether a tool call can be auto approved, or it can delegate.
+// In the future, extensions can also decide whether a tool call can be auto approved.
 /// A layered collection of auto-approval policies, grouped by tool name.
 #[derive(Clone, Default)]
 pub struct AutoApprovalPolicies {

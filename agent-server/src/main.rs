@@ -84,6 +84,48 @@ struct AppState {
     default_model: String,
 }
 
+struct DiskSession {
+    record: agent_core::SessionRecord,
+    model: String,
+    path: PathBuf,
+}
+
+fn load_disk_sessions() -> Vec<DiskSession> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
+    let sessions_dir = PathBuf::from(home).join(".auger").join("sessions");
+    let Ok(entries) = std::fs::read_dir(sessions_dir) else {
+        return Vec::new();
+    };
+    let mut sessions = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path().join("trace.jsonl");
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let records: Result<Vec<auger_traces::schema::TraceRecord>, _> = contents
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(serde_json::from_str)
+            .collect();
+        let Ok(records) = records else {
+            tracing::warn!(path = %path.display(), "failed to parse session trace");
+            continue;
+        };
+        let Some(auger_traces::schema::TraceRecord::Session(header)) = records.first() else {
+            tracing::warn!(path = %path.display(), "session trace has no header");
+            continue;
+        };
+        let model = header.model().id().clone();
+        match agent_core::SessionRecord::restore(records) {
+            Ok(record) => sessions.push(DiskSession { record, model, path }),
+            Err(error) => tracing::warn!(path = %path.display(), %error, "failed to restore session trace"),
+        }
+    }
+    sessions
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -94,11 +136,15 @@ async fn main() {
     let addr = config.listen_addr();
     let provider = provider_config::from_config(&config);
 
+    let disk_sessions = load_disk_sessions();
     let state = AppState {
         provider: Arc::clone(&provider),
         sessions: Arc::new(RwLock::new(HashMap::new())),
         default_model: config.model(),
     };
+    for disk in disk_sessions {
+        start_session(&state, SessionBuilder::restore(disk.record), disk.model, disk.path).await;
+    }
 
     let listener = TcpListener::bind(&addr).await.expect("bind failed");
     info!("agent-server listening on {addr}");
@@ -185,6 +231,23 @@ async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     let model = req.model.unwrap_or_else(|| state.default_model.clone());
+    let builder = SessionBuilder::new(model.clone());
+    let session_id = builder.id();
+    let (read_token, write_token) = start_session(&state, builder, model, trace_path(session_id)).await;
+    Json(
+        json!({ "session_id": session_id, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
+        "read": read_token,
+        "write": write_token
+    } }),
+    )
+}
+
+async fn start_session(
+    state: &AppState,
+    builder: SessionBuilder,
+    model: String,
+    trace_path: PathBuf,
+) -> (Uuid, Uuid) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
     let tools: Vec<Box<dyn agent_tools::Tool>> = vec![
@@ -214,9 +277,7 @@ async fn create_session(
     .collect();
     let mut auto_approval = AutoApprovalPolicies::from(auto_approved);
     auto_approval.add("shell", builtin_tools::BashAutoApprovalPolicy::new(cwd.clone()));
-    let builder = SessionBuilder::new(model.clone());
     let session_id = builder.id();
-    let trace_path = trace_path(session_id);
     create_dir_all(trace_path.parent().expect("trace path has a parent"))
         .expect("failed to create session trace directory");
     let trace_file = OpenOptions::new()
@@ -280,12 +341,7 @@ async fn create_session(
             archived: Arc::new(AtomicBool::new(false)),
         },
     );
-    Json(
-        json!({ "session_id": session_id, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
-        "read": read_token,
-        "write": write_token
-    } }),
-    )
+    (read_token, write_token)
 }
 
 async fn stop_session(State(state): State<AppState>, Path(id): Path<SessionId>) -> impl IntoResponse {
