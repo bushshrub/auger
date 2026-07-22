@@ -35,37 +35,16 @@ pub struct SessionRecord {
     turns: HashMap<TurnId, TurnRecord>,
     model_info: ModelInfo,
     previous_turn_id: TurnId,
-
-    // TODO: These shouldn't be responsibility of SessionRecord.
-    #[serde(skip)] on_turn:  TurnHook,
-    #[serde(skip)] on_event: EventHook,
 }
 
-type TurnHook = Hook<dyn Fn(TurnId, &TurnRecord)  + Send + Sync>;
-type EventHook = Hook<dyn Fn(TurnId, &EventRecord) + Send + Sync>;
 
-pub type TurnCallback = Arc<dyn Fn(TurnId, &TurnRecord)  + Send + Sync>;
-pub type EventCallback = Arc<dyn Fn(TurnId, &EventRecord) + Send + Sync>;
 
-struct Hook<T: ?Sized>(Option<Arc<T>>);
 
-impl<T: ?Sized> std::fmt::Debug for Hook<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(if self.0.is_some() { "Hook(set)" } else { "Hook(unset)" })
-    }
-}
-impl<T: ?Sized> Clone for Hook<T> {
-    fn clone(&self) -> Self { Hook(self.0.clone()) }  // Arc clone, no T: Clone needed
-}
-
-impl<T: ?Sized> Default for Hook<T> {
-    fn default() -> Self { Hook(None) }
-}
 
 impl SessionRecord {
     /// Initialize a new session record. This should be called
     /// at the start of the session.
-    pub(crate) fn new(session_id: SessionId, cwd: PathBuf, model_info: ModelInfo, on_turn: TurnCallback, on_event: EventCallback) -> Self {
+    pub(crate) fn new(session_id: SessionId, cwd: PathBuf, model_info: ModelInfo) -> Self {
         let created_at = Utc::now();
         let turns = HashMap::new();
         let root_id = TurnId::new(created_at);
@@ -76,9 +55,7 @@ impl SessionRecord {
             cwd,
             turns,
             model_info,
-            previous_turn_id: root_id,
-            on_turn: Hook(Some(on_turn)),
-            on_event: Hook(Some(on_event)),
+            previous_turn_id: root_id
         }
     }
 
@@ -99,18 +76,16 @@ impl SessionRecord {
         self.get_turn_mut(&self.previous_turn_id.clone())
     }
 
-    pub fn record_turn(&mut self, turn: RecordableTurn) -> Result<TurnId, ()> {
+    pub(crate) fn add_turn(&mut self, turn: RecordableTurn) -> Result<TurnRecord, ()> {
         let previous_turn = self.turns.get(&self.previous_turn_id);
         match previous_turn {
             Some(prev_turn) => {
                 match (&turn, &prev_turn.turn) {
                     (RecordableTurn::InputMessage {..}, RecordableTurn::AssistantMessage {..}) | (RecordableTurn::AssistantMessage {..}, RecordableTurn::InputMessage {..}) => {
-                        let tr = TurnRecord::new(turn, self.previous_turn_id, self.on_event.clone());
-                        if let Some(on_turn) = self.on_turn.0.clone() {
-                            on_turn(tr.turn_id, &tr);
-                        }
+                        let tr = TurnRecord::new(turn, self.previous_turn_id);
                         self.previous_turn_id = tr.turn_id;
-                        Ok(tr.turn_id)
+                        self.turns.insert(tr.turn_id, tr.clone());
+                        Ok(tr)
                     }
                     // TODO: better error information about mismatch.
                     _ => {Err(())}
@@ -120,18 +95,15 @@ impl SessionRecord {
                 // This should only happen if the session just started and this is the first turn.
                 match &turn {
                     RecordableTurn::InputMessage {..} => {
-                        let tr = TurnRecord::new(turn, self.previous_turn_id, self.on_event.clone());
-                        if let Some(on_turn) = self.on_turn.0.clone() {
-                            on_turn(tr.turn_id, &tr);
-                        }
+                        let tr = TurnRecord::new(turn, self.previous_turn_id);
                         self.previous_turn_id = tr.turn_id;
-                        Ok(tr.turn_id)
+                        self.turns.insert(tr.turn_id, tr.clone());
+                        Ok(tr)
                     },
                     _ => Err(())
                 }
             }
         }
-
     }
 
     pub fn as_messages(&self) -> Vec<provider::Message> {
@@ -237,7 +209,7 @@ pub(crate) struct TurnEvent {
 }
 
 impl EventRecord {
-    fn new(parent_id: Option<EventId>, timestamp: DateTime<Utc>, event: RecordableEvent) -> Self {
+    pub(crate) fn new(parent_id: Option<EventId>, timestamp: DateTime<Utc>, event: RecordableEvent) -> Self {
         let event_id = EventId::new(timestamp);
         Self {
             parent_id,
@@ -265,43 +237,12 @@ pub struct TurnRecord {
     /// The events that occurred during the turn.
     #[getset(get = "pub")]
     events: HashMap<EventId, EventRecord>,
-    /// A callback to be invoked when an event occurs in the turn.
-    #[serde(skip)] on_event: EventHook
 }
 
 impl TurnRecord {
-    fn new(turn: RecordableTurn, parent_id: TurnId, on_event: EventHook) -> Self {
+    fn new(turn: RecordableTurn, parent_id: TurnId) -> Self {
         let timestamp = Utc::now();
         let turn_id = TurnId::new(timestamp);
-
-        let assistant_content = match &turn {
-            RecordableTurn::InputMessage { content: _ } => Vec::new(),
-            RecordableTurn::AssistantMessage { status, content} => {
-                content.clone()
-            },
-        };
-
-
-        let events = assistant_content
-            .into_iter()
-            .filter_map(|c| {
-            match c {
-                AssistantContent::ToolCall { id, name, arguments } => {
-                    let event = RecordableEvent::ToolCallRequested {
-                        tool_call_id: ToolCallId(id.0.clone()),
-                        tool_name: name.clone(),
-                        arguments: arguments.clone(),
-                    };
-                    let record = EventRecord::new(None, timestamp, event);
-                    if let Some(on_event) = on_event.0.clone() {
-                        on_event(parent_id, &record)
-                    }
-                    Some(record)
-                }
-                _ => None
-            }
-        })
-            .map(|record| (record.event_id, record)).collect();
 
 
         Self {
@@ -309,13 +250,12 @@ impl TurnRecord {
             timestamp,
             parent_id,
             turn,
-            events,
-            on_event
+            events: HashMap::new(),
         }
 
     }
 
-    fn record_event(&mut self, event: RecordableEvent, parent_id: Option<EventId>) -> Result<EventId, ()> {
+    pub(crate) fn add_event(&mut self, event: RecordableEvent, parent_id: Option<EventId>) -> Result<EventRecord, ()> {
         match &self.turn {
             RecordableTurn::InputMessage { .. } => {
                 Err(())
@@ -323,13 +263,9 @@ impl TurnRecord {
             RecordableTurn::AssistantMessage { status, .. } => {
                 match status {
                     AssistantStatus::Completed => {
-                        let event_id = EventId::new(self.timestamp);
                         let record = EventRecord::new(parent_id, self.timestamp, event);
-                        if let Some(on_event) = self.on_event.0.clone() {
-                            on_event(self.turn_id, &record)
-                        }
-                        self.events.insert(record.event_id, record);
-                        Ok(event_id)
+                        self.events.insert(record.event_id, record.clone());
+                        Ok(record)
                     }
                     _ => {
                         Err(())
@@ -349,26 +285,25 @@ impl TurnRecord {
         })
     }
 
-    pub(crate) fn record_tool_result(&mut self, tool_result: ToolResult) -> Result<EventId, ()> {
+    pub(crate) fn record_tool_result(&mut self, tool_result: ToolResult) -> Result<EventRecord, ()> {
         let tool_call_id = ToolCallId(tool_result.tool_call_id().clone());
         match self.get_tool_call_event_id(&tool_call_id) {
-            Some(id) => self.record_event(tool_result.into(), Some(id)),
+            Some(id) => self.add_event(tool_result.into(), Some(id)),
             None => Err(())
         }
     }
 
-    pub(crate) fn record_tool_decision(&mut self, tool_call_id: ToolCallId, decision: bool, source: AuthorizationSource, reason: Option<String>) -> Result<EventId, ()> {
+    pub(crate) fn record_tool_decision(&mut self, tool_call_id: ToolCallId, decision: ToolDecision, source: AuthorizationSource, reason: Option<String>) -> Result<EventRecord, ()> {
         let tool_call_id = ToolCallId(tool_call_id.0.clone());
-
         match self.get_tool_call_event_id(&tool_call_id) {
             Some(id) => {
                 let event = RecordableEvent::ToolAuthorization {
                     tool_call_id,
-                    decision: if decision { ToolDecision::Approved } else { ToolDecision::Denied },
+                    decision,
                     source,
                     reason,
                 };
-                self.record_event(event, Some(id))
+                self.add_event(event, Some(id))
             }
             None => Err(())
         }

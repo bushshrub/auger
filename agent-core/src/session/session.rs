@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
 use crate::session::history::{AssistantStatus, AuthorizationSource, EventId, ModelInfo, RecordableEvent, RecordableTurn, SessionRecord};
+use crate::session::recorder::SessionRecorder;
 use crate::session::states::HarnessState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -88,7 +89,7 @@ pub struct Session {
     event_tx: Sender<SessionEvent>,
     tool_registry: Arc<ToolRegistry>,
     auto_approval_policies: Arc<AutoApprovalPolicies>,
-    record: SessionRecord,
+    recorder: SessionRecorder,
 }
 
 impl Session {
@@ -104,7 +105,7 @@ impl Session {
         Self::start_from(
             model,
             // TODO: modelinfo
-            SessionRecord::new(id, current_dir().expect("no cwd"), ModelInfo::new("to-be-added".to_string(), model_name), Arc::new(|_, _| {}), Arc::new(|_, _| {})),
+            SessionRecord::new(id, current_dir().expect("no cwd"), ModelInfo::new("to-be-added".to_string(), model_name)),
             system_prompt,
             rt,
             tools,
@@ -196,11 +197,11 @@ impl Session {
             event_tx,
             tool_registry,
             auto_approval_policies: Arc::new(auto_approval_policies),
-            record
+            recorder: SessionRecorder::new(record, Arc::new(|_, _| {}), Arc::new(|_, _| {}))
         };
         let handle = SessionHandle::new(session.id, cmd_tx.clone(), creation_time);
 
-        let initial_agent = Self::create_initial_agent(system_prompt, &session.record, model, llm_tools);
+        let initial_agent = Self::create_initial_agent(system_prompt, &session.recorder.record(), model, llm_tools);
 
         std::thread::Builder::new()
             .name(format!("auger-session-{}", session.id.0))
@@ -222,7 +223,7 @@ impl Session {
                             break 'session_loop;
                         }
                         SessionCommand::Snapshot { reply_tx } => {
-                            let _ = reply_tx.send(self.record.clone());
+                            let _ = reply_tx.send(self.recorder.record());
                         }
                         SessionCommand::SendMessage(prompt) => {
                             info!(session_id = %self.id, "Received user message {:?}", prompt);
@@ -257,7 +258,7 @@ impl Session {
                             let cancel = stream_fut.interrupt_handle();
                             let sess_id = self.id;
 
-                            self.record.record_turn(RecordableTurn::user_prompt(prompt.into())).expect("previous turn to have been assistant/session start");
+                            self.recorder.record_turn(RecordableTurn::user_prompt(prompt.into())).expect("previous turn to have been assistant/session start");
                             rt.spawn(async move {
                                 info!(session_id=%sess_id, "Starting stream");
                                 let res = stream_fut.await;
@@ -286,10 +287,8 @@ impl Session {
                                 HarnessState::NeedToolConsent { agent, user_tool_decisions } => {
                                     let valid_decision = user_tool_decisions.is_undecided(&id);
                                     if valid_decision {
-                                        self.record.
-                                            get_previous_turn_mut()
-                                            .expect("there to be a previous turn")
-                                            .record_tool_decision(id.clone().into(), approved, AuthorizationSource::User, message.clone())
+                                        let prev_turn_id = self.recorder.previous_turn_id().expect("there to be a previous turn");
+                                        self.recorder.record_tool_decision(prev_turn_id, id.clone().into(), approved, AuthorizationSource::User, message.clone())
                                             .expect("previous turn to be assistant");
                                     }
                                     match user_tool_decisions.record_decision(id, approved, message) {
@@ -339,7 +338,7 @@ impl Session {
                                         error = %agent.error(),
                                         "LLM stream failed; waiting for a new user message"
                                     );
-                                    self.record.record_turn(RecordableTurn::AssistantMessage {
+                                    self.recorder.record_turn(RecordableTurn::AssistantMessage {
                                         status: AssistantStatus::Failed,
                                         content: vec![],
                                     }).expect("previous turn was user");
@@ -351,20 +350,19 @@ impl Session {
                                 StreamResult::WaitingForToolResponses(agent) => {
                                     debug!(session_id = %self.id, "agent has called tools");
                                     let assistant_message = agent.messages().last().expect("there to be a last message").clone();
-                                    let turn_id = self.record.
+                                    let turn_id = self.recorder.
                                         record_turn(
                                             RecordableTurn::assistant_message(AssistantStatus::Completed, assistant_message)
                                             .expect("assistant message should be Assistant variant")
                                         )
                                         .expect("last turn to be user");
 
-                                    let current_turn = self.record.get_turn_mut(&turn_id).expect("turn to exist");
                                     let tool_batch = agent.get_requested_tools();
                                     if self.auto_approval_policies.will_approve_all(&tool_batch) {
                                         info!(session_id=%self.id, "automatically running all tools");
                                         for call in &tool_batch {
-                                            current_turn.
-                                                record_tool_decision(call.id.clone().into(), true, AuthorizationSource::Policy, None)
+                                            self.recorder.
+                                                record_tool_decision(turn_id, call.id.clone().into(), true, AuthorizationSource::Policy, None)
                                                 .expect("turn to be assistant");
                                         }
                                         let execution = ToolExecution::new(
@@ -384,8 +382,8 @@ impl Session {
                                         info!(session_id=%self.id, "Some tools require consent");
                                         for call in &tool_batch {
                                             if self.auto_approval_policies.is_approved(call) {
-                                                current_turn.
-                                                    record_tool_decision(call.id.clone().into(), true, AuthorizationSource::Policy, None)
+                                                self.recorder.
+                                                    record_tool_decision(turn_id, call.id.clone().into(), true, AuthorizationSource::Policy, None)
                                                     .expect("turn to be assistant");
                                             }
                                         }
@@ -404,7 +402,7 @@ impl Session {
                                 StreamResult::WaitingForUserMessage(agent) => {
                                     info!(session_id=%self.id, "No tools called");
                                     let assistant_message = agent.messages().last().expect("there to be a last message").clone();
-                                    self.record.
+                                    self.recorder.
                                         record_turn(
                                             RecordableTurn::assistant_message(AssistantStatus::Completed, assistant_message)
                                                 .expect("assistant message should be Assistant variant")
@@ -426,7 +424,7 @@ impl Session {
                                             let _ = event_tx.send(SessionEvent::StreamEvent(event));
                                         });
                                         let cancel = stream_fut.interrupt_handle();
-                                        self.record.record_turn(RecordableTurn::user_prompt(prompt.into())).expect("last turn was assistant");
+                                        self.recorder.record_turn(RecordableTurn::user_prompt(prompt.into())).expect("last turn was assistant");
                                         rt.spawn(async move {
                                             let res = stream_fut.await;
                                             inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
@@ -469,9 +467,9 @@ impl Session {
                         }
                     };
 
+                    let prev_turn_id = self.recorder.previous_turn_id().expect("there to be a previous turn");
                     for result in tool_batch.results() {
-                        self.record.get_previous_turn_mut().expect("for there to be a previous turn")
-                            .record_tool_result(result.clone())
+                        self.recorder.record_tool_result(prev_turn_id, result.clone())
                             .expect("previous turn to be assistant");
                     }
                     // TODO: allow steering message to ride along
