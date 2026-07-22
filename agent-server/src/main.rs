@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::server_types::{
     ApproveRequest, CreateSessionRequest, SessionEntry, UserInputRequest,
 };
-use agent_core::{AutoApprovalPolicies, Session, SessionCommand, SessionEvent, SessionHandle, SessionId, SystemPrompt};
+use agent_core::{AutoApprovalPolicies, SessionBuilder, SessionCommand, SessionEvent, SessionHandle, SessionId, SystemPrompt};
 use provider::{LlmModel, LlmProvider};
 
 mod server_types;
@@ -158,14 +158,16 @@ async fn create_session(
     .collect();
     let mut auto_approval = AutoApprovalPolicies::from(auto_approved);
     auto_approval.add("shell", builtin_tools::BashAutoApprovalPolicy::new(cwd));
-    let (handle, event_rx) = Session::start(
+    let builder = SessionBuilder::new(model.clone());
+    let session_id = builder.id();
+    let (handle, event_rx) = builder.start(
         LlmModel::new(state.provider.clone(), &model),
         sys_prompt,
         tokio::runtime::Handle::current(),
         tools,
         auto_approval,
     );
-    let session_id = handle.id();
+
     let (event_tx, _) = tokio::sync::broadcast::channel(256);
     let forward_tx = event_tx.clone();
     tokio::task::spawn_blocking(move || {

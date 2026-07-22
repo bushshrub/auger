@@ -5,7 +5,7 @@ mod events;
 
 pub use events::{SessionCommand, SessionEvent};
 pub use session::{
-    Session, SessionHandle, SessionId, SnapshotError,
+    SessionBuilder, SessionHandle, SessionId, SnapshotError,
 };
 pub use system_prompt::SystemPrompt;
 pub use tools::auto_approval::{AutoApprovalPolicies, AutoApprovalPolicy};
