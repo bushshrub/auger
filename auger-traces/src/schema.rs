@@ -22,10 +22,36 @@ pub struct SessionHeader {
     model: ModelInfo,
 }
 
+impl SessionHeader {
+    pub fn new(
+        version: u32,
+        session_id: Uuid,
+        root_turn_id: TurnId,
+        created_at: DateTime<Utc>,
+        cwd: PathBuf,
+        model: ModelInfo,
+    ) -> Self {
+        Self {
+            version,
+            session_id,
+            root_turn_id,
+            created_at,
+            cwd,
+            model,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     provider: String,
     id: String,
+}
+
+impl ModelInfo {
+    pub fn new(provider: String, id: String) -> Self {
+        Self { provider, id }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

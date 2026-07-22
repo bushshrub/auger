@@ -15,16 +15,49 @@ use tokio::sync::RwLock;
 use tokio_stream::wrappers::BroadcastStream;
 use tracing::{debug, info};
 use uuid::Uuid;
+use std::fs::{create_dir_all, OpenOptions};
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 use crate::server_types::{
     ApproveRequest, CreateSessionRequest, SessionEntry, UserInputRequest,
 };
-use agent_core::{AutoApprovalPolicies, SessionBuilder, SessionCommand, SessionEvent, SessionHandle, SessionId, SystemPrompt};
+use agent_core::{AutoApprovalPolicies, SessionBuilder, SessionCommand, SessionEvent, SessionHandle, SessionId, SystemPrompt, TurnEvent};
 use provider::{LlmModel, LlmProvider};
 
 mod server_types;
 mod config;
 mod provider_config;
+
+fn trace_path(session_id: SessionId) -> PathBuf {
+    let home = std::env::var_os("HOME").expect("HOME is not set");
+    PathBuf::from(home)
+        .join(".auger")
+        .join("sessions")
+        .join(session_id.to_string())
+        .join("trace.jsonl")
+}
+
+fn write_trace_record(writer: &Arc<Mutex<BufWriter<std::fs::File>>>, record: &auger_traces::schema::TraceRecord) {
+    let Ok(mut writer) = writer.lock() else {
+        tracing::error!("trace writer lock poisoned");
+        return;
+    };
+    let line = match serde_json::to_string(record) {
+        Ok(line) => line,
+        Err(error) => {
+            tracing::error!(%error, "failed to serialize session trace");
+            return;
+        }
+    };
+    if let Err(error) = writer.write_all(line.as_bytes())
+        .and_then(|_| writer.write_all(b"\n"))
+        .and_then(|_| writer.flush())
+    {
+        tracing::error!(%error, "failed to write session trace");
+    }
+}
 
 const DEFAULT_CONTEXT_WINDOW: usize = 113072;
 const SYSTEM_PROMPT: &str =
@@ -157,9 +190,41 @@ async fn create_session(
     .map(|s| s.to_string())
     .collect();
     let mut auto_approval = AutoApprovalPolicies::from(auto_approved);
-    auto_approval.add("shell", builtin_tools::BashAutoApprovalPolicy::new(cwd));
+    auto_approval.add("shell", builtin_tools::BashAutoApprovalPolicy::new(cwd.clone()));
     let builder = SessionBuilder::new(model.clone());
     let session_id = builder.id();
+    let trace_path = trace_path(session_id);
+    create_dir_all(trace_path.parent().expect("trace path has a parent"))
+        .expect("failed to create session trace directory");
+    let trace_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&trace_path)
+        .expect("failed to create session trace file");
+    let trace_writer = Arc::new(Mutex::new(BufWriter::new(trace_file)));
+    if std::fs::metadata(&trace_path).expect("failed to inspect session trace file").len() == 0 {
+        let root_turn_id: Uuid = builder.root_turn_id().into();
+        let header = auger_traces::schema::SessionHeader::new(
+            1,
+            session_id.as_uuid(),
+            auger_traces::schema::TurnId::from(root_turn_id),
+            builder.created_at(),
+            cwd.clone(),
+            auger_traces::schema::ModelInfo::new("to-be-added".to_string(), model.clone()),
+        );
+        write_trace_record(&trace_writer, &auger_traces::schema::TraceRecord::Session(header));
+    }
+    let turn_writer = Arc::clone(&trace_writer);
+    let event_writer = Arc::clone(&trace_writer);
+    let builder = builder
+        .on_turn(move |_, record| {
+            write_trace_record(&turn_writer, &auger_traces::schema::TraceRecord::Turn(record.clone().into()));
+        })
+        .on_event(move |turn_id, record| {
+            let event: auger_traces::schema::EventRecord =
+                TurnEvent::new(turn_id, record.clone()).into();
+            write_trace_record(&event_writer, &auger_traces::schema::TraceRecord::Event(event));
+        });
     let (handle, event_rx) = builder.start(
         LlmModel::new(state.provider.clone(), &model),
         sys_prompt,

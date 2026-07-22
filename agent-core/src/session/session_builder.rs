@@ -31,6 +31,14 @@ impl SessionBuilder {
         self.record.session_id()
     }
 
+    pub fn root_turn_id(&self) -> crate::session::history::TurnId {
+        self.record.root_id()
+    }
+
+    pub fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.record.created_at()
+    }
+
     pub fn on_turn(mut self, cb: impl Fn(TurnId, &TurnRecord) + Send + Sync + 'static) -> Self {
         self.on_turn = Arc::new(cb);
         self

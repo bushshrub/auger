@@ -24,19 +24,16 @@ impl From<&TurnRecord> for Vec<trace::EventRecord> {
             .events()
             .values()
             .cloned()
-            .map(|event| TurnEvent {
-                turn_id: record.turn_id(),
-                record: event,
-            }.into())
+            .map(|event| TurnEvent::new(record.turn_id(), event).into())
             .collect()
     }
 }
 
 impl From<TurnEvent> for trace::EventRecord {
     fn from(event: TurnEvent) -> Self {
-        let event_id: Uuid = event.record.event_id().into();
-        let turn_id: Uuid = event.turn_id.into();
-        let parent_id = event.record.parent_id().map(|id| {
+        let event_id: Uuid = event.record().event_id().into();
+        let turn_id: Uuid = event.turn_id().into();
+        let parent_id = event.record().parent_id().map(|id| {
             let id: Uuid = id.into();
             trace::EventId::from(id)
         });
@@ -44,8 +41,8 @@ impl From<TurnEvent> for trace::EventRecord {
             trace::EventId::from(event_id),
             trace::TurnId::from(turn_id),
             parent_id,
-            event.record.timestamp().clone(),
-            event.record.event().clone().into(),
+            event.record().timestamp().clone(),
+            event.record().event().clone().into(),
         )
     }
 }
