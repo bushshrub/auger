@@ -10,7 +10,7 @@
 //   POST   /sessions/{id}/tool     (Bearer write) { tool_call_id, approved, message? }
 //   POST   /sessions/{id}/interrupt (Bearer write) -> { status: "ok" } (fire-and-forget)
 //   GET    /sessions/{id}/events   (Bearer read)  -> SSE, one SessionEvent JSON per frame
-//   GET    /sessions/{id}/snapshot (Bearer read)  -> SessionRecord
+//   GET    /sessions/{id}/snapshot (Bearer read)  -> TraceRecord[]
 //
 // EventSource can't set an Authorization header, so the SSE stream is consumed
 // with fetch + a ReadableStream reader and parsed manually.
@@ -45,19 +45,32 @@ const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
  *   | { type: 'closed' }
  * )} SessionEvent
  *
+ * The snapshot is the same record stream persisted to trace.jsonl: a flat,
+ * ordered array of TraceRecords, each discriminated by `kind`. A turn record
+ * carries the conversation content; the tool events (`tool_call_requested`,
+ * `tool_authorization`, `tool_call_result`) that occurred during an assistant
+ * turn follow it. `arguments` on a tool call is a JSON-encoded string.
+ *
  * @typedef {{ type: 'text', text: string } | { type: 'tool_result', tool_call_id: string,
  *             content: ToolData[] }} InputContent
  * @typedef {{ type: 'reasoning', text: string } | { type: 'text', text: string }
- *             | { type: 'tool_call', id: string, name: string, arguments: unknown }} AssistantContent
+ *             | { type: 'tool_call', id: string, name: string, arguments: string }} AssistantContent
  * @typedef {{ type: 'text', text: string }} ToolData
- * @typedef {{ type: 'input_message', content: InputContent[] }
- *             | { type: 'assistant_message', status: 'completed' | 'interrupted' | 'failed',
- *                 content: AssistantContent[] }
- *             | { type: 'tool_authorization', tool_call_id: string,
- *                 decision: 'approved' | 'denied' }
- *             | { type: 'tool_call_result', tool_call_id: string,
- *                 status: 'success' | 'denied' | 'error', content: ToolData[] }} TraceEvent
- * @typedef {{ header: { session_id: string }, events: TraceEvent[] }} SessionRecord
+ * @typedef {(
+ *   | { kind: 'session', session_id: string, created_at: string, cwd: string,
+ *       model: { provider: string, id: string } }
+ *   | { kind: 'turn', type: 'input_message', id: string, parent_turn_id: string | null,
+ *       timestamp: string, content: InputContent[] }
+ *   | { kind: 'turn', type: 'assistant_message', id: string, parent_turn_id: string | null,
+ *       timestamp: string, status: 'completed' | 'interrupted' | 'failed',
+ *       content: AssistantContent[] }
+ *   | { kind: 'event', type: 'tool_call_requested', turn_id: string, tool_call_id: string,
+ *       tool_name: string, arguments: string }
+ *   | { kind: 'event', type: 'tool_authorization', turn_id: string, tool_call_id: string,
+ *       decision: 'approved' | 'denied', source: 'user' | 'policy', reason: string | null }
+ *   | { kind: 'event', type: 'tool_call_result', turn_id: string, tool_call_id: string,
+ *       content: ToolData[] }
+ * )} TraceRecord
  */
 
 export class ApiError extends Error {
@@ -176,7 +189,7 @@ export async function interruptSession(id, writeToken) {
 /**
  * @param {string} id
  * @param {string} token
- * @returns {Promise<SessionRecord>}
+ * @returns {Promise<TraceRecord[]>}
  */
 export async function getSnapshot(id, token) {
 	const res = await fetch(`${BASE}/sessions/${id}/snapshot`, {
