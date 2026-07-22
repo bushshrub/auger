@@ -59,6 +59,18 @@ impl SessionRecord {
         }
     }
 
+    pub(super) fn from_trace_parts(
+        session_id: SessionId,
+        root_id: TurnId,
+        created_at: DateTime<Utc>,
+        cwd: PathBuf,
+        model_info: ModelInfo,
+        turns: HashMap<TurnId, TurnRecord>,
+        previous_turn_id: TurnId,
+    ) -> Self {
+        Self { session_id, root_id, created_at, cwd, turns, model_info, previous_turn_id }
+    }
+
     pub fn get_turn(&self, turn_id: &TurnId) -> Option<&TurnRecord> {
         self.turns.get(turn_id)
     }
@@ -188,6 +200,7 @@ impl SessionRecord {
                 break;
             }
         }
+        messages.reverse();
         messages
     }
 
@@ -219,9 +232,21 @@ impl Into<Uuid> for TurnId {
     }
 }
 
+impl From<Uuid> for TurnId {
+    fn from(id: Uuid) -> Self {
+        Self(id)
+    }
+}
+
 impl Into<Uuid> for EventId {
     fn into(self) -> Uuid {
         self.0
+    }
+}
+
+impl From<Uuid> for EventId {
+    fn from(id: Uuid) -> Self {
+        Self(id)
     }
 }
 
@@ -268,6 +293,11 @@ impl EventRecord {
         }
     }
 
+
+    pub(super) fn from_trace_parts(event_id: EventId, parent_id: Option<EventId>, timestamp: DateTime<Utc>, event: RecordableEvent) -> Self {
+        Self { parent_id, timestamp, event_id, event }
+    }
+
 }
 
 // TODO: should be enum, since only assistant turns can technically have events attached to it.
@@ -302,6 +332,16 @@ impl TurnRecord {
             events: HashMap::new(),
         }
 
+    }
+
+    pub(super) fn from_trace_parts(
+        turn_id: TurnId,
+        timestamp: DateTime<Utc>,
+        parent_id: TurnId,
+        turn: RecordableTurn,
+        events: HashMap<EventId, EventRecord>,
+    ) -> Self {
+        Self { turn_id, timestamp, parent_id, turn, events }
     }
 
     pub(crate) fn add_event(&mut self, event: RecordableEvent, parent_id: Option<EventId>) -> Result<EventRecord, ()> {

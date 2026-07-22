@@ -12,3 +12,4 @@ pub use session::{
 pub use session_builder::SessionBuilder;
 
 pub use history::{SessionRecord, TurnEvent};
+pub use trace::TraceRestoreError;

@@ -28,6 +28,14 @@ impl SessionBuilder {
         }
     }
 
+    pub fn restore(record: SessionRecord) -> Self {
+        Self {
+            record,
+            on_turn: Arc::new(|_, _| {}),
+            on_event: Arc::new(|_, _| {}),
+        }
+    }
+
     pub fn id(&self) -> SessionId {
         self.record.session_id()
     }
