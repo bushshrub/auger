@@ -18,7 +18,7 @@ use getset::CopyGetters;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
-use crate::session::history::{AssistantStatus, AuthorizationSource, EventId, ModelInfo, RecordableEvent, RecordableTurn, SessionRecord};
+use crate::session::history::{AssistantStatus, AuthorizationSource, EventId, InputContent, ModelInfo, RecordableEvent, RecordableTurn, SessionRecord, ToolData};
 use crate::session::recorder::SessionRecorder;
 use crate::session::states::HarnessState;
 
@@ -441,6 +441,20 @@ impl Session {
                         self.recorder.record_tool_result(prev_turn_id, result.clone())
                             .expect("previous turn to be assistant");
                     }
+                    // Return the tool results to the model as an input turn. This
+                    // keeps the input/assistant alternation the recorder requires
+                    // and lets a restored session replay the results.
+                    let tool_result_content = tool_batch
+                        .results()
+                        .into_iter()
+                        .map(|result| InputContent::ToolResult {
+                            tool_call_id: result.tool_call_id().clone().into(),
+                            content: vec![ToolData::Text { text: result.content().clone() }],
+                        })
+                        .collect();
+                    self.recorder
+                        .record_turn(RecordableTurn::InputMessage { content: tool_result_content })
+                        .expect("previous turn to be assistant");
                     // TODO: allow steering message to ride along
                     let new_agent = agent.add_all_tool_responses(None, tool_batch);
                     let event_tx = self.event_tx.clone();

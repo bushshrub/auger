@@ -155,12 +155,18 @@ impl Future for ToolExecutionFuture {
 
 impl ToolExecution<Completed> {
     pub(crate) fn resolve(self) -> ToolBatch<Resolved> {
-        match self.batch
-            .into_resolved() {
-            Either::Right(resolved) => resolved,
-            Either::Left(_) => panic!("this is a bug")
+        // run_inner collects the executed results separately; feed them back
+        // into the batch so every requested call is resolved before we convert.
+        let mut batch = self.batch;
+        for result in self.results {
+            batch
+                .add_result(result.tool_call_id().clone(), result)
+                .expect("executed result matches a requested call");
         }
-
+        match batch.into_resolved() {
+            Either::Right(resolved) => resolved,
+            Either::Left(_) => panic!("this is a bug"),
+        }
     }
 }
 
