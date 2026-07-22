@@ -7,6 +7,7 @@ use provider::LlmModel;
 use std::env::current_dir;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use chrono::{DateTime, Utc};
 use tokio::runtime::Handle;
 use crate::session::session::Session;
 
@@ -31,11 +32,11 @@ impl SessionBuilder {
         self.record.session_id()
     }
 
-    pub fn root_turn_id(&self) -> crate::session::history::TurnId {
+    pub fn root_turn_id(&self) -> TurnId {
         self.record.root_id()
     }
 
-    pub fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
+    pub fn created_at(&self) -> DateTime<Utc> {
         self.record.created_at()
     }
 
