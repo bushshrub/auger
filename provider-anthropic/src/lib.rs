@@ -74,15 +74,15 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
                 tool_call_results,
             } => {
                 let mut blocks: Vec<Value> = Vec::new();
-                let msg_text = message.message();
+                let msg_text = &message.message;
                 if !msg_text.is_empty() {
                     blocks.push(json!({"type": "text", "text": msg_text}));
                 }
                 for tr in tool_call_results {
                     blocks.push(json!({
                         "type": "tool_result",
-                        "tool_use_id": tr.tool_call_id(),
-                        "content": tr.content(),
+                        "tool_use_id": tr.tool_call_id,
+                        "content": tr.content,
                     }));
                 }
                 if blocks.is_empty() {

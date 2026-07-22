@@ -220,7 +220,7 @@ fn messages_to_input(messages: &[provider::Message]) -> Vec<Value> {
                 message,
                 tool_call_results,
             } => {
-                let msg_text = message.message();
+                let msg_text = &message.message;
                 if !msg_text.is_empty() {
                     items.push(
                         serde_json::json!({"type": "message", "role": "user", "content": msg_text}),
@@ -229,8 +229,8 @@ fn messages_to_input(messages: &[provider::Message]) -> Vec<Value> {
                 for tr in tool_call_results {
                     items.push(serde_json::json!({
                         "type": "function_call_output",
-                        "call_id": tr.tool_call_id(),
-                        "output": tr.content(),
+                        "call_id": tr.tool_call_id,
+                        "output": tr.content,
                     }));
                 }
             }
