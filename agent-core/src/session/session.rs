@@ -47,6 +47,12 @@ impl SessionId {
     }
 }
 
+impl From<uuid::Uuid> for SessionId {
+    fn from(id: uuid::Uuid) -> Self {
+        Self(id)
+    }
+}
+
 /// A handle to a running auger session
 #[derive(Clone, CopyGetters)]
 pub struct SessionHandle {
@@ -183,6 +189,15 @@ impl Session {
     fn run(mut self, rt: Handle, init_agent: RestoredAgent) {
         info!(session_id = %self.id, "Session started");
         let mut curr_state = init_agent.into();
+        if let HarnessState::HasToolCalls { _agent: agent } = curr_state {
+            let tool_calls = agent.get_requested_tools();
+            let undecided = tool_calls.iter().map(|call| call.id.clone()).collect();
+            let _ = self.event_tx.send(SessionEvent::ToolConsentRequired { tool_calls });
+            curr_state = HarnessState::NeedToolConsent {
+                agent,
+                user_tool_decisions: UserToolDecisions::new_undecided(undecided),
+            };
+        }
         'session_loop: while let Ok(msg) = self.cmd_rx.recv() {
             match msg {
                 LoopMessage::Cmd(cmd) => {
