@@ -16,7 +16,7 @@ import {
 
 /**
  * @typedef {import('./api.js').SessionEvent} SessionEvent
- * @typedef {import('./api.js').TraceEvent} TraceEvent
+ * @typedef {import('./api.js').TraceRecord} TraceRecord
  * @typedef {import('./api.js').TokenUsage} TokenUsage
  *
  * @typedef {'pending_approval' | 'running' | 'done' | 'error' | 'denied'} ToolCallStatus
@@ -83,8 +83,8 @@ export class AugerSession {
 
 	async #connect() {
 		try {
-			const { events } = await getSnapshot(this.sessionId, this.tokens.read);
-			this.items = buildItems(events);
+			const records = await getSnapshot(this.sessionId, this.tokens.read);
+			this.items = buildItems(records);
 			this.busy = this.#hasUnresolvedTools();
 		} catch (err) {
 			this.#handleConnectionError(err);
@@ -322,19 +322,23 @@ export class AugerSession {
 
 /**
  * Rebuild the transcript from a trace snapshot (initial load and reconnect).
- * Tool results and authorization events update the corresponding call card.
- * @param {TraceEvent[]} events
+ * The snapshot is the persisted record stream: turns carry the conversation,
+ * and the tool events that follow an assistant turn (`tool_authorization`,
+ * `tool_call_result`) update the corresponding call card. Assistant turns emit
+ * a `tool_call_requested` event too, but the card is already created from the
+ * turn's `tool_call` content, so that event is ignored here.
+ * @param {TraceRecord[]} records
  * @returns {UiItem[]}
  */
-function buildItems(events) {
+function buildItems(records) {
 	/** @type {UiItem[]} */
 	const items = [];
 	/** @type {Map<string, UiToolCall>} */
 	const calls = new Map();
 
-	for (const event of events) {
-		if (event.type === 'input_message') {
-			for (const content of event.content) {
+	for (const record of records) {
+		if (record.kind === 'turn' && record.type === 'input_message') {
+			for (const content of record.content) {
 				if (content.type === 'text' && content.text.trim().length > 0) {
 					items.push({ kind: 'user', id: nextId(), text: content.text });
 				} else if (content.type === 'tool_result') {
@@ -345,12 +349,12 @@ function buildItems(events) {
 					}
 				}
 			}
-		} else if (event.type === 'assistant_message') {
-			const reasoning = event.content
+		} else if (record.kind === 'turn' && record.type === 'assistant_message') {
+			const reasoning = record.content
 				.filter((content) => content.type === 'reasoning')
 				.map((content) => content.text)
 				.join('');
-			const text = event.content
+			const text = record.content
 				.filter((content) => content.type === 'text')
 				.map((content) => content.text)
 				.join('');
@@ -363,28 +367,36 @@ function buildItems(events) {
 					streaming: false
 				});
 			}
-			for (const content of event.content) {
+			for (const content of record.content) {
 				if (content.type !== 'tool_call') continue;
 				const needsApproval = APPROVAL_REQUIRED_TOOLS.has(content.name);
 				/** @type {UiToolCall} */
 				const call = {
 					id: content.id,
 					name: content.name,
-					arguments: JSON.stringify(content.arguments),
+					arguments: content.arguments,
 					status: needsApproval ? 'pending_approval' : 'running',
 					autoApproved: !needsApproval
 				};
 				calls.set(content.id, call);
 				items.push({ kind: 'tool', id: nextId(), call });
 			}
-		} else if (event.type === 'tool_authorization') {
-			const call = calls.get(event.tool_call_id);
-			if (call) call.status = event.decision === 'denied' ? 'denied' : 'running';
-		} else if (event.type === 'tool_call_result') {
-			const call = calls.get(event.tool_call_id);
+		} else if (record.kind === 'event' && record.type === 'tool_authorization') {
+			// A turn's events can arrive in any order, so only advance the status;
+			// never downgrade a call that already has a result back to 'running'.
+			const call = calls.get(record.tool_call_id);
 			if (call) {
-				call.status = event.status === 'success' ? 'done' : event.status;
-				call.result = toolText(event.content);
+				call.autoApproved = record.source === 'policy';
+				if (record.decision === 'denied') call.status = 'denied';
+				else if (call.status === 'pending_approval') call.status = 'running';
+			}
+		} else if (record.kind === 'event' && record.type === 'tool_call_result') {
+			const call = calls.get(record.tool_call_id);
+			// Denial wins over a result (a denied call still records its reason
+			// as a result), so don't overwrite that status.
+			if (call && call.status !== 'denied') {
+				call.status = 'done';
+				call.result = toolText(record.content);
 			}
 		}
 	}
