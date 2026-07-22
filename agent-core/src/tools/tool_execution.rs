@@ -160,7 +160,7 @@ impl ToolExecution<Completed> {
         let mut batch = self.batch;
         for result in self.results {
             batch
-                .add_result(result.tool_call_id().clone(), result)
+                .add_result(result.tool_call_id.clone().into(), result)
                 .expect("executed result matches a requested call");
         }
         match batch.into_resolved() {

@@ -4,16 +4,12 @@ use crate::types::{Message, ToolDefinition};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserPrompt {
-    message: String,
+    pub message: String,
 }
 
 impl UserPrompt {
-    pub fn new(message: String) -> Self {
-        Self { message }
-    }
-
-    pub fn message(&self) -> &str {
-        &self.message
+    pub fn new(message: String) -> UserPrompt {
+        UserPrompt { message }
     }
 }
 
@@ -27,24 +23,18 @@ impl From<UserPrompt> for Message {
 }
 
 /// A result from a tool call which can be sent back to the model.
-#[derive(Debug, Clone, Deserialize, Serialize, Getters)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ToolResult {
     /// The ID of the tool call that this is a result for
-    #[get = "pub"]
-    tool_call_id: String,
+    pub tool_call_id: String,
     /// The output of the tool call.
-    #[get = "pub"]
-    content: String,
+    pub content: String,
 }
 
 impl ToolResult {
-    pub fn new(tool_call_id: String, content: String) -> Self {
-        Self {
-            tool_call_id,
-            content,
-        }
+    pub fn new(tool_call_id: String, content: String) -> ToolResult {
+        ToolResult { tool_call_id, content }
     }
-
 }
 
 /// A request to get a response from the clanker

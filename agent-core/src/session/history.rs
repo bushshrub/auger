@@ -376,7 +376,7 @@ impl TurnRecord {
     }
 
     pub(crate) fn record_tool_result(&mut self, tool_result: ToolResult) -> Result<EventRecord, ()> {
-        let tool_call_id = ToolCallId(tool_result.tool_call_id().clone());
+        let tool_call_id = ToolCallId(tool_result.tool_call_id.clone());
         match self.get_tool_call_event_id(&tool_call_id) {
             Some(id) => self.add_event(tool_result.into(), Some(id)),
             None => Err(())
@@ -474,7 +474,7 @@ pub enum RecordableTurn {
 
 impl RecordableTurn {
     pub(crate) fn user_prompt(prompt: UserPrompt) -> Self {
-        Self::InputMessage { content: vec![InputContent::Text { text: prompt.message().to_string() }] }
+        Self::InputMessage { content: vec![InputContent::Text { text: prompt.message.to_string() }] }
     }
 
     // TODO: better error type
@@ -565,8 +565,8 @@ pub enum RecordableEvent {
 impl From<ToolResult> for RecordableEvent {
     fn from(result: ToolResult) -> Self {
         Self::ToolCallResult {
-            tool_call_id: ToolCallId(result.tool_call_id().clone()),
-            content: vec![ToolData::Text {text: result.content().clone()}],
+            tool_call_id: ToolCallId(result.tool_call_id.clone()),
+            content: vec![ToolData::Text {text: result.content.clone()}],
         }
     }
 }

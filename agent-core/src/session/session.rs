@@ -463,8 +463,8 @@ impl Session {
                         .results()
                         .into_iter()
                         .map(|result| InputContent::ToolResult {
-                            tool_call_id: result.tool_call_id().clone().into(),
-                            content: vec![ToolData::Text { text: result.content().clone() }],
+                            tool_call_id: result.tool_call_id.clone().into(),
+                            content: vec![ToolData::Text { text: result.content.clone() }],
                         })
                         .collect();
                     self.recorder

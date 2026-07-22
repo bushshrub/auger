@@ -2,19 +2,27 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use either::Either;
+use serde::{Deserialize, Serialize};
 use provider::{ToolCallRequest, ToolResult};
 use thiserror::Error;
 
-pub type ToolCallId = String;
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub struct ToolCallId(String);
+
+impl From<String> for ToolCallId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum AddToolResponseIssue {
-    #[error("The tool with id '{0}' was not requested by the LLM")]
-    NotRequested(String),
-    #[error("The tool with id '{0}' already has a result in this batch")]
-    AlreadyProvided(String),
+    #[error("The tool with id '{0:?}' was not requested by the LLM")]
+    NotRequested(ToolCallId),
+    #[error("The tool with id '{0:?}' already has a result in this batch")]
+    AlreadyProvided(ToolCallId),
     #[error("Missing results for tool calls: {0:?}")]
-    Incomplete(Vec<String>),
+    Incomplete(Vec<ToolCallId>),
 }
 
 /// The state of a tool batch.
@@ -39,7 +47,7 @@ impl ToolBatch<Resolving> {
     pub(crate) fn new(tool_calls: Vec<ToolCallRequest>) -> Self {
         let pending_calls = tool_calls
             .into_iter()
-            .map(|call| (call.id.clone(), call))
+            .map(|call| (call.id.clone().into(), call))
             .collect();
 
         Self {
@@ -72,10 +80,10 @@ impl ToolBatch<Resolving> {
         for call_id in self.pending_calls.keys() {
             self.results.insert(
                 call_id.clone(),
-                ToolResult::new(
-                    call_id.clone(),
-                    "Tool call interrupted before execution".to_string(),
-                ),
+                ToolResult {
+                    tool_call_id: call_id.clone().0,
+                    content: "Tool call interrupted before execution".to_string(),
+                }
             );
         }
 
