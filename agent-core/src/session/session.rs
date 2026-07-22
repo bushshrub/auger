@@ -38,7 +38,7 @@ impl fmt::Display for SessionId {
 }
 
 impl SessionId {
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self(uuid::Uuid::new_v4())
     }
 
@@ -93,37 +93,6 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn start(
-        model: LlmModel,
-        system_prompt: SystemPrompt,
-        rt: Handle,
-        tools: Vec<Box<dyn Tool>>,
-        auto_approval_policies: impl Into<AutoApprovalPolicies>
-    ) -> (SessionHandle, Receiver<SessionEvent>) {
-        let id = SessionId::new();
-        let model_name = model.name().to_string();
-        Self::start_from(
-            model,
-            // TODO: modelinfo
-            SessionRecord::new(id, current_dir().expect("no cwd"), ModelInfo::new("to-be-added".to_string(), model_name)),
-            system_prompt,
-            rt,
-            tools,
-            auto_approval_policies.into(),
-        )
-    }
-
-    /// Restore a session from a SessionRecord
-    pub fn start_from(
-        model: LlmModel,
-        record: SessionRecord,
-        system_prompt: SystemPrompt,
-        rt: Handle,
-        tools: Vec<Box<dyn Tool>>,
-        auto_approval_policies: impl Into<AutoApprovalPolicies>,
-    ) -> (SessionHandle, Receiver<SessionEvent>) {
-        Self::spawn(rt, system_prompt, record, model, tools, auto_approval_policies.into())
-    }
 
     fn create_initial_agent(system_prompt: SystemPrompt, record: &SessionRecord, model: LlmModel, tools: Vec<ToolDefinition>) -> RestoredAgent {
         let last_turn = record.get_previous_turn();
@@ -171,16 +140,16 @@ impl Session {
     }
 
 
-    fn spawn(
+    pub(super) fn spawn(
         rt: Handle,
         system_prompt: SystemPrompt,
-        record: SessionRecord,
+        record: SessionRecorder,
         model: LlmModel,
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: AutoApprovalPolicies,
     ) -> (SessionHandle, Receiver<SessionEvent>) {
-        let id = record.session_id();
-        let creation_time = record.created_at();
+        let id = record.record().session_id();
+        let creation_time = record.record().created_at();
         let mut tool_registry = ToolRegistry::new();
         for tool in tools {
             tool_registry.register(tool);
@@ -197,7 +166,7 @@ impl Session {
             event_tx,
             tool_registry,
             auto_approval_policies: Arc::new(auto_approval_policies),
-            recorder: SessionRecorder::new(record, Arc::new(|_, _| {}), Arc::new(|_, _| {}))
+            recorder: record
         };
         let handle = SessionHandle::new(session.id, cmd_tx.clone(), creation_time);
 

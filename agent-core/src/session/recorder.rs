@@ -2,7 +2,7 @@
 //! and for providing hooks for external observers to be notified of new events and turns.
 use crate::session::history::{AssistantContent, AuthorizationSource, EventId, EventRecord, RecordableEvent, RecordableTurn, ToolCallId, ToolDecision, TurnId, TurnRecord};
 use crate::session::SessionRecord;
-use getset::CloneGetters;
+use getset::{CloneGetters, Getters};
 use provider::ToolResult;
 use std::sync::Arc;
 

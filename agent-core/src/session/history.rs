@@ -139,7 +139,7 @@ impl SessionRecord {
                             tool_call_results: tool_calls
                         })
                     }
-                    RecordableTurn::AssistantMessage { status, content } => {
+                    RecordableTurn::AssistantMessage { .. } => {
                         messages.push(turn.turn().clone().try_into().expect("Failed to convert turn to message"));
                     }
                 }
@@ -469,18 +469,6 @@ pub enum RecordableEvent {
         tool_call_id: ToolCallId,
         // TODO: Should we log the tool status?
         content: Vec<ToolData>
-    }
-}
-
-impl RecordableEvent {
-
-    pub(crate) fn tool_decision(call_id: String, approved: bool, source: AuthorizationSource, reason: Option<String>) -> Self {
-        Self::ToolAuthorization {
-            tool_call_id: ToolCallId(call_id),
-            decision: if approved { ToolDecision::Approved } else { ToolDecision::Denied },
-            source,
-            reason,
-        }
     }
 }
 
