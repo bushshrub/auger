@@ -203,9 +203,18 @@ pub struct EventRecord {
     event: RecordableEvent,
 }
 
-pub(crate) struct TurnEvent {
-    pub(crate) turn_id: TurnId,
-    pub(crate) record: EventRecord,
+#[derive(Debug, Clone, Getters, CopyGetters)]
+pub struct TurnEvent {
+    #[getset(get_copy = "pub")]
+    turn_id: TurnId,
+    #[getset(get = "pub")]
+    record: EventRecord,
+}
+
+impl TurnEvent {
+    pub fn new(turn_id: TurnId, record: EventRecord) -> Self {
+        Self { turn_id, record }
+    }
 }
 
 impl EventRecord {

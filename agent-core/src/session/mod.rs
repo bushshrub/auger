@@ -11,4 +11,4 @@ pub use session::{
 
 pub use session_builder::SessionBuilder;
 
-pub use history::SessionRecord;
+pub use history::{SessionRecord, TurnEvent};

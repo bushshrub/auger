@@ -80,6 +80,9 @@ impl SessionRecorder {
     pub fn record_event(&mut self, turn_id: TurnId, event: RecordableEvent, parent_id: Option<EventId>) -> Result<EventId, ()> {
         let tr = self.record.get_turn_mut(&turn_id).ok_or_else(|| ())?;
         let er =  tr.add_event(event, parent_id)?;
+        if let Some(on_event) = self.on_event.0.clone() {
+            on_event(turn_id, &er);
+        }
         Ok(er.event_id())
     }
 
