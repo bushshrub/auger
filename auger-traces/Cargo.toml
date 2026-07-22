@@ -9,3 +9,4 @@ serde = { workspace = true, features = ["derive"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 serde_json.workspace = true
 thiserror.workspace = true
+getset.workspace = true

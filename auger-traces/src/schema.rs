@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use getset::Getters;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -12,7 +13,8 @@ pub enum TraceRecord {
     Event(EventRecord),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
+#[getset(get = "pub")]
 pub struct SessionHeader {
     version: u32,
     session_id: Uuid,
@@ -42,7 +44,8 @@ impl SessionHeader {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
+#[getset(get = "pub")]
 pub struct ModelInfo {
     provider: String,
     id: String,
@@ -54,7 +57,8 @@ impl ModelInfo {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
+#[getset(get = "pub")]
 pub struct TurnRecord {
     id: TurnId,
     parent_turn_id: Option<TurnId>,
@@ -82,7 +86,8 @@ pub enum Turn {
     AssistantMessage(AssistantMessage),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
+#[getset(get = "pub")]
 pub struct InputMessage {
     content: Vec<InputContent>,
 }
@@ -93,7 +98,8 @@ impl InputMessage {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
+#[getset(get = "pub")]
 pub struct AssistantMessage {
     status: AssistantStatus,
     content: Vec<AssistantContent>,
@@ -118,7 +124,8 @@ pub enum InputContent {
     ToolResult(InputToolResult),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
+#[getset(get = "pub")]
 pub struct InputToolResult {
     tool_call_id: ToolCallId,
     // TODO: Persist the tool result status.
@@ -142,7 +149,8 @@ pub enum AssistantContent {
     ToolCall(AssistantToolCall),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
+#[getset(get = "pub")]
 pub struct AssistantToolCall {
     id: ToolCallId,
     name: String,
@@ -163,7 +171,8 @@ pub enum AssistantStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
+#[getset(get = "pub")]
 pub struct EventRecord {
     id: EventId,
     turn_id: TurnId,
@@ -200,7 +209,8 @@ pub enum Event {
     ToolCallResult(ToolCallResult),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
+#[getset(get = "pub")]
 pub struct ToolCallRequested {
     tool_call_id: ToolCallId,
     tool_name: String,
@@ -217,7 +227,8 @@ impl ToolCallRequested {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
+#[getset(get = "pub")]
 pub struct ToolAuthorization {
     tool_call_id: ToolCallId,
     decision: ToolDecision,
@@ -241,7 +252,8 @@ impl ToolAuthorization {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
+#[getset(get = "pub")]
 pub struct ToolCallResult {
     tool_call_id: ToolCallId,
     // TODO: Persist the tool result status.
@@ -263,7 +275,8 @@ pub enum ToolData {
     Text(TextData),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
+#[getset(get = "pub")]
 pub struct TextData {
     text: String,
 }
@@ -306,6 +319,12 @@ impl From<Uuid> for TurnId {
     }
 }
 
+impl From<TurnId> for Uuid {
+    fn from(value: TurnId) -> Self {
+        value.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct EventId(Uuid);
@@ -316,6 +335,12 @@ impl From<Uuid> for EventId {
     }
 }
 
+impl From<EventId> for Uuid {
+    fn from(value: EventId) -> Self {
+        value.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ToolCallId(String);
@@ -323,5 +348,11 @@ pub struct ToolCallId(String);
 impl From<String> for ToolCallId {
     fn from(value: String) -> Self {
         Self(value)
+    }
+}
+
+impl From<ToolCallId> for String {
+    fn from(value: ToolCallId) -> Self {
+        value.0
     }
 }
