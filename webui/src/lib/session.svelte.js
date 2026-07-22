@@ -56,6 +56,9 @@ export class AugerSession {
 	#backoffMs = 1000;
 	/** @type {ReturnType<typeof setTimeout> | null} */
 	#retryTimer = null;
+	// True while sendInput is in-flight; prevents #connect from overwriting items
+	// with a snapshot that predates the message the user just sent.
+	#sendInFlight = false;
 
 	/**
 	 * @param {string} sessionId
@@ -84,8 +87,12 @@ export class AugerSession {
 	async #connect() {
 		try {
 			const records = await getSnapshot(this.sessionId, this.tokens.read);
-			this.items = buildItems(records);
-			this.busy = this.#hasUnresolvedTools();
+			// Skip rebuild if a send is in-flight: the snapshot may predate the
+			// message the user just sent, which would erase the optimistic push.
+			if (!this.#sendInFlight) {
+				this.items = buildItems(records);
+				this.busy = this.#hasUnresolvedTools();
+			}
 		} catch (err) {
 			this.#handleConnectionError(err);
 			return;
@@ -121,11 +128,24 @@ export class AugerSession {
 
 	/** @param {string} text */
 	async send(text) {
-		await sendInput(this.sessionId, this.tokens.write, text);
-		// The server does not echo user messages on the event stream.
-		this.items.push({ kind: 'user', id: nextId(), text });
+		// Push optimistically so the message appears immediately, before the
+		// network round-trip. #sendInFlight prevents a concurrent #connect from
+		// overwriting items with a snapshot that predates this message.
+		const item = /** @type {UiItem} */ ({ kind: 'user', id: nextId(), text });
+		this.items.push(item);
 		this.busy = true;
 		this.error = null;
+		this.#sendInFlight = true;
+		try {
+			await sendInput(this.sessionId, this.tokens.write, text);
+		} catch (err) {
+			const idx = this.items.indexOf(item);
+			if (idx !== -1) this.items.splice(idx, 1);
+			this.busy = false;
+			this.error = err instanceof Error ? err.message : String(err);
+		} finally {
+			this.#sendInFlight = false;
+		}
 	}
 
 	/**
