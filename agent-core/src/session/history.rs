@@ -67,6 +67,21 @@ impl SessionRecord {
         self.turns.get_mut(turn_id)
     }
 
+    pub fn turns(&self) -> impl Iterator<Item = &TurnRecord> {
+        let mut turns = Vec::with_capacity(self.turns.len());
+        let mut turn_id = self.previous_turn_id;
+
+        while turn_id != self.root_id {
+            let Some(turn) = self.turns.get(&turn_id) else {
+                break;
+            };
+            turn_id = turn.parent_id();
+            turns.push(turn);
+        }
+        turns.reverse();
+        turns.into_iter()
+    }
+
     pub fn get_previous_turn(&self) -> Option<&TurnRecord> {
         // should only be None if the session JUST started.
         self.get_turn(&self.previous_turn_id)
