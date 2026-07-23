@@ -236,7 +236,7 @@ impl TurnEvent {
 }
 
 impl EventRecord {
-    pub(crate) fn new(parent_id: Option<EventId>, timestamp: DateTime<Utc>, event: RecordableEvent) -> Self {
+    fn new(parent_id: Option<EventId>, timestamp: DateTime<Utc>, event: RecordableEvent) -> Self {
         let event_id = EventId::new(timestamp);
         Self {
             parent_id,
@@ -290,6 +290,10 @@ impl TurnRecord {
 
     pub(crate) fn from_parts(data: TurnData, events: Vec<EventRecord>) -> Self {
         Self { data, events }
+    }
+
+    pub(crate) fn restore_event(&mut self, event: EventRecord) {
+        self.events.push(event);
     }
 
     pub(crate) fn add_event(&mut self, event: RecordableEvent, parent_id: Option<EventId>) -> Result<EventRecord, ()> {

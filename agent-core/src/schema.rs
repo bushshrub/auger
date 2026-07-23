@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum TraceRecord<T, E> {
+pub(crate) enum TraceRecord<T, E> {
     Session(SessionHeader),
     Turn {
         #[serde(flatten)] record: T
