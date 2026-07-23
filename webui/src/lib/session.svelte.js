@@ -58,6 +58,29 @@ export class AugerSession {
 	totalUsage = $state({ prompt_tokens: 0, completion_tokens: 0 });
 	contextTokens = $state(0);
 
+	/**
+	 * The agent's current todo list, parsed from the most recent todo_list tool
+	 * result. Empty until the agent creates one. The tool returns the full list
+	 * on every call, so the latest result is the current state.
+	 * @type {{ id: number, title: string, status: 'pending' | 'in_progress' | 'done' }[]}
+	 */
+	todos = $derived.by(() => {
+		/** @type {string | null} */
+		let latest = null;
+		for (const item of this.items) {
+			if (item.kind === 'tool' && item.call.name === 'todo_list' && item.call.result) {
+				latest = item.call.result;
+			}
+		}
+		if (latest === null) return [];
+		try {
+			const parsed = JSON.parse(latest);
+			return Array.isArray(parsed.items) ? parsed.items : [];
+		} catch {
+			return [];
+		}
+	});
+
 	/** @type {AbortController | null} */
 	#stream = null;
 	#stopped = false;

@@ -6,12 +6,13 @@
 	 *   sessions: import('$lib/api.js').SessionInfo[],
 	 *   activeId: string | null,
 	 *   creating: boolean,
+	 *   statuses: Record<string, import('$lib/status.svelte.js').SessionStatus>,
 	 *   onSelect: (id: string) => void,
 	 *   onCreate: (model: string) => void,
 	 *   onArchive: (id: string) => void
 	 * }}
 	 */
-	let { sessions, activeId, creating, onSelect, onCreate, onArchive } = $props();
+	let { sessions, activeId, creating, statuses, onSelect, onCreate, onArchive } = $props();
 
 	const activeSessions = $derived(sessions.filter((s) => !s.archived));
 	const archivedSessions = $derived(sessions.filter((s) => s.archived));
@@ -79,10 +80,20 @@
 								aria-current={s.session_id === activeId ? 'true' : undefined}
 								class={`flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left hover:bg-sidebar-accent ${s.session_id === activeId ? 'bg-sidebar-accent' : ''}`}
 							>
-								<span
-									class={`font-mono text-xs ${s.session_id === activeId ? 'text-primary' : 'text-foreground'}`}
-								>
-									{s.session_id.slice(0, 8)}
+								<span class="flex items-center gap-2">
+									<span
+										class={`size-2 shrink-0 rounded-full ${statuses[s.session_id] === 'working' ? 'bg-primary animate-pulse' : 'bg-success'}`}
+										title={statuses[s.session_id] === 'working' ? 'working' : 'idle'}
+										aria-hidden="true"
+									></span>
+									<span
+										class={`font-mono text-xs ${s.session_id === activeId ? 'text-primary' : 'text-foreground'}`}
+									>
+										{s.session_id.slice(0, 8)}
+									</span>
+									<span class="ml-auto font-mono text-[9px] tracking-wider text-muted-foreground uppercase">
+										{statuses[s.session_id] === 'working' ? 'working' : 'idle'}
+									</span>
 								</span>
 								<span class="font-mono text-[10px] text-muted-foreground">
 									{s.model} · {formatTime(s.created_at)}

@@ -73,6 +73,8 @@ struct DiskSession {
     path: PathBuf,
     read_token: Uuid,
     write_token: Uuid,
+    archived: bool,
+    events: tokio::sync::broadcast::Sender<SessionEvent>,
 }
 
 fn load_disk_sessions() -> Vec<DiskSession> {
@@ -92,12 +94,15 @@ fn load_disk_sessions() -> Vec<DiskSession> {
         match TraceReader::read(BufReader::new(file)) {
             Ok(record) => {
                 let model = record.data().model_info().id().clone();
+                let (events, _) = tokio::sync::broadcast::channel(256);
                 sessions.push(DiskSession {
                     record,
                     model,
                     path,
                     read_token: Uuid::new_v4(),
                     write_token: Uuid::new_v4(),
+                    archived: false,
+                    events,
                 });
             }
             Err(error) => tracing::warn!(path = %path.display(), %error, "failed to restore session trace"),
@@ -136,30 +141,22 @@ async fn main() {
 }
 
 fn router(state: AppState) -> Router {
-    let write_routes = Router::new()
-        .route("/sessions/{id}", delete(stop_session))
+    let activation_routes = Router::new()
         .route("/sessions/{id}/input", post(send_input))
         .route("/sessions/{id}/tool", post(respond_to_tool_call))
-        .route("/sessions/{id}/interrupt", post(interrupt_session))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             resolve_session_extensions,
         ));
-
-    let read_routes = Router::new()
-        .route("/sessions/{id}/events", get(event_stream))
-        .route("/sessions/{id}/snapshot", get(snapshot))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            resolve_session_extensions,
-        ));
-
 
     Router::new()
         .route("/openapi.yaml", get(openapi))
         .route("/sessions", get(list_sessions).post(create_session))
-        .merge(write_routes)
-        .merge(read_routes)
+        .route("/sessions/{id}", delete(stop_session))
+        .route("/sessions/{id}/interrupt", post(interrupt_session))
+        .route("/sessions/{id}/events", get(event_stream))
+        .route("/sessions/{id}/snapshot", get(snapshot))
+        .merge(activation_routes)
         .with_state(state)
 }
 
@@ -182,6 +179,7 @@ async fn resolve_session_extensions(
                 disk.model,
                 disk.path,
                 Some((disk.read_token, disk.write_token)),
+                Some(disk.events),
             ).await;
             state.sessions.read().await.get(&id).cloned()
         } else {
@@ -229,7 +227,7 @@ async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
             "session_id": e.record.data().session_id().as_uuid(),
             "model": e.model,
             "created_at": e.record.data().created_at(),
-            "archived": false,
+            "archived": e.archived,
             "context_window": DEFAULT_CONTEXT_WINDOW,
             "tokens": {
                 "read": e.read_token.to_string(),
@@ -248,7 +246,7 @@ async fn create_session(
     let model = req.model.unwrap_or_else(|| state.default_model.clone());
     let builder = SessionBuilder::new(model.clone());
     let session_id = builder.id();
-    let (read_token, write_token) = start_session(&state, builder, model, trace_path(session_id), None).await;
+    let (read_token, write_token) = start_session(&state, builder, model, trace_path(session_id), None, None).await;
     Json(
         json!({ "session_id": session_id, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
         "read": read_token,
@@ -263,6 +261,7 @@ async fn start_session(
     model: String,
     trace_path: PathBuf,
     tokens: Option<(Uuid, Uuid)>,
+    events: Option<tokio::sync::broadcast::Sender<SessionEvent>>,
 ) -> (Uuid, Uuid) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
@@ -342,7 +341,7 @@ async fn start_session(
         auto_approval,
     );
 
-    let (event_tx, _) = tokio::sync::broadcast::channel(256);
+    let event_tx = events.unwrap_or_else(|| tokio::sync::broadcast::channel(256).0);
     let forward_tx = event_tx.clone();
     tokio::task::spawn_blocking(move || {
         while let Ok(event) = event_rx.recv() {
@@ -369,14 +368,18 @@ async fn start_session(
 }
 
 async fn stop_session(State(state): State<AppState>, Path(id): Path<SessionId>) -> impl IntoResponse {
-    let Some(entry) = state.sessions.read().await.get(&id).cloned() else {
-        return StatusCode::NOT_FOUND;
-    };
-    let (reply_tx, reply_rx) = mpsc::channel::<>();
-    tokio::task::spawn_blocking(move || entry.handle.send_command(SessionCommand::Stop { reply_tx })).await.ok();
-    // do I wait for reply_rx? idk.
-    entry.archived.store(true, Ordering::Release);
-    StatusCode::NO_CONTENT
+    if let Some(entry) = state.sessions.read().await.get(&id).cloned() {
+        let (reply_tx, _reply_rx) = mpsc::channel::<>();
+        tokio::task::spawn_blocking(move || entry.handle.send_command(SessionCommand::Stop { reply_tx })).await.ok();
+        // do I wait for reply_rx? idk.
+        entry.archived.store(true, Ordering::Release);
+        return StatusCode::NO_CONTENT;
+    }
+    if let Some(entry) = state.disk_sessions.write().await.get_mut(&id) {
+        entry.archived = true;
+        return StatusCode::NO_CONTENT;
+    }
+    StatusCode::NOT_FOUND
 }
 
 /// Submit input to the clanker
@@ -415,70 +418,87 @@ async fn respond_to_tool_call(
 }
 
 /// Interrupt what the session is doing right now
-#[tracing::instrument(skip(session_handle))]
+#[tracing::instrument(skip(state))]
 async fn interrupt_session(
-    Extension(session_handle): Extension<SessionHandle>,
-) -> impl IntoResponse {
-    debug!(session_id = %session_handle.id(), "Interrupt requested");
-    session_handle.send_command(SessionCommand::Interrupt).expect("closed");
-    Json(json!({ "status": "ok" }))
+    State(state): State<AppState>,
+    Path(id): Path<SessionId>,
+) -> Response {
+    if let Some(entry) = state.sessions.read().await.get(&id).cloned() {
+        debug!(session_id = %entry.handle.id(), "Interrupt requested");
+        entry.handle.send_command(SessionCommand::Interrupt).expect("closed");
+    } else if !state.disk_sessions.read().await.contains_key(&id) {
+        return (StatusCode::NOT_FOUND, Json(json!({ "status": "not_found" }))).into_response();
+    }
+    Json(json!({ "status": "ok" })).into_response()
 }
 
 /// Get a trace from its running session or, after archival, its JSONL file.
 async fn snapshot(
     State(state): State<AppState>,
     Path(id): Path<SessionId>,
-    Extension(session_handle): Extension<SessionHandle>,
-) -> impl IntoResponse {
-    let archived = state
-        .sessions
-        .read()
-        .await
-        .get(&id)
-        .is_some_and(|entry| entry.archived.load(Ordering::Relaxed));
-
-    if archived {
+) -> Response {
+    let entry = state.sessions.read().await.get(&id).cloned();
+    if entry.as_ref().is_some_and(|entry| entry.archived.load(Ordering::Relaxed)) {
         return (StatusCode::INTERNAL_SERVER_ERROR, "can't read archived yet").into_response()
     }
+
+    let Some(session_handle) = entry.map(|entry| entry.handle) else {
+        let record = state.disk_sessions.read().await.get(&id).map(|entry| entry.record.clone());
+        return match record {
+            Some(record) => snapshot_response(&record),
+            None => StatusCode::NOT_FOUND.into_response(),
+        };
+    };
 
     let (snapshot_tx, snapshot_rx) = mpsc::channel();
     // what do I do with snapshot_rx?
     match tokio::task::spawn_blocking(move || session_handle.send_command(SessionCommand::Snapshot { reply_tx: snapshot_tx })).await {
         Ok(Ok(())) => match snapshot_rx.recv() {
-            Ok(record) => {
-                let mut trace = Vec::new();
-                let result = (|| {
-                    let mut writer = TraceWriter::new(&mut trace, record.data())?;
-                    for turn in record.turns() {
-                        writer.write_turn(turn)?;
-                        for event in turn.events() {
-                            writer.write_event(turn.data().turn_id(), event)?;
-                        }
-                    }
-                    Ok::<_, agent_core::TraceWriteError>(())
-                })();
-                match result {
-                    Ok(()) => (
-                        [(CONTENT_TYPE, "application/x-ndjson")],
-                        String::from_utf8(trace).expect("serialized JSON is UTF-8"),
-                    ).into_response(),
-                    Err(error) => {
-                        tracing::error!(%error, "failed to serialize session snapshot");
-                        (StatusCode::INTERNAL_SERVER_ERROR, "snapshot serialization failed").into_response()
-                    }
-                }
-            }
+            Ok(record) => snapshot_response(&record),
             Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot channel dropped").into_response()
         },
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot failed").into_response(),
     }
 }
 
+fn snapshot_response(record: &agent_core::SessionRecord) -> Response {
+    let mut trace = Vec::new();
+    let result = (|| {
+        let mut writer = TraceWriter::new(&mut trace, record.data())?;
+        for turn in record.turns() {
+            writer.write_turn(turn)?;
+            for event in turn.events() {
+                writer.write_event(turn.data().turn_id(), event)?;
+            }
+        }
+        Ok::<_, agent_core::TraceWriteError>(())
+    })();
+    match result {
+        Ok(()) => (
+            [(CONTENT_TYPE, "application/x-ndjson")],
+            String::from_utf8(trace).expect("serialized JSON is UTF-8"),
+        ).into_response(),
+        Err(error) => {
+            tracing::error!(%error, "failed to serialize session snapshot");
+            (StatusCode::INTERNAL_SERVER_ERROR, "snapshot serialization failed").into_response()
+        }
+    }
+}
+
 /// Get a stream of events for a session, including LLM responses and user events.
-#[tracing::instrument(skip(event_tx))]
+#[tracing::instrument(skip(state))]
 async fn event_stream(
-    Extension(event_tx): Extension<tokio::sync::broadcast::Sender<SessionEvent>>,
-) -> impl IntoResponse {
+    State(state): State<AppState>,
+    Path(id): Path<SessionId>,
+) -> Response {
+    let event_tx = if let Some(events) = state.sessions.read().await.get(&id).map(|entry| entry.events.clone()) {
+        Some(events)
+    } else {
+        state.disk_sessions.read().await.get(&id).map(|entry| entry.events.clone())
+    };
+    let Some(event_tx) = event_tx else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     let stream = BroadcastStream::new(event_tx.subscribe());
     Sse::new(stream.filter_map(|result| async move {
         let event = result.ok()?;
@@ -486,7 +506,7 @@ async fn event_stream(
         Some(Ok::<_, std::convert::Infallible>(
             axum::response::sse::Event::default().data(json),
         ))
-    }))
+    })).into_response()
 }
 
 fn session_event_json(event: SessionEvent) -> serde_json::Value {

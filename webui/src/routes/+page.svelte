@@ -1,6 +1,7 @@
 <script>
 	import { LoaderCircle, Plus, SquareTerminal } from '@lucide/svelte';
 	import { archiveSession, createSession, listSessions } from '$lib/api.js';
+	import { StatusTracker } from '$lib/status.svelte.js';
 	import SessionSidebar from '$lib/components/SessionSidebar.svelte';
 	import SessionView from '$lib/components/SessionView.svelte';
 
@@ -10,11 +11,14 @@
 	let activeId = $state(null);
 	let creating = $state(false);
 
+	const tracker = new StatusTracker();
+
 	const active = $derived(sessions.find((s) => s.session_id === activeId) ?? null);
 
 	async function refresh() {
 		try {
 			({ sessions } = await listSessions());
+			tracker.sync(sessions);
 		} catch {
 			// Server unreachable; keep the stale list. The per-session view shows
 			// its own connection state.
@@ -24,7 +28,10 @@
 	$effect(() => {
 		refresh();
 		const interval = setInterval(refresh, 10_000);
-		return () => clearInterval(interval);
+		return () => {
+			clearInterval(interval);
+			tracker.stop();
+		};
 	});
 
 	/** @param {string} model */
@@ -58,6 +65,7 @@
 		{sessions}
 		{activeId}
 		{creating}
+		statuses={tracker.statuses}
 		onSelect={(id) => (activeId = id)}
 		onCreate={handleCreate}
 		onArchive={handleArchive}

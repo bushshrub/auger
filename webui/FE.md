@@ -196,6 +196,39 @@ Other tool outcomes:
 - Events can be appended incrementally after their owning turn.
 - An event parent must refer to an event that appeared earlier.
 
+## Session lifecycle
+
+Persisted sessions are loaded as dormant server entries. Listing or viewing a
+dormant session does not start its agent runtime.
+
+These endpoints do not activate a dormant session:
+
+```text
+GET    /sessions
+GET    /sessions/{id}/snapshot
+GET    /sessions/{id}/events
+POST   /sessions/{id}/interrupt
+DELETE /sessions/{id}
+```
+
+Only these user actions activate a dormant session:
+
+```text
+POST /sessions/{id}/input
+POST /sessions/{id}/tool
+```
+
+The tool endpoint covers both approval and denial decisions. Activation is
+serialized by the server so concurrent requests cannot start the same session
+twice.
+
+`DELETE /sessions/{id}` stops a live session and marks it archived. For a
+dormant session it marks the session archived without starting it.
+
+`POST /sessions/{id}/interrupt` only interrupts current generation or tool
+execution. It is a no-op for an existing dormant session and does not activate
+it.
+
 ## `GET /sessions/{id}/snapshot`
 
 The snapshot response is the complete trace record stream described above.
@@ -221,6 +254,10 @@ events in trace order.
 
 SSE is the live runtime event transport. It does not send raw trace records.
 Each SSE `data` field contains one JSON object.
+
+The frontend may subscribe while a session is dormant. The connection remains
+attached to the same event channel when a later input or tool decision
+activates the session, so it does not need to reconnect merely to start work.
 
 Text and reasoning deltas:
 
