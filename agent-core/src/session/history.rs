@@ -1,13 +1,14 @@
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::{NoContext, Timestamp, Uuid};
-use crate::{SessionId};
+use crate::SessionId;
 use getset::{CopyGetters, Getters};
+use auger_driver::ToolCallId;
 use provider::{ToolCallRequest, ToolResult, UserPrompt};
+use crate::tools::tool_execution::{ToolCallResult, ToolData, ToolOutcome};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
@@ -133,31 +134,6 @@ impl SessionRecord {
         }
     }
 
-    /// The full trace-record stream for this session in JSONL order: the
-    /// session header, then each turn followed by the events recorded during
-    /// it. This is the exact shape persisted to `trace.jsonl`, so the snapshot
-    /// API and the on-disk trace share one representation.
-    pub fn trace_records(&self) -> Vec<auger_traces::schema::TraceRecord> {
-        use auger_traces::schema as trace;
-        let mut records = Vec::new();
-        let root_turn_id: Uuid = self.root_id.into();
-        let header = trace::SessionHeader::new(
-            1,
-            self.session_id.as_uuid(),
-            trace::TurnId::from(root_turn_id),
-            self.created_at,
-            self.cwd.clone(),
-            trace::ModelInfo::new(self.model_info.provider.clone(), self.model_info.id.clone()),
-        );
-        records.push(trace::TraceRecord::Session(header));
-        for turn in self.turns() {
-            records.push(trace::TraceRecord::Turn(turn.clone().into()));
-            let events: Vec<trace::EventRecord> = turn.into();
-            records.extend(events.into_iter().map(trace::TraceRecord::Event));
-        }
-        records
-    }
-
     pub fn as_messages(&self) -> Vec<provider::Message> {
         let mut messages = Vec::new();
         let mut curr_turn_id = self.previous_turn_id;
@@ -182,7 +158,7 @@ impl SessionRecord {
                                         }
                                         acc
                                     });
-                                    Some(ToolResult::new(tool_call_id.clone().0, tool_result_content))
+                                    Some(ToolResult::new(tool_call_id.clone().into(), tool_result_content))
                                 }
                             }
                         }).collect();
@@ -365,7 +341,17 @@ impl TurnRecord {
         }
     }
 
-    fn get_tool_call_event_id(&self, tool_call_id: &ToolCallId) -> Option<EventId> {
+    pub(super) fn get_tool_decision_event_id(&self, tool_call_id: &ToolCallId) -> Option<EventId> {
+        self.events.iter().find_map(|(event_id, event)| {
+            let record_type = &event.event;
+            match record_type {
+                RecordableEvent::ToolAuthorization { tool_call_id: id, .. } if id == tool_call_id => Some(*event_id),
+                _ => None
+            }
+        })
+    }
+
+    pub(super) fn get_tool_call_event_id(&self, tool_call_id: &ToolCallId) -> Option<EventId> {
         self.events.iter().find_map(|(event_id, event)| {
             let record_type = &event.event;
             match record_type {
@@ -375,55 +361,15 @@ impl TurnRecord {
         })
     }
 
-    pub(crate) fn record_tool_result(&mut self, tool_result: ToolResult) -> Result<EventRecord, ()> {
-        let tool_call_id = ToolCallId(tool_result.tool_call_id.clone());
+    pub(crate) fn record_tool_result(&mut self, tool_result: ToolCallResult) -> Result<EventRecord, ()> {
+        let tool_call_id = tool_result.tool_call_id();
         match self.get_tool_call_event_id(&tool_call_id) {
             Some(id) => self.add_event(tool_result.into(), Some(id)),
             None => Err(())
         }
     }
 
-    pub(crate) fn record_tool_decision(&mut self, tool_call_id: ToolCallId, decision: ToolDecision, source: AuthorizationSource, reason: Option<String>) -> Result<EventRecord, ()> {
-        let tool_call_id = ToolCallId(tool_call_id.0.clone());
-        match self.get_tool_call_event_id(&tool_call_id) {
-            Some(id) => {
-                let event = RecordableEvent::ToolAuthorization {
-                    tool_call_id,
-                    decision,
-                    source,
-                    reason,
-                };
-                self.add_event(event, Some(id))
-            }
-            None => Err(())
-        }
 
-
-    }
-
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ToolCallId(String);
-
-// TODO: Should remove and just use ToolCallId type throughout.
-impl From<String> for ToolCallId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl From<ToolCallId> for String {
-    fn from(id: ToolCallId) -> Self {
-        id.0
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ToolData {
-    Text {
-        text: String,
-    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -433,22 +379,13 @@ pub enum ToolDecision {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ToolCallStatus {
-    /// The tool call executed successfully and returned a result
-    Success,
-    /// User denied the tool call
-    Denied,
-    /// The tool was executed, but the tool itself returned a failure.
-    Error,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AuthorizationSource {
     User,
     Policy,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputContent {
     Text {
         text: String,
@@ -510,7 +447,7 @@ impl TryFrom<RecordableTurn> for provider::Message {
                         AssistantContent::Reasoning { text: r } => reasoning = Some(r),
                         AssistantContent::Text { text: t } => text = t,
                         AssistantContent::ToolCall { id, name, arguments } => {
-                            tool_calls.push(ToolCallRequest { id: id.0, name, arguments });
+                            tool_calls.push(ToolCallRequest { id: id.into(), name, arguments });
                         }
                     }
                 }
@@ -555,21 +492,15 @@ pub enum RecordableEvent {
         source: AuthorizationSource,
         reason: Option<String>,
     },
-    ToolCallResult {
-        tool_call_id: ToolCallId,
-        // TODO: Should we log the tool status?
-        content: Vec<ToolData>
+    ToolCallResult(ToolCallResult)
+}
+
+impl From<ToolCallResult> for RecordableEvent {
+    fn from(result: ToolCallResult) -> Self {
+        Self::ToolCallResult(result)
     }
 }
 
-impl From<ToolResult> for RecordableEvent {
-    fn from(result: ToolResult) -> Self {
-        Self::ToolCallResult {
-            tool_call_id: ToolCallId(result.tool_call_id.clone()),
-            content: vec![ToolData::Text {text: result.content.clone()}],
-        }
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AssistantContent {
@@ -589,7 +520,7 @@ pub enum AssistantContent {
 impl From<ToolCallRequest> for AssistantContent {
     fn from(value: ToolCallRequest) -> Self {
         Self::ToolCall {
-            id: ToolCallId(value.id),
+            id: value.id.into(),
             name: value.name,
             arguments: value.arguments,
         }

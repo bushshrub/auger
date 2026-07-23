@@ -15,6 +15,12 @@ impl From<String> for ToolCallId {
     }
 }
 
+impl From<ToolCallId> for String {
+    fn from(value: ToolCallId) -> Self {
+        value.0
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum AddToolResponseIssue {
     #[error("The tool with id '{0:?}' was not requested by the LLM")]
@@ -29,14 +35,17 @@ pub enum AddToolResponseIssue {
 pub trait ToolBatchState {}
 
 /// Some tools don't yet have a response
+#[derive(Debug)]
 pub struct Resolving;
 /// All tools have a response.
+#[derive(Debug)]
 pub struct Resolved;
 
 impl ToolBatchState for Resolving {}
 impl ToolBatchState for Resolved {}
 
 /// Tool calls requested by the model and their results.
+#[derive(Debug)]
 pub struct ToolBatch<S: ToolBatchState> {
     pending_calls: HashMap<ToolCallId, ToolCallRequest>,
     results: HashMap<ToolCallId, ToolResult>,
@@ -82,6 +91,7 @@ impl ToolBatch<Resolving> {
                 call_id.clone(),
                 ToolResult {
                     tool_call_id: call_id.clone().0,
+                    // TODO: Hardcoded here...?
                     content: "Tool call interrupted before execution".to_string(),
                 }
             );

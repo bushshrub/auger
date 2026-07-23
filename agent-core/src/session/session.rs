@@ -4,7 +4,7 @@ use crate::SystemPrompt;
 use crate::events::{LoopMessage, SessionCommand, SessionEvent};
 use crate::tools::auto_approval::AutoApprovalPolicies;
 use crate::tools::tool_decisions::{ToolAuthorization, UserToolDecisions};
-use crate::tools::tool_execution::ToolExecution;
+use crate::tools::tool_execution::{ToolCallResult, ToolData, ToolExecution, ToolExecutionCompleted, ToolOutcome};
 use crate::tools::tool_registry::ToolRegistry;
 use agent_tools::Tool;
 use auger_driver::{restore, RestoreState, RestoredAgent, StreamResult, TypedAgent, WaitingForUserMessage};
@@ -18,7 +18,7 @@ use getset::CopyGetters;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
-use crate::session::history::{AssistantStatus, AuthorizationSource, EventId, InputContent, ModelInfo, RecordableEvent, RecordableTurn, SessionRecord, ToolData};
+use crate::session::history::{AssistantStatus, AuthorizationSource, EventId, InputContent, ModelInfo, RecordableEvent, RecordableTurn, SessionRecord};
 use crate::session::recorder::SessionRecorder;
 use crate::session::states::HarnessState;
 
@@ -283,8 +283,9 @@ impl Session {
                                             }
                                         }
                                         Either::Right(all_decided) => {
+                                            let batch = agent.get_batch();
                                             let execution = ToolExecution::new(
-                                                agent.get_batch(),
+                                                batch.requested().cloned().collect(),
                                                 ToolAuthorization::PerTool(all_decided),
                                                 self.tool_registry.clone(),
                                                 self.event_tx.clone(),
@@ -292,8 +293,8 @@ impl Session {
                                             let cancel = execution.interrupt_handle();
                                             let inbox_tx = self.harness_internal_event_tx.clone();
                                             rt.spawn(async move {
-                                                let result = execution.await.resolve();
-                                                let _ = inbox_tx.send(LoopMessage::ToolBatchExecutionResult(result));
+                                                let results = execution.await;
+                                                let _ = inbox_tx.send(LoopMessage::ToolBatchExecutionResult { batch , results });
                                             });
                                             HarnessState::ToolCallsAreRunning { agent, cancel }
                                         }
@@ -341,16 +342,17 @@ impl Session {
                                         )
                                         .expect("last turn to be user");
 
-                                    let tool_batch = agent.get_requested_tools();
-                                    if self.auto_approval_policies.will_approve_all(&tool_batch) {
+                                    let call_requests = agent.get_requested_tools();
+                                    if self.auto_approval_policies.will_approve_all(&call_requests) {
                                         info!(session_id=%self.id, "automatically running all tools");
-                                        for call in &tool_batch {
+                                        for call in &call_requests {
                                             self.recorder.
                                                 record_tool_decision(turn_id, call.id.clone().into(), true, AuthorizationSource::Policy, None)
                                                 .expect("turn to be assistant");
                                         }
+                                        let batch = agent.get_batch();
                                         let execution = ToolExecution::new(
-                                            agent.get_batch(),
+                                            call_requests,
                                             ToolAuthorization::AllAutoApproved,
                                             self.tool_registry.clone(),
                                             self.event_tx.clone(),
@@ -358,20 +360,20 @@ impl Session {
                                         let cancel = execution.interrupt_handle();
                                         let inbox_tx = self.harness_internal_event_tx.clone();
                                         rt.spawn(async move {
-                                            let result = execution.await.resolve();
-                                            let _ = inbox_tx.send(LoopMessage::ToolBatchExecutionResult(result));
+                                            let results = execution.await;
+                                            let _ = inbox_tx.send(LoopMessage::ToolBatchExecutionResult { batch, results });
                                         });
                                         HarnessState::ToolCallsAreRunning { agent, cancel }
                                     } else {
                                         info!(session_id=%self.id, "Some tools require consent");
-                                        for call in &tool_batch {
+                                        for call in &call_requests {
                                             if self.auto_approval_policies.is_approved(call) {
                                                 self.recorder.
                                                     record_tool_decision(turn_id, call.id.clone().into(), true, AuthorizationSource::Policy, None)
                                                     .expect("turn to be assistant");
                                             }
                                         }
-                                        let unapproved = self.auto_approval_policies.ids_needing_consent(&tool_batch);
+                                        let unapproved = self.auto_approval_policies.ids_needing_consent(&call_requests);
                                         let tool_calls = agent
                                             .get_requested_tools()
                                             .into_iter()
@@ -435,7 +437,7 @@ impl Session {
                         _ => curr_state
                     };
                 }
-                LoopMessage::ToolBatchExecutionResult(tool_batch) => {
+                LoopMessage::ToolBatchExecutionResult { mut batch, results } => {
                     info!(session_id=%self.id, "tools have finished executing");
                     let agent = match curr_state {
                         HarnessState::ToolCallsAreRunning { agent, cancel } => {
@@ -452,26 +454,24 @@ impl Session {
                     };
 
                     let prev_turn_id = self.recorder.previous_turn_id().expect("there to be a previous turn");
-                    for result in tool_batch.results() {
+                    // TODO: That enum is useless if we are just going to mark everything as interrupted?
+                    let tool_results = match results {
+                        ToolExecutionCompleted::Completed(results) => results,
+                        ToolExecutionCompleted::Interrupted(interrupted_results) => interrupted_results
+                    };
+                    let mut tool_result_content = Vec::new();
+                    for result in tool_results {
                         self.recorder.record_tool_result(prev_turn_id, result.clone())
                             .expect("previous turn to be assistant");
+                        tool_result_content.push(result.clone().into());
+                        batch.add_result(result.tool_call_id(), result.into());
                     }
-                    // Return the tool results to the model as an input turn. This
-                    // keeps the input/assistant alternation the recorder requires
-                    // and lets a restored session replay the results.
-                    let tool_result_content = tool_batch
-                        .results()
-                        .into_iter()
-                        .map(|result| InputContent::ToolResult {
-                            tool_call_id: result.tool_call_id.clone().into(),
-                            content: vec![ToolData::Text { text: result.content.clone() }],
-                        })
-                        .collect();
+                    let resolved_batch = batch.into_resolved().expect_right("there is a bug");
                     self.recorder
                         .record_turn(RecordableTurn::InputMessage { content: tool_result_content })
                         .expect("previous turn to be assistant");
                     // TODO: allow steering message to ride along
-                    let new_agent = agent.add_all_tool_responses(None, tool_batch);
+                    let new_agent = agent.add_all_tool_responses(None, resolved_batch);
                     let event_tx = self.event_tx.clone();
                     let stream_fut = new_agent.create_stream(move |event| {
                         let _ = event_tx.send(SessionEvent::StreamEvent(event));

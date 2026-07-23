@@ -1,5 +1,5 @@
 pub(crate) mod session;
-mod history;
+pub(crate) mod history;
 mod trace;
 mod states;
 mod recorder;

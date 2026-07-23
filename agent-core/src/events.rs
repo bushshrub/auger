@@ -1,9 +1,11 @@
 //! Events and command types for a session
 
 use crate::session::SessionRecord;
-use auger_driver::{Resolved, StreamResult, ToolBatch};
+use auger_driver::{Resolved, Resolving, StreamResult, ToolBatch};
 use provider::UserPrompt;
 use std::sync::mpsc;
+use crate::tools::tool_execution::{ToolCallResult, ToolExecutionCompleted};
+
 /// User sent commands to the session
 #[derive(Clone, Debug)]
 pub enum SessionCommand {
@@ -35,9 +37,7 @@ pub enum SessionEvent {
         tool_calls: Vec<provider::ToolCallRequest>,
     },
     /// A tool call finished executing and produced a result.
-    ToolCallResult { id: String, result: String },
-    /// A tool call failed, or was denied by the user.
-    ToolCallError { id: String, error: String },
+    ToolCallResult(ToolCallResult),
     /// The in-flight LLM stream was interrupted; the session is waiting for
     /// user input with the partial response retained.
     Interrupted,
@@ -53,6 +53,9 @@ pub(crate) enum LoopMessage {
     /// A streaming future completed.
     StreamResult(StreamResult),
     /// A tool batch has executed and returned its results
-    ToolBatchExecutionResult(ToolBatch<Resolved>)
+    ToolBatchExecutionResult {
+        batch: ToolBatch<Resolving>,
+        results: ToolExecutionCompleted
+    }
 }
 

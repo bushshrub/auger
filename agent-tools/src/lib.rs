@@ -14,15 +14,14 @@ pub enum ToolError {
 /// Details of a tool that the agent should know about.
 pub struct ToolDetails {
     /// Name of the tool, will be given to the agent.
-    pub name: &'static str,
+    pub name: String,
     /// Description of the tool, will be given to the agent.
-    pub description: &'static str,
+    pub description: String,
 }
 
 #[derive(Debug, Clone)]
 pub enum ToolCallResultKind {
     Success,
-    DeniedByUser,
     Error,
 }
 
@@ -38,13 +37,6 @@ impl ToolCallResult {
         Self {
             kind: ToolCallResultKind::Success,
             msg: result,
-        }
-    }
-
-    pub fn denied_by_user(why: String) -> Self {
-        Self {
-            kind: ToolCallResultKind::DeniedByUser,
-            msg: why,
         }
     }
 

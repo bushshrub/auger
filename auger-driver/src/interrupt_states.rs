@@ -35,6 +35,7 @@ impl TypedAgent<LlmStreamingInterrupted> {
         let user_message = if leave_partial_response {
             let response = LlmResponse::from_events(self.state.events);
             let reply = ClankerMessage::from(response);
+            // TODO: Should marking the remaining tool calls be the responsibility of the driver?
             let tool_call_results = if !reply.tool_calls().is_empty() {
                 ToolBatch::new(reply.tool_calls().to_vec()).interrupt_remaining().drain()
             } else {

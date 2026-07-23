@@ -1,11 +1,11 @@
 //! Module for recording session events and turns,
 //! and for providing hooks for external observers to be notified of new events and turns.
-use crate::session::history::{AssistantContent, AuthorizationSource, EventId, EventRecord, RecordableEvent, RecordableTurn, ToolCallId, ToolDecision, TurnId, TurnRecord};
+use crate::session::history::{AssistantContent, AuthorizationSource, EventId, EventRecord, RecordableEvent, RecordableTurn, ToolDecision, TurnId, TurnRecord};
 use crate::session::SessionRecord;
-use getset::{CloneGetters, Getters};
-use provider::ToolResult;
+use crate::tools::tool_execution::ToolCallResult;
+use getset::CloneGetters;
 use std::sync::Arc;
-
+use auger_driver::ToolCallId;
 
 type TurnHook = Hook<dyn Fn(TurnId, &TurnRecord)  + Send + Sync>;
 type EventHook = Hook<dyn Fn(TurnId, &EventRecord) + Send + Sync>;
@@ -86,23 +86,25 @@ impl SessionRecorder {
         Ok(er.event_id())
     }
 
-    pub(crate) fn record_tool_result(&mut self, turn_id: TurnId, tool_result: ToolResult) -> Result<EventId, ()> {
-        let tr = self.record.get_turn_mut(&turn_id).ok_or_else(|| ())?;
-        let er = tr.record_tool_result(tool_result)?;
-        if let Some(on_event) = self.on_event.0.clone() {
-            on_event(turn_id, &er);
-        }
-        Ok(er.event_id())
+    pub(crate) fn record_tool_result(&mut self, turn_id: TurnId, tool_result: ToolCallResult) -> Result<EventId, ()> {
+        let tr = self.record.get_turn_mut(&turn_id).ok_or(())?;
+        let tool_call_id: ToolCallId = tool_result.tool_call_id();
+        let tool_decision_event_id = tr.get_tool_decision_event_id(&tool_call_id).ok_or(())?;
+        self.record_event(turn_id, tool_result.into(), Some(tool_decision_event_id))
     }
 
     pub(crate) fn record_tool_decision(&mut self, turn_id: TurnId, tool_call_id: ToolCallId, decision: bool, source: AuthorizationSource, reason: Option<String>) -> Result<EventId, ()> {
-        let tr = self.record.get_turn_mut(&turn_id).ok_or_else(|| ())?;
+        let tr = self.record.get_turn_mut(&turn_id).ok_or(())?;
         let decision = if decision { ToolDecision::Approved } else { ToolDecision::Denied };
-        let er = tr.record_tool_decision(tool_call_id, decision, source, reason)?;
-        if let Some(on_event) = self.on_event.0.clone() {
-            on_event(turn_id, &er);
-        }
-        Ok(er.event_id())
+
+        let tool_call_request_event_id = tr.get_tool_call_event_id(&tool_call_id).ok_or(())?;
+        let event = RecordableEvent::ToolAuthorization {
+            tool_call_id,
+            decision,
+            source,
+            reason,
+        };
+        self.record_event(turn_id, event, Some(tool_call_request_event_id))
     }
 
 
