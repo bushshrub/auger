@@ -234,11 +234,12 @@ fn messages_to_input(messages: &[provider::Message]) -> Vec<Value> {
                     }));
                 }
             }
-            provider::Message::Assistant {
-                reasoning: _,
-                content,
-                tool_calls,
-            } => {
+            provider::Message::Assistant { response } => {
+                let provider::AssistantResponse {
+                    reasoning: _,
+                    content,
+                    tool_calls,
+                } = response;
                 if tool_calls.is_empty() {
                     if !content.is_empty() {
                         items.push(serde_json::json!({"type": "message", "role": "assistant", "content": content}));

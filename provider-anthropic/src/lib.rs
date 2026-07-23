@@ -90,11 +90,12 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
                 }
                 out.push(json!({"role": "user", "content": blocks}));
             }
-            Message::Assistant {
-                reasoning: _,
-                content,
-                tool_calls,
-            } => {
+            Message::Assistant { response } => {
+                let provider::AssistantResponse {
+                    reasoning: _,
+                    content,
+                    tool_calls,
+                } = response;
                 let mut blocks: Vec<Value> = Vec::new();
                 if !content.is_empty() {
                     blocks.push(json!({"type": "text", "text": content}));

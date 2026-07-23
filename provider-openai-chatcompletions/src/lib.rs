@@ -83,11 +83,12 @@ fn messages_to_json(messages: &[provider::Message]) -> Vec<Value> {
                     }));
                 }
             }
-            provider::Message::Assistant {
-                reasoning,
-                content,
-                tool_calls,
-            } => {
+            provider::Message::Assistant { response } => {
+                let provider::AssistantResponse {
+                    reasoning,
+                    content,
+                    tool_calls,
+                } = response;
                 let mut msg = json!({"role": "assistant"});
                 if !content.is_empty() {
                     msg["content"] = json!(content);
