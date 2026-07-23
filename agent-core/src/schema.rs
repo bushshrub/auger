@@ -1,34 +1,27 @@
+use std::path::PathBuf;
+use chrono::{DateTime, Utc};
 use getset::Getters;
 use serde::{Deserialize, Serialize};
 use auger_driver::ToolCallId;
+use crate::session::history::ModelInfo;
+use crate::SessionId;
 use crate::tools::tool_execution::ToolData;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
-#[getset(get = "pub")]
-pub struct InputToolResult {
-    tool_call_id: ToolCallId,
-    // TODO: Persist the tool result status.
-    content: Vec<ToolData>,
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum TraceLine {
+    SessionHeader(SessionHeader)
 }
 
-impl InputToolResult {
-    pub fn new(tool_call_id: ToolCallId, content: Vec<ToolData>) -> Self {
-        Self {
-            tool_call_id,
-            content,
-        }
-    }
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SessionMetadata {
+    cwd: PathBuf
 }
 
-
-#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
-#[getset(get = "pub")]
-pub struct TextData {
-    text: String,
-}
-
-impl TextData {
-    pub fn new(text: String) -> Self {
-        Self { text }
-    }
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SessionHeader {
+    version: u32,
+    session_id: SessionId,
+    created_at: DateTime<Utc>,
+    metadata: SessionMetadata,
+    model: ModelInfo
 }

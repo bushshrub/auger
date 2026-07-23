@@ -1,7 +1,8 @@
 use super::tool_decisions::ToolAuthorization;
 use super::tool_registry::ToolRegistry;
 use crate::events::SessionEvent;
-use auger_driver::{Resolving, ToolBatch, ToolCallId};
+use crate::session::history::InputContent;
+use auger_driver::ToolCallId;
 use futures::future::join_all;
 use getset::CloneGetters;
 use provider::ToolCallRequest;
@@ -11,8 +12,6 @@ use std::pin::Pin;
 use std::sync::{mpsc, Arc};
 use std::task::{Context, Poll};
 use tokio_util::sync::CancellationToken;
-use crate::schema::{InputToolResult};
-use crate::session::history::InputContent;
 
 pub(crate) struct ToolExecution {
     calls: Vec<ToolCallRequest>,
@@ -20,7 +19,6 @@ pub(crate) struct ToolExecution {
     registry: Arc<ToolRegistry>,
     /// Sender to emit per-call result/error events as each call finishes.
     event_tx: mpsc::Sender<SessionEvent>,
-    results: Vec<ToolCallResult>,
     cancellation: CancellationToken,
 }
 
@@ -46,7 +44,6 @@ impl ToolExecution {
             authorization,
             registry,
             event_tx,
-            results: Vec::new(),
             cancellation: CancellationToken::new(),
         }
     }
