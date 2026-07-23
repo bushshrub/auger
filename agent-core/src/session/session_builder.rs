@@ -1,4 +1,4 @@
-use crate::session::history::{EventRecord, ModelInfo, TurnId, TurnRecord};
+use crate::session::history::{EventRecord, ModelInfo, SessionData, TurnId, TurnRecord};
 use crate::session::recorder::{EventCallback, SessionRecorder, TurnCallback};
 use crate::session::SessionRecord;
 use crate::{AutoApprovalPolicies, SessionEvent, SessionHandle, SessionId, SystemPrompt};
@@ -40,8 +40,8 @@ impl SessionBuilder {
         self.record.data().session_id()
     }
 
-    pub fn created_at(&self) -> DateTime<Utc> {
-        self.record.data().created_at()
+    pub fn session_data(&self) -> &SessionData {
+        self.record.data()
     }
 
     pub fn on_turn(mut self, cb: impl Fn(TurnId, &TurnRecord) + Send + Sync + 'static) -> Self {

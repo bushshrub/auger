@@ -9,7 +9,8 @@ use std::cmp::PartialEq;
 use std::path::PathBuf;
 use uuid::{NoContext, Timestamp, Uuid};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Getters)]
+#[getset(get = "pub")]
 pub struct ModelInfo {
     provider: String,
     id: String,
