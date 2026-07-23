@@ -150,9 +150,11 @@ impl SessionRecord {
                             tool_call_results: tool_calls
                         })
                     }
-                    RecordableTurn::AssistantMessage { .. } => {
-                        messages.push(turn.data.turn().clone().try_into().expect("Failed to convert turn to message"));
+                    RecordableTurn::AssistantMessage { outcome: AssistantTurnOutcome::Completed { response } } => {
+                        messages.push(response.clone().into());
                     }
+                    // TODO: This completely discards any sort of interrupted partial messages
+                    RecordableTurn::AssistantMessage { .. } => {}
                 }
         }
         messages
