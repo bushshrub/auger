@@ -37,6 +37,14 @@ import {
  */
 export const APPROVAL_REQUIRED_TOOLS = new Set(['shell', 'edit_file', 'write_file']);
 
+/**
+ * Read-only, auto-approved filesystem tools whose cards are collapsed into a
+ * single summary dropdown when several run back to back. Keeps exploration
+ * bursts (read/list/grep/...) from flooding the transcript. Web tools
+ * (web_search, fetch_content) stay standalone since each is worth seeing.
+ */
+export const GROUPABLE_TOOLS = new Set(['read_file', 'list_files', 'glob', 'grep', 'todo_list']);
+
 let counter = 0;
 const nextId = () => `ui_${++counter}`;
 
@@ -280,18 +288,9 @@ export class AugerSession {
 			}
 			case 'tool_call_result': {
 				const call = this.#findCall(e.id);
-				if (call) {
-					call.status = 'done';
-					call.result = e.result;
-				}
-				break;
-			}
-			case 'tool_call_error': {
-				const call = this.#findCall(e.id);
-				if (call) {
-					if (call.status !== 'denied') call.status = 'error';
-					call.error = e.error;
-				}
+				// Denial is decided locally (respond) and wins over a late result,
+				// which for a denied call just restates the denial reason.
+				if (call && call.status !== 'denied') applyOutcome(call, e.result.outcome);
 				break;
 			}
 			case 'done': {
@@ -342,11 +341,13 @@ export class AugerSession {
 
 /**
  * Rebuild the transcript from a trace snapshot (initial load and reconnect).
- * The snapshot is the persisted record stream: turns carry the conversation,
- * and the tool events that follow an assistant turn (`tool_authorization`,
- * `tool_call_result`) update the corresponding call card. Assistant turns emit
- * a `tool_call_requested` event too, but the card is already created from the
- * turn's `tool_call` content, so that event is ignored here.
+ * The snapshot is the persisted record stream (see FE.md): a leading session
+ * record, then turns (which carry the conversation), then the tool events that
+ * occurred during an assistant turn. Turns and their enum payloads are
+ * externally tagged (`turn.input_message`, `turn.assistant_message.outcome`,
+ * `event.tool_authorization`, ...). Assistant turns also emit a
+ * `tool_call_requested` event, but the card is already created from the turn's
+ * response `tool_calls`, so that event is ignored here.
  * @param {TraceRecord[]} records
  * @returns {UiItem[]}
  */
@@ -357,27 +358,33 @@ function buildItems(records) {
 	const calls = new Map();
 
 	for (const record of records) {
-		if (record.kind === 'turn' && record.type === 'input_message') {
-			for (const content of record.content) {
+		if (record.kind === 'session') continue;
+
+		if (record.kind === 'turn' && 'input_message' in record.turn) {
+			for (const content of record.turn.input_message.content) {
 				if (content.type === 'text' && content.text.trim().length > 0) {
 					items.push({ kind: 'user', id: nextId(), text: content.text });
 				} else if (content.type === 'tool_result') {
 					const call = calls.get(content.tool_call_id);
-					if (call) {
+					if (call && call.status !== 'denied') {
 						call.status = 'done';
 						call.result = toolText(content.content);
 					}
 				}
 			}
-		} else if (record.kind === 'turn' && record.type === 'assistant_message') {
-			const reasoning = record.content
-				.filter((content) => content.type === 'reasoning')
-				.map((content) => content.text)
-				.join('');
-			const text = record.content
-				.filter((content) => content.type === 'text')
-				.map((content) => content.text)
-				.join('');
+		} else if (record.kind === 'turn' && 'assistant_message' in record.turn) {
+			// Only completed / interrupted outcomes carry a response; failed has none.
+			const outcome = record.turn.assistant_message.outcome;
+			const response =
+				outcome === 'failed'
+					? null
+					: 'completed' in outcome
+						? outcome.completed.response
+						: outcome.interrupted.partial_response;
+			if (!response) continue;
+
+			const reasoning = response.reasoning ?? '';
+			const text = response.content;
 			if (reasoning.trim().length > 0 || text.trim().length > 0) {
 				items.push({
 					kind: 'assistant',
@@ -387,47 +394,63 @@ function buildItems(records) {
 					streaming: false
 				});
 			}
-			for (const content of record.content) {
-				if (content.type !== 'tool_call') continue;
-				const needsApproval = APPROVAL_REQUIRED_TOOLS.has(content.name);
+			for (const tc of response.tool_calls) {
+				const needsApproval = APPROVAL_REQUIRED_TOOLS.has(tc.name);
 				/** @type {UiToolCall} */
 				const call = {
-					id: content.id,
-					name: content.name,
-					arguments: content.arguments,
+					id: tc.id,
+					name: tc.name,
+					arguments: tc.arguments,
 					status: needsApproval ? 'pending_approval' : 'running',
 					autoApproved: !needsApproval
 				};
-				calls.set(content.id, call);
+				calls.set(tc.id, call);
 				items.push({ kind: 'tool', id: nextId(), call });
 			}
-		} else if (record.kind === 'event' && record.type === 'tool_authorization') {
+		} else if (record.kind === 'event' && 'tool_authorization' in record.event) {
 			// A turn's events can arrive in any order, so only advance the status;
 			// never downgrade a call that already has a result back to 'running'.
-			const call = calls.get(record.tool_call_id);
+			const auth = record.event.tool_authorization;
+			const call = calls.get(auth.tool_call_id);
 			if (call) {
-				call.autoApproved = record.source === 'policy';
-				if (record.decision === 'denied') call.status = 'denied';
+				call.autoApproved = auth.source === 'policy';
+				if (auth.decision === 'denied') call.status = 'denied';
 				else if (call.status === 'pending_approval') call.status = 'running';
 			}
-		} else if (record.kind === 'event' && record.type === 'tool_call_result') {
-			const call = calls.get(record.tool_call_id);
+		} else if (record.kind === 'event' && 'tool_call_result' in record.event) {
+			const result = record.event.tool_call_result;
+			const call = calls.get(result.tool_call_id);
 			// Denial wins over a result (a denied call still records its reason
 			// as a result), so don't overwrite that status.
-			if (call && call.status !== 'denied') {
-				call.status = 'done';
-				call.result = toolText(record.content);
-			}
+			if (call && call.status !== 'denied') applyOutcome(call, result.outcome);
 		}
 	}
 
 	return items;
 }
 
+/**
+ * Apply a tool-call outcome to its card, setting status plus result/error text.
+ * @param {UiToolCall} call
+ * @param {import('./api.js').ToolOutcome} outcome
+ */
+function applyOutcome(call, outcome) {
+	if (outcome === 'interrupted') {
+		call.status = 'error';
+		call.error = 'Tool call was interrupted.';
+	} else if ('success' in outcome) {
+		call.status = 'done';
+		call.result = toolText(outcome.success.content);
+	} else if ('error' in outcome) {
+		call.status = 'error';
+		call.error = toolText(outcome.error.error);
+	} else if ('denied' in outcome) {
+		call.status = 'denied';
+		call.error = outcome.denied.reason ?? 'Tool call was denied.';
+	}
+}
+
 /** @param {import('./api.js').ToolData[]} content */
 function toolText(content) {
-	return content
-		.filter((item) => item.type === 'text')
-		.map((item) => item.text)
-		.join('');
+	return content.map((item) => item.text.text).join('');
 }

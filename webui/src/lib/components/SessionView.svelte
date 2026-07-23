@@ -1,8 +1,9 @@
 <script>
-	import { AugerSession } from '$lib/session.svelte.js';
+	import { AugerSession, GROUPABLE_TOOLS } from '$lib/session.svelte.js';
 	import AssistantMessage from './AssistantMessage.svelte';
 	import Composer from './Composer.svelte';
 	import ToolCallCard from './ToolCallCard.svelte';
+	import ToolCallGroup from './ToolCallGroup.svelte';
 	import UserMessage from './UserMessage.svelte';
 
 	/** @type {{ session: import('$lib/api.js').SessionInfo }} */
@@ -46,6 +47,67 @@
 		if (scrollEl && pinned) {
 			scrollEl.scrollTop = scrollEl.scrollHeight;
 		}
+	});
+
+	/**
+	 * @typedef {import('$lib/session.svelte.js').UiItem} UiItem
+	 * @typedef {import('$lib/session.svelte.js').UiToolCall} UiToolCall
+	 * @typedef {{ kind: 'reasoning', id: string, text: string }
+	 *         | { kind: 'tool', id: string, call: UiToolCall }} GroupEntry
+	 * @typedef {{ kind: 'item', id: string, item: UiItem }
+	 *         | { kind: 'group', id: string, entries: GroupEntry[] }} Row
+	 */
+
+	/** A read-only tool call that folds into a group. @param {UiItem} it */
+	const isGroupableTool = (it) => it.kind === 'tool' && GROUPABLE_TOOLS.has(it.call.name);
+	// A finished assistant turn that only carried reasoning (its content, if any,
+	// arrives on the final turn). These sit between the tool calls of an
+	// exploration burst, so they fold into the group to keep the step order.
+	/** @param {UiItem} it */
+	const isFoldableReasoning = (it) =>
+		it.kind === 'assistant' &&
+		!it.streaming &&
+		it.content.trim().length === 0 &&
+		it.reasoning.trim().length > 0;
+
+	// Collapse runs of consecutive read-only tool calls — and the reasoning-only
+	// turns interleaved with them — into a single group card so exploration
+	// bursts don't flood the transcript. Requires 2+ tool calls to group; a lone
+	// call (with its reasoning) renders inline as before.
+	const rows = $derived.by(() => {
+		/** @type {Row[]} */
+		const out = [];
+		/** @type {UiItem[]} */
+		const items = agent.items;
+		let i = 0;
+		while (i < items.length) {
+			const item = items[i];
+			if (isGroupableTool(item) || isFoldableReasoning(item)) {
+				/** @type {UiItem[]} */
+				const run = [];
+				while (i < items.length && (isGroupableTool(items[i]) || isFoldableReasoning(items[i]))) {
+					run.push(items[i]);
+					i++;
+				}
+				if (run.filter(isGroupableTool).length >= 2) {
+					out.push({
+						kind: 'group',
+						id: `group:${run[0].id}`,
+						entries: run.map((r) =>
+							r.kind === 'tool'
+								? { kind: 'tool', id: r.id, call: r.call }
+								: { kind: 'reasoning', id: r.id, text: /** @type {any} */ (r).reasoning }
+						)
+					});
+					continue;
+				}
+				for (const r of run) out.push({ kind: 'item', id: r.id, item: r });
+				continue;
+			}
+			out.push({ kind: 'item', id: item.id, item });
+			i++;
+		}
+		return out;
 	});
 
 	const totalTokens = $derived(
@@ -106,15 +168,23 @@
 				</div>
 			{/if}
 
-			{#each agent.items as item (item.id)}
-				{#if item.kind === 'user'}
-					<UserMessage text={item.text} />
-				{:else if item.kind === 'assistant'}
-					<AssistantMessage {item} />
+			{#each rows as row (row.id)}
+				{#if row.kind === 'group'}
+					<div class="pl-7">
+						<ToolCallGroup
+							entries={row.entries}
+							sessionArchived={session.archived}
+							onRespond={(id, ok, msg) => agent.respond(id, ok, msg)}
+						/>
+					</div>
+				{:else if row.item.kind === 'user'}
+					<UserMessage text={row.item.text} />
+				{:else if row.item.kind === 'assistant'}
+					<AssistantMessage item={row.item} />
 				{:else}
 					<div class="pl-7">
 						<ToolCallCard
-							call={item.call}
+							call={row.item.call}
 							sessionArchived={session.archived}
 							onRespond={(id, ok, msg) => agent.respond(id, ok, msg)}
 						/>

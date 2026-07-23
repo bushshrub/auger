@@ -19,9 +19,9 @@
 	// Empty means "let the server pick its default model".
 	let model = $state('');
 
-	/** @param {number} createdAt unix seconds */
+	/** @param {string} createdAt RFC3339 timestamp */
 	function formatTime(createdAt) {
-		return new Date(createdAt * 1000).toLocaleTimeString([], {
+		return new Date(createdAt).toLocaleTimeString([], {
 			hour: '2-digit',
 			minute: '2-digit'
 		});

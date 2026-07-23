@@ -22,7 +22,7 @@ const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
 
 /**
  * @typedef {{ read: string, write: string }} SessionTokens
- * @typedef {{ session_id: string, model: string, created_at: number,
+ * @typedef {{ session_id: string, model: string, created_at: string,
  *             context_window: number, tokens: SessionTokens, archived: boolean }} SessionInfo
  * @typedef {{ session_id: string, context_window: number, tokens: SessionTokens }} SessionCreds
  * @typedef {{ id: string, name: string, arguments: string }} ToolCall
@@ -30,15 +30,31 @@ const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
  *             total_tokens: number | null, cached_tokens: number | null,
  *             cache_creation_tokens: number | null }} TokenUsage
  *
- * One SSE frame; discriminated by `type`:
+ * A single piece of tool content. Externally tagged: `{ text: { text } }`.
+ * @typedef {{ text: { text: string } }} ToolData
+ *
+ * The outcome of a tool call. Externally tagged, mirroring the Rust enum:
+ * `success`/`error` carry content, `denied` carries a reason, `interrupted`
+ * is the bare string.
+ * @typedef {(
+ *   | { success: { content: ToolData[] } }
+ *   | { error: { error: ToolData[] } }
+ *   | { denied: { reason: string | null } }
+ *   | 'interrupted'
+ * )} ToolOutcome
+ * @typedef {{ tool_call_id: string, outcome: ToolOutcome }} ToolCallResult
+ *
+ * One SSE frame; discriminated by `type`. `tool_call_result` carries the full
+ * structured result (with its outcome); there is no separate error frame — a
+ * failed/denied/interrupted call arrives as a `tool_call_result` whose outcome
+ * is `error`/`denied`/`interrupted`.
  * @typedef {(
  *   | { type: 'text_delta', text: string }
  *   | { type: 'reasoning_delta', text: string }
  *   | { type: 'tool_call', id: string, name: string, arguments: string }
  *   | { type: 'tool_call_complete', id: string, name: string, arguments: string }
  *   | { type: 'tool_consent_required', tool_calls: ToolCall[] }
- *   | { type: 'tool_call_result', id: string, result: string }
- *   | { type: 'tool_call_error', id: string, error: string }
+ *   | { type: 'tool_call_result', id: string, result: ToolCallResult }
  *   | { type: 'done', usage: TokenUsage | null, stop_reason: string | null }
  *   | { type: 'interrupted' }
  *   | { type: 'stream_error', error: string }
@@ -46,30 +62,34 @@ const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
  * )} SessionEvent
  *
  * The snapshot is the same record stream persisted to trace.jsonl: a flat,
- * ordered array of TraceRecords, each discriminated by `kind`. A turn record
- * carries the conversation content; the tool events (`tool_call_requested`,
- * `tool_authorization`, `tool_call_result`) that occurred during an assistant
- * turn follow it. `arguments` on a tool call is a JSON-encoded string.
+ * ordered list of TraceRecords, each discriminated by `kind`. It arrives as
+ * newline-delimited JSON (one record per line), parsed by getSnapshot into an
+ * array. The session record is always first, followed by turns (which carry the
+ * conversation) and events (`tool_call_requested`, `tool_authorization`,
+ * `tool_call_result`) that occurred during the owning assistant turn. Nested
+ * enums are externally tagged, matching the Rust serialization. `arguments` on
+ * a tool call is a JSON-encoded string.
  *
  * @typedef {{ type: 'text', text: string } | { type: 'tool_result', tool_call_id: string,
  *             content: ToolData[] }} InputContent
- * @typedef {{ type: 'reasoning', text: string } | { type: 'text', text: string }
- *             | { type: 'tool_call', id: string, name: string, arguments: string }} AssistantContent
- * @typedef {{ type: 'text', text: string }} ToolData
+ * @typedef {{ reasoning: string | null, content: string, tool_calls: ToolCall[] }} AssistantResponse
  * @typedef {(
- *   | { kind: 'session', session_id: string, created_at: string, cwd: string,
- *       model: { provider: string, id: string } }
- *   | { kind: 'turn', type: 'input_message', id: string, parent_turn_id: string | null,
- *       timestamp: string, content: InputContent[] }
- *   | { kind: 'turn', type: 'assistant_message', id: string, parent_turn_id: string | null,
- *       timestamp: string, status: 'completed' | 'interrupted' | 'failed',
- *       content: AssistantContent[] }
- *   | { kind: 'event', type: 'tool_call_requested', turn_id: string, tool_call_id: string,
- *       tool_name: string, arguments: string }
- *   | { kind: 'event', type: 'tool_authorization', turn_id: string, tool_call_id: string,
- *       decision: 'approved' | 'denied', source: 'user' | 'policy', reason: string | null }
- *   | { kind: 'event', type: 'tool_call_result', turn_id: string, tool_call_id: string,
- *       content: ToolData[] }
+ *   | { completed: { response: AssistantResponse } }
+ *   | { interrupted: { partial_response: AssistantResponse | null } }
+ *   | 'failed'
+ * )} AssistantTurnOutcome
+ * @typedef {(
+ *   | { kind: 'session', version: number, session_id: string, created_at: string,
+ *       cwd: string, model_info: { provider: string, id: string } }
+ *   | { kind: 'turn', turn_id: string, timestamp: string, parent_id: string | null,
+ *       turn: { input_message: { content: InputContent[] } }
+ *           | { assistant_message: { outcome: AssistantTurnOutcome } } }
+ *   | { kind: 'event', turn_id: string, parent_id: string | null, timestamp: string,
+ *       event_id: string, event:
+ *         | { tool_call_requested: { tool_call_id: string, tool_name: string, arguments: string } }
+ *         | { tool_authorization: { tool_call_id: string, decision: 'approved' | 'denied',
+ *             source: 'user' | 'policy', reason: string | null } }
+ *         | { tool_call_result: ToolCallResult } }
  * )} TraceRecord
  */
 
@@ -173,7 +193,7 @@ export async function respondToToolCall(id, writeToken, toolCallId, approved, me
 
 /**
  * Interrupt in-flight generation or tool execution. Fire-and-forget: the
- * outcome arrives on the event stream (`interrupted` / `tool_call_error`).
+ * outcome arrives on the event stream (`interrupted` / `tool_call_result`).
  * @param {string} id
  * @param {string} writeToken
  * @returns {Promise<void>}
@@ -187,6 +207,9 @@ export async function interruptSession(id, writeToken) {
 }
 
 /**
+ * Fetch the session snapshot. The response is newline-delimited JSON
+ * (application/x-ndjson), one TraceRecord per line — not a JSON array — so it
+ * is parsed line by line here.
  * @param {string} id
  * @param {string} token
  * @returns {Promise<TraceRecord[]>}
@@ -196,7 +219,11 @@ export async function getSnapshot(id, token) {
 		headers: { authorization: `Bearer ${token}` }
 	});
 	if (!res.ok) throw await toError(res);
-	return res.json();
+	const body = await res.text();
+	return body
+		.split('\n')
+		.filter((line) => line.trim().length > 0)
+		.map((line) => JSON.parse(line));
 }
 
 /**
