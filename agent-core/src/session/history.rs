@@ -350,12 +350,14 @@ impl TurnRecord {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolDecision {
     Approved,
     Denied,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AuthorizationSource {
     User,
     Policy,
@@ -374,6 +376,7 @@ pub enum InputContent {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
 pub enum RecordableTurn {
     /// Input message from the harness. May be due to automatic - returning tool results, or just user sending message.
     InputMessage {
@@ -408,6 +411,7 @@ impl TryFrom<RecordableTurn> for provider::Message {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
 pub enum RecordableEvent {
     ToolCallRequested {
         tool_call_id: ToolCallId,
@@ -441,6 +445,7 @@ impl From<ToolCallResult> for RecordableEvent {
 
 /// Outcome of an assistant turn
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AssistantTurnOutcome {
     /// The assistant turn completed successfully, and the response is available.
     Completed {

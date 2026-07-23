@@ -178,6 +178,7 @@ impl From<ToolCallResult> for InputContent {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolOutcome {
     Success {
         content: Vec<ToolData>
@@ -192,6 +193,7 @@ pub enum ToolOutcome {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolData {
     Text {
         text: String,
