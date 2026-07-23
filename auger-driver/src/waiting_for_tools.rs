@@ -1,6 +1,6 @@
 use crate::agent::{ReadyToStream, State, TypedAgent};
 use crate::tool_batch::{Resolved, Resolving, ToolBatch};
-use provider::{Message, ToolCallRequest, UserPrompt};
+use provider::{AssistantResponse, Message, ToolCallRequest, UserPrompt};
 
 /// The LLM has requested tool calls and the driver
 /// is waiting for the tool call's results to be provided back.
@@ -10,11 +10,19 @@ impl State for WaitingForToolResponses {}
 
 impl TypedAgent<WaitingForToolResponses> {
 
+    pub fn previous_message(&self) -> &AssistantResponse {
+        let assistant_message = self.messages().last().expect("there to be a last message");
+        match assistant_message {
+            Message::Assistant { response } => response,
+            _ => panic!("auger driver state invariant violation: last message should be an assistant message when in WaitingForToolResponses state"),
+        }
+    }
+
     fn get_tool_calls(&self) -> Vec<ToolCallRequest> {
         let last_message = self.messages().last().expect("there should be at least one message in the thread").clone();
         match last_message {
-            Message::Assistant { reasoning: _, content: _, tool_calls } => {
-                tool_calls
+            Message::Assistant { response } => {
+                response.tool_calls
             }
             _ => panic!("auger driver state invariant violation: last message should be an assistant message when in WaitingForToolResponses state"),
         }

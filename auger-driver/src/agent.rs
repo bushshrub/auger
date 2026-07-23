@@ -1,6 +1,6 @@
 use crate::streaming::LlmStreaming as LlmStreamingFuture;
 use getset::Getters;
-use provider::{LlmModel, Message, ToolDefinition, UserPrompt};
+use provider::{AssistantResponse, LlmModel, Message, ToolDefinition, UserPrompt};
 use tokio_util::sync::CancellationToken;
 /// Synchronous state machine for the auger driver.
 /// This is the main state machine.
@@ -39,6 +39,16 @@ impl TypedAgent<WaitingForUserMessage> {
             model,
             tools,
             state,
+        }
+    }
+
+    /// Get the previous assistant message that occurred before this state.
+    /// May be `None` if this is the first turn in the session.
+    pub fn previous_message(&self) -> Option<&AssistantResponse> {
+        let assistant_message = self.messages().last()?;
+        match assistant_message {
+            Message::Assistant { response } => Some(response),
+            _ => panic!("auger driver state invariant violation: last message should be an assistant message when in WaitingForUserMessage state")
         }
     }
 

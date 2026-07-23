@@ -18,7 +18,7 @@ use getset::CopyGetters;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle;
 use tracing::{debug, error, info, warn};
-use crate::session::history::{AssistantStatus, AuthorizationSource, EventId, InputContent, ModelInfo, RecordableEvent, RecordableTurn, SessionRecord};
+use crate::session::history::{AssistantTurnOutcome, AuthorizationSource, EventId, InputContent, ModelInfo, RecordableEvent, RecordableTurn, SessionRecord};
 use crate::session::recorder::SessionRecorder;
 use crate::session::states::HarnessState;
 
@@ -104,18 +104,18 @@ impl Session {
         let last_turn = record.get_previous_turn();
         let restore_state = match last_turn {
             Some(turn) => {
-                match turn.turn() {
+                match turn.data().turn() {
                     RecordableTurn::InputMessage { content } => {
                         panic!("Can't start on a user turn")
                     }
-                    RecordableTurn::AssistantMessage { status, content } => {
+                    RecordableTurn::AssistantMessage { outcome: status } => {
                         match status {
-                            AssistantStatus::Completed => {
+                            AssistantTurnOutcome::Completed { .. } => {
                                 let mut messages = record.as_messages();
                                 messages.insert(0, system_prompt.into());
                                 RestoreState::from_messages(messages)
                             }
-                            AssistantStatus::Interrupted => {
+                            AssistantTurnOutcome::Interrupted { partial_response: _ } => {
                                 let mut messages = record.as_messages();
                                 messages.insert(0, system_prompt.into());
                                 RestoreState::Interrupted {
@@ -123,7 +123,7 @@ impl Session {
                                     events: Vec::new() // TODO: insert actual interrupted partial message
                                 }
                             }
-                            AssistantStatus::Failed => {
+                            AssistantTurnOutcome::Failed => {
                                 let mut messages = record.as_messages();
                                 messages.insert(0, system_prompt.into());
                                 RestoreState::Failed {
@@ -154,8 +154,8 @@ impl Session {
         tools: Vec<Box<dyn Tool>>,
         auto_approval_policies: AutoApprovalPolicies,
     ) -> (SessionHandle, Receiver<SessionEvent>) {
-        let id = record.record().session_id();
-        let creation_time = record.record().created_at();
+        let id = record.record().data().session_id();
+        let creation_time = record.record().data().created_at();
         let mut tool_registry = ToolRegistry::new();
         for tool in tools {
             tool_registry.register(tool);
@@ -207,7 +207,7 @@ impl Session {
                             break 'session_loop;
                         }
                         SessionCommand::Snapshot { reply_tx } => {
-                            let _ = reply_tx.send(self.recorder.record());
+                            let _ = reply_tx.send(self.recorder.record().clone());
                         }
                         SessionCommand::SendMessage(prompt) => {
                             info!(session_id = %self.id, "Received user message {:?}", prompt);
@@ -324,8 +324,7 @@ impl Session {
                                         "LLM stream failed; waiting for a new user message"
                                     );
                                     self.recorder.record_turn(RecordableTurn::AssistantMessage {
-                                        status: AssistantStatus::Failed,
-                                        content: vec![],
+                                        outcome: AssistantTurnOutcome::Failed,
                                     }).expect("previous turn was user");
                                     let _ = self.event_tx.send(SessionEvent::StreamError {
                                         error: agent.error().to_string(),
@@ -334,11 +333,12 @@ impl Session {
                                 }
                                 StreamResult::WaitingForToolResponses(agent) => {
                                     debug!(session_id = %self.id, "agent has called tools");
-                                    let assistant_message = agent.messages().last().expect("there to be a last message").clone();
+
                                     let turn_id = self.recorder.
                                         record_turn(
-                                            RecordableTurn::assistant_message(AssistantStatus::Completed, assistant_message)
-                                            .expect("assistant message should be Assistant variant")
+                                            RecordableTurn::AssistantMessage {
+                                                outcome: AssistantTurnOutcome::Completed { response: agent.previous_message().clone() }
+                                            }
                                         )
                                         .expect("last turn to be user");
 
@@ -387,11 +387,11 @@ impl Session {
                                 }
                                 StreamResult::WaitingForUserMessage(agent) => {
                                     info!(session_id=%self.id, "No tools called");
-                                    let assistant_message = agent.messages().last().expect("there to be a last message").clone();
                                     self.recorder.
                                         record_turn(
-                                            RecordableTurn::assistant_message(AssistantStatus::Completed, assistant_message)
-                                                .expect("assistant message should be Assistant variant")
+                                            RecordableTurn::AssistantMessage { outcome: AssistantTurnOutcome::Completed {
+                                                response: agent.previous_message().expect("a previous message to exist").clone().into(),
+                                            } }
                                         )
                                         .expect("last turn to be user");
                                     HarnessState::WaitingForUserMessage { agent }

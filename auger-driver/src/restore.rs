@@ -28,7 +28,7 @@ impl RestoreState {
     pub fn from_messages(messages: Vec<Message>) -> Self {
         let waiting_for_tools = matches!(
             messages.last(),
-            Some(Message::Assistant { tool_calls, .. }) if !tool_calls.is_empty()
+            Some(Message::Assistant { response }) if !response.tool_calls.is_empty()
         );
         if waiting_for_tools {
             Self::WaitingForToolResponses { messages }
@@ -82,18 +82,20 @@ pub fn restore(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use provider::ToolCallRequest;
+    use provider::{AssistantResponse, ToolCallRequest};
 
     #[test]
     fn messages_with_outstanding_tool_calls_wait_for_tool_responses() {
         let messages = vec![Message::Assistant {
-            reasoning: None,
-            content: String::new(),
-            tool_calls: vec![ToolCallRequest {
-                id: "call-1".to_string(),
-                name: "shell".to_string(),
-                arguments: "{}".to_string(),
-            }],
+            response: AssistantResponse {
+                reasoning: None,
+                content: String::new(),
+                tool_calls: vec![ToolCallRequest {
+                    id: "call-1".to_string(),
+                    name: "shell".to_string(),
+                    arguments: "{}".to_string(),
+                }],
+            }
         }];
 
         assert!(matches!(
@@ -105,9 +107,11 @@ mod tests {
     #[test]
     fn completed_messages_wait_for_user_input() {
         let messages = vec![Message::Assistant {
-            reasoning: None,
-            content: "done".to_string(),
-            tool_calls: Vec::new(),
+            response: AssistantResponse {
+                reasoning: None,
+                content: String::new(),
+                tool_calls: vec![],
+            }
         }];
 
         assert!(matches!(

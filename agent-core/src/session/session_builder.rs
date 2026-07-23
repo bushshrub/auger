@@ -37,15 +37,11 @@ impl SessionBuilder {
     }
 
     pub fn id(&self) -> SessionId {
-        self.record.session_id()
-    }
-
-    pub fn root_turn_id(&self) -> TurnId {
-        self.record.root_id()
+        self.record.data().session_id()
     }
 
     pub fn created_at(&self) -> DateTime<Utc> {
-        self.record.created_at()
+        self.record.data().created_at()
     }
 
     pub fn on_turn(mut self, cb: impl Fn(TurnId, &TurnRecord) + Send + Sync + 'static) -> Self {

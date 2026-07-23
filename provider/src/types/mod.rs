@@ -22,19 +22,32 @@ pub enum Message {
     }, // TODO: in the future we will need to support images
     /// A message from the model.
     Assistant {
-        reasoning: Option<String>,
-        content: String,
-        tool_calls: Vec<ToolCallRequest>,
+        response: AssistantResponse
     },
+}
+/// Response from the assistant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantResponse {
+    pub reasoning: Option<String>,
+    pub content: String,
+    pub tool_calls: Vec<ToolCallRequest>,
+}
+
+impl From<AssistantResponse> for Message {
+    fn from(response: AssistantResponse) -> Self {
+        Message::Assistant { response }
+    }
 }
 
 impl From<CompletedLlmResponse> for Message {
     fn from(response: CompletedLlmResponse) -> Self {
         let tool_calls = response.tool_calls.unwrap_or_default();
         Message::Assistant {
-            reasoning: None,
-            content: response.content,
-            tool_calls,
+            response: AssistantResponse {
+                reasoning: response.reasoning,
+                content: response.content,
+                tool_calls
+            }
         }
     }
 }

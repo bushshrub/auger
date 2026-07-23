@@ -1,4 +1,4 @@
-use crate::Message;
+use crate::{AssistantResponse, Message};
 use crate::types::ToolCallRequest;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
@@ -76,9 +76,11 @@ impl From<PartialLlmResponse> for ClankerMessage {
 impl From<ClankerMessage> for Message {
     fn from(msg: ClankerMessage) -> Self {
         Message::Assistant {
-            reasoning: msg.reasoning,
-            tool_calls: msg.tool_calls,
-            content: msg.content,
+            response: AssistantResponse {
+                reasoning: msg.reasoning,
+                tool_calls: msg.tool_calls,
+                content: msg.content,
+            }
         }
     }
 }

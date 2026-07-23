@@ -1,9 +1,9 @@
 //! Module for recording session events and turns,
 //! and for providing hooks for external observers to be notified of new events and turns.
-use crate::session::history::{AssistantContent, AuthorizationSource, EventId, EventRecord, RecordableEvent, RecordableTurn, ToolDecision, TurnId, TurnRecord};
+use crate::session::history::{AssistantTurnOutcome, AuthorizationSource, EventId, EventRecord, RecordableEvent, RecordableTurn, ToolDecision, TurnId, TurnRecord};
 use crate::session::SessionRecord;
 use crate::tools::tool_execution::ToolCallResult;
-use getset::CloneGetters;
+use getset::{CloneGetters, Getters};
 use std::sync::Arc;
 use auger_driver::ToolCallId;
 
@@ -15,9 +15,9 @@ pub type EventCallback = Arc<dyn Fn(TurnId, &EventRecord) + Send + Sync>;
 
 struct Hook<T: ?Sized>(Option<Arc<T>>);
 
-#[derive(CloneGetters)]
+#[derive(Getters)]
 pub struct SessionRecorder {
-    #[getset(get_clone = "pub")]
+    #[getset(get = "pub")]
     record: SessionRecord,
 
     on_turn:  TurnHook,
@@ -34,36 +34,29 @@ impl SessionRecorder {
     }
 
     pub fn previous_turn_id(&self) -> Option<TurnId> {
-        self.record.get_previous_turn().map(|tr| tr.turn_id())
+        self.record.get_previous_turn().map(|tr| tr.data().turn_id())
     }
 
     pub fn record_turn(&mut self, turn: RecordableTurn) -> Result<TurnId, ()> {
-        let assistant_content = match &turn {
+        let tool_calls = match &turn {
             RecordableTurn::InputMessage { content: _ } => Vec::new(),
-            RecordableTurn::AssistantMessage { status, content} => {
-                content.clone()
+            RecordableTurn::AssistantMessage { outcome} => {
+                match outcome {
+                    AssistantTurnOutcome::Completed { response } => {
+                        response.tool_calls.clone()
+                    }
+                    // do not record interrupted or failed assistant messages' tool calls.
+                    _ => Vec::new()
+                }
             },
         };
 
         let turn_record = self.record.add_turn(turn)?;
-        let turn_id = turn_record.turn_id();
+        let turn_id = turn_record.data().turn_id();
         if let Some(on_turn) = self.on_turn.0.clone() {
             on_turn(turn_id, &turn_record);
         }
-        let events = assistant_content
-            .into_iter()
-            .filter_map(|c| {
-                match c {
-                    AssistantContent::ToolCall { id, name, arguments } => {
-                        Some(RecordableEvent::ToolCallRequested {
-                            tool_call_id: id,
-                            tool_name: name.clone(),
-                            arguments: arguments.clone(),
-                        })
-                    }
-                    _ => None
-                }
-            });
+        let events = tool_calls.into_iter().map(RecordableEvent::from).collect::<Vec<_>>();
         for event in events {
             let record = self.record.get_turn_mut(&turn_id)
                 .expect("turn to have been added")
