@@ -3,7 +3,6 @@
 use crate::session::SessionRecord;
 use crate::tools::tool_execution::ToolCallResult;
 use crate::tools::tool_execution::ToolExecutionCompleted;
-use auger_driver::Resolved;
 use auger_driver::Resolving;
 use auger_driver::StreamResult;
 use auger_driver::ToolBatch;

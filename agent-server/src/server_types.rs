@@ -3,7 +3,6 @@ use agent_core::SessionEvent;
 use agent_core::SessionHandle;
 use serde::Deserialize;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::broadcast;
 use uuid::Uuid;

@@ -14,8 +14,6 @@ use crate::session::recorder::SessionRecorder;
 use crate::session::recorder::TurnCallback;
 use crate::session::session::Session;
 use agent_tools::Tool;
-use chrono::DateTime;
-use chrono::Utc;
 use provider::LlmModel;
 use std::env::current_dir;
 use std::sync::Arc;

@@ -13,7 +13,6 @@ use crate::session::history::TurnId;
 use crate::session::history::TurnRecord;
 use crate::tools::tool_execution::ToolCallResult;
 use auger_driver::ToolCallId;
-use getset::CloneGetters;
 use getset::Getters;
 use std::sync::Arc;
 

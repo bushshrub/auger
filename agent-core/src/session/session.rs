@@ -4,10 +4,6 @@ use crate::events::SessionCommand;
 use crate::events::SessionEvent;
 use crate::session::history::AssistantTurnOutcome;
 use crate::session::history::AuthorizationSource;
-use crate::session::history::EventId;
-use crate::session::history::InputContent;
-use crate::session::history::ModelInfo;
-use crate::session::history::RecordableEvent;
 use crate::session::history::RecordableTurn;
 use crate::session::history::SessionRecord;
 use crate::session::recorder::SessionRecorder;
@@ -15,18 +11,13 @@ use crate::session::states::HarnessState;
 use crate::tools::auto_approval::AutoApprovalPolicies;
 use crate::tools::tool_decisions::ToolAuthorization;
 use crate::tools::tool_decisions::UserToolDecisions;
-use crate::tools::tool_execution::ToolCallResult;
-use crate::tools::tool_execution::ToolData;
 use crate::tools::tool_execution::ToolExecution;
 use crate::tools::tool_execution::ToolExecutionCompleted;
-use crate::tools::tool_execution::ToolOutcome;
 use crate::tools::tool_registry::ToolRegistry;
 use agent_tools::Tool;
 use auger_driver::RestoreState;
 use auger_driver::RestoredAgent;
 use auger_driver::StreamResult;
-use auger_driver::TypedAgent;
-use auger_driver::WaitingForUserMessage;
 use auger_driver::restore;
 use chrono::DateTime;
 use chrono::Utc;
@@ -35,19 +26,15 @@ use getset::CopyGetters;
 use mpsc::Receiver;
 use provider::LlmError;
 use provider::LlmModel;
-use provider::Message;
 use provider::ToolDefinition;
-use provider::UserPrompt;
 use serde::Deserialize;
 use serde::Serialize;
-use std::env::current_dir;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use tokio::runtime::Handle;
 use tracing::debug;
-use tracing::error;
 use tracing::info;
 use tracing::warn;
 
@@ -135,7 +122,7 @@ impl Session {
         let restore_state = match last_turn {
             Some(turn) => {
                 match turn.data().turn() {
-                    RecordableTurn::InputMessage { content } => {
+                    RecordableTurn::InputMessage { content: _ } => {
                         panic!("Can't start on a user turn")
                     }
                     RecordableTurn::AssistantMessage { outcome: status } => {
