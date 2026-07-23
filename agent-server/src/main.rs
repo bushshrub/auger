@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::{mpsc, Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::TcpListener;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as TokioMutex, RwLock};
 use tokio_stream::wrappers::BroadcastStream;
 use tracing::{debug, info};
 use uuid::Uuid;
@@ -62,6 +62,8 @@ const SYSTEM_PROMPT: &str =
 struct AppState {
     provider: Arc<dyn LlmProvider>,
     sessions: Arc<RwLock<HashMap<SessionId, SessionEntry>>>,
+    disk_sessions: Arc<RwLock<HashMap<SessionId, DiskSession>>>,
+    activation_lock: Arc<TokioMutex<()>>,
     default_model: String,
 }
 
@@ -69,6 +71,8 @@ struct DiskSession {
     record: agent_core::SessionRecord,
     model: String,
     path: PathBuf,
+    read_token: Uuid,
+    write_token: Uuid,
 }
 
 fn load_disk_sessions() -> Vec<DiskSession> {
@@ -88,7 +92,13 @@ fn load_disk_sessions() -> Vec<DiskSession> {
         match TraceReader::read(BufReader::new(file)) {
             Ok(record) => {
                 let model = record.data().model_info().id().clone();
-                sessions.push(DiskSession { record, model, path });
+                sessions.push(DiskSession {
+                    record,
+                    model,
+                    path,
+                    read_token: Uuid::new_v4(),
+                    write_token: Uuid::new_v4(),
+                });
             }
             Err(error) => tracing::warn!(path = %path.display(), %error, "failed to restore session trace"),
         }
@@ -106,15 +116,17 @@ async fn main() {
     let addr = config.listen_addr();
     let provider = provider_config::from_config(&config);
 
-    let disk_sessions = load_disk_sessions();
+    let disk_sessions = load_disk_sessions()
+        .into_iter()
+        .map(|session| (session.record.data().session_id(), session))
+        .collect();
     let state = AppState {
         provider: Arc::clone(&provider),
         sessions: Arc::new(RwLock::new(HashMap::new())),
+        disk_sessions: Arc::new(RwLock::new(disk_sessions)),
+        activation_lock: Arc::new(TokioMutex::new(())),
         default_model: config.model(),
     };
-    for disk in disk_sessions {
-        start_session(&state, SessionBuilder::restore(disk.record), disk.model, disk.path).await;
-    }
 
     let listener = TcpListener::bind(&addr).await.expect("bind failed");
     info!("agent-server listening on {addr}");
@@ -157,7 +169,26 @@ async fn resolve_session_extensions(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let Some(entry) = state.sessions.read().await.get(&id).cloned() else {
+    let entry = if let Some(entry) = state.sessions.read().await.get(&id).cloned() {
+        Some(entry)
+    } else {
+        let _activation = state.activation_lock.lock().await;
+        if let Some(entry) = state.sessions.read().await.get(&id).cloned() {
+            Some(entry)
+        } else if let Some(disk) = state.disk_sessions.write().await.remove(&id) {
+            start_session(
+                &state,
+                SessionBuilder::restore(disk.record),
+                disk.model,
+                disk.path,
+                Some((disk.read_token, disk.write_token)),
+            ).await;
+            state.sessions.read().await.get(&id).cloned()
+        } else {
+            None
+        }
+    };
+    let Some(entry) = entry else {
         return StatusCode::NOT_FOUND.into_response();
     };
 
@@ -176,7 +207,7 @@ async fn openapi() -> impl IntoResponse {
 /// List all sessions, including archived sessions.
 async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
     let sessions = state.sessions.read().await;
-    let list: Vec<_> = sessions
+    let mut list: Vec<_> = sessions
         .values()
         .map(|e| {
             json!({
@@ -192,6 +223,20 @@ async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
             })
         })
         .collect();
+    let disk_sessions = state.disk_sessions.read().await;
+    list.extend(disk_sessions.values().map(|e| {
+        json!({
+            "session_id": e.record.data().session_id().as_uuid(),
+            "model": e.model,
+            "created_at": e.record.data().created_at(),
+            "archived": false,
+            "context_window": DEFAULT_CONTEXT_WINDOW,
+            "tokens": {
+                "read": e.read_token.to_string(),
+                "write": e.write_token.to_string(),
+            }
+        })
+    }));
     Json(json!({ "sessions": list }))
 }
 
@@ -203,7 +248,7 @@ async fn create_session(
     let model = req.model.unwrap_or_else(|| state.default_model.clone());
     let builder = SessionBuilder::new(model.clone());
     let session_id = builder.id();
-    let (read_token, write_token) = start_session(&state, builder, model, trace_path(session_id)).await;
+    let (read_token, write_token) = start_session(&state, builder, model, trace_path(session_id), None).await;
     Json(
         json!({ "session_id": session_id, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
         "read": read_token,
@@ -217,6 +262,7 @@ async fn start_session(
     builder: SessionBuilder,
     model: String,
     trace_path: PathBuf,
+    tokens: Option<(Uuid, Uuid)>,
 ) -> (Uuid, Uuid) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
@@ -307,8 +353,7 @@ async fn start_session(
             }
         }
     });
-    let read_token = Uuid::new_v4();
-    let write_token = Uuid::new_v4();
+    let (read_token, write_token) = tokens.unwrap_or_else(|| (Uuid::new_v4(), Uuid::new_v4()));
     state.sessions.write().await.insert(
         session_id,
         SessionEntry {
