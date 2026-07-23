@@ -9,9 +9,9 @@ pub struct Glob;
 impl Tool for Glob {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "glob",
+            name: "glob".to_string(),
             description: "Find files and directories matching a glob pattern. Returns one absolute \
-                path per line. Supports `*`, `**`, and `?` wildcards. Respects .gitignore.",
+                path per line. Supports `*`, `**`, and `?` wildcards. Respects .gitignore.".to_string(),
         }
     }
 

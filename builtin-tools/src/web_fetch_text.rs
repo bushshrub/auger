@@ -117,11 +117,11 @@ fn html_to_text(html: &str) -> String {
 impl Tool for WebFetchText {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "web_fetch_text",
+            name: "web_fetch_text".to_string(),
             description: "Fetch a URL and return only the visible text content, stripping all \
                 HTML tags, scripts, and styles. Prefer this over web_fetch when you want readable \
                 prose rather than raw markup. If the extracted text exceeds the inline limit the \
-                full content is saved to a temporary file and the path is returned.",
+                full content is saved to a temporary file and the path is returned.".to_string(),
         }
     }
 

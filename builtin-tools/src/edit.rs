@@ -10,9 +10,9 @@ pub struct EditFile;
 impl Tool for EditFile {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "edit_file",
+            name: "edit_file".to_string(),
             description: "Perform an exact string replacement in a file. \
-                Fails if old_string is not found or appears more than once.",
+                Fails if old_string is not found or appears more than once.".to_string(),
         }
     }
 

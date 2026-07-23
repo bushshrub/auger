@@ -46,11 +46,11 @@ impl Default for TodoList {
 impl Tool for TodoList {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "todo_list",
+            name: "todo_list".to_string(),
             description: "Manage a shared todo list to track tasks. \
                 Use 'add' to create items, 'update' to change title/status, \
                 'remove' to delete, and 'list' to view all items. \
-                Status values: pending, in_progress, done.",
+                Status values: pending, in_progress, done.".to_string(),
         }
     }
 

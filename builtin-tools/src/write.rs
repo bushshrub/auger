@@ -10,9 +10,9 @@ pub struct WriteFile;
 impl Tool for WriteFile {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "write_file",
+            name: "write_file".to_string(),
             description: "Write content to a file, creating it (and any missing parent directories) \
-                if it does not exist, or overwriting it if it does.",
+                if it does not exist, or overwriting it if it does.".to_string(),
         }
     }
 

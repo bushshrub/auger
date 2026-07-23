@@ -151,10 +151,10 @@ fn collapse_whitespace(s: &str) -> String {
 impl Tool for FetchContent {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "fetch_content",
+            name: "fetch_content".to_string(),
             description: "Fetch a URL and extract its readable text content. \
                 HTML is parsed and converted to clean text suitable for LLM consumption. \
-                Use this after web_search to read the full content of a result.",
+                Use this after web_search to read the full content of a result.".to_string(),
         }
     }
 

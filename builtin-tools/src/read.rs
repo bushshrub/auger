@@ -11,8 +11,8 @@ pub struct ReadFile;
 impl Tool for ReadFile {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "read_file",
-            description: "Read a file from the local filesystem. Returns file contents with line numbers. Use offset and limit to read a specific range of lines. If the output exceeds 500 lines and no limit is set, the result is written to a temp file instead.",
+            name: "read_file".to_string(),
+            description: "Read a file from the local filesystem. Returns file contents with line numbers. Use offset and limit to read a specific range of lines. If the output exceeds 500 lines and no limit is set, the result is written to a temp file instead.".to_string(),
         }
     }
 

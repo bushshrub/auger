@@ -31,12 +31,12 @@ impl Default for WebFetch {
 impl Tool for WebFetch {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "web_fetch",
+            name: "web_fetch".to_string(),
             description: "Fetch a URL and return its content as text. \
                 Useful for reading documentation, APIs, or web pages. \
                 HTML is returned as-is; prefer URLs that serve plain text or JSON when possible. \
                 If the response body exceeds the inline limit the full content is saved to a \
-                temporary file and the path is returned instead.",
+                temporary file and the path is returned instead.".to_string(),
         }
     }
 

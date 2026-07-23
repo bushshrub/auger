@@ -12,9 +12,9 @@ const MAX_OUTPUT: usize = 20_000;
 impl Tool for Shell {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "shell",
+            name: "shell".to_string(),
             description: "Run a shell command and return its stdout, stderr, and exit code. \
-                Use for builds, tests, git, find, etc. Avoid interactive commands.",
+                Use for builds, tests, git, find, etc. Avoid interactive commands.".to_string(),
         }
     }
 

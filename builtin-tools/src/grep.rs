@@ -82,9 +82,9 @@ fn escape_regex(value: &str) -> String {
 impl Tool for Grep {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "grep",
+            name: "grep".to_string(),
             description: "Search for a regex pattern in a file or directory. Returns matches in \
-                path:line:content format. Context lines use path-line-content format.",
+                path:line:content format. Context lines use path-line-content format.".to_string(),
         }
     }
 

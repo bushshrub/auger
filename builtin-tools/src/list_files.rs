@@ -9,8 +9,8 @@ pub struct ListFiles;
 impl Tool for ListFiles {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "list_files",
-            description: "List files and directories at a given path. Non-recursive by default; set recursive=true to walk the full tree. Respects .gitignore.",
+            name: "list_files".to_string(),
+            description: "List files and directories at a given path. Non-recursive by default; set recursive=true to walk the full tree. Respects .gitignore.".to_string(),
         }
     }
 

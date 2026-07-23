@@ -88,9 +88,9 @@ fn parse_results(html: &str, max: usize) -> Vec<serde_json::Value> {
 impl Tool for WebSearch {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "web_search",
+            name: "web_search".to_string(),
             description: "Search the web using DuckDuckGo. Returns titles, URLs, and snippets. \
-                Use fetch_content to retrieve the full text of any result URL.",
+                Use fetch_content to retrieve the full text of any result URL.".to_string(),
         }
     }
 

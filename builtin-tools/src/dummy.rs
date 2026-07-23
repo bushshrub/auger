@@ -9,8 +9,8 @@ pub struct Dummy;
 impl Tool for Dummy {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "dummy",
-            description: "Test tool. Echoes back its arguments. Use to verify tool call routing works.",
+            name: "dummy".to_string(),
+            description: "Test tool. Echoes back its arguments. Use to verify tool call routing works.".to_string(),
         }
     }
 
