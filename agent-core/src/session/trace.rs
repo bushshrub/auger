@@ -24,6 +24,10 @@ impl<W: Write> TraceWriter<W> {
         Ok(trace_writer)
     }
 
+    pub fn resume(writer: W) -> Self {
+        Self { writer }
+    }
+
     pub fn write_turn(&mut self, turn: &TurnRecord) -> Result<(), TraceWriteError> {
         self.write_record(&TraceRecordRef::Turn { record: turn.data() })
     }

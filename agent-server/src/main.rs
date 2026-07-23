@@ -1,6 +1,7 @@
 use axum::Extension;
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
+use axum::http::header::CONTENT_TYPE;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response, Sse};
 use axum::routing::{delete, get, post};
@@ -16,14 +17,14 @@ use tokio_stream::wrappers::BroadcastStream;
 use tracing::{debug, info};
 use uuid::Uuid;
 use std::fs::{create_dir_all, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::server_types::{
     ApproveRequest, CreateSessionRequest, SessionEntry, UserInputRequest,
 };
-use agent_core::{AutoApprovalPolicies, SessionBuilder, SessionCommand, SessionEvent, SessionHandle, SessionId, SystemPrompt, TurnEvent};
+use agent_core::{AutoApprovalPolicies, SessionBuilder, SessionCommand, SessionEvent, SessionHandle, SessionId, SystemPrompt, TraceReader, TraceWriter};
 use provider::{LlmModel, LlmProvider};
 
 mod server_types;
@@ -37,26 +38,6 @@ fn trace_path(session_id: SessionId) -> PathBuf {
         .join("sessions")
         .join(session_id.to_string())
         .join("trace.jsonl")
-}
-
-fn write_trace_record(writer: &Arc<Mutex<BufWriter<std::fs::File>>>, record: &auger_traces::schema::TraceRecord) {
-    let Ok(mut writer) = writer.lock() else {
-        tracing::error!("trace writer lock poisoned");
-        return;
-    };
-    let line = match serde_json::to_string(record) {
-        Ok(line) => line,
-        Err(error) => {
-            tracing::error!(%error, "failed to serialize session trace");
-            return;
-        }
-    };
-    if let Err(error) = writer.write_all(line.as_bytes())
-        .and_then(|_| writer.write_all(b"\n"))
-        .and_then(|_| writer.flush())
-    {
-        tracing::error!(%error, "failed to write session trace");
-    }
 }
 
 const DEFAULT_CONTEXT_WINDOW: usize = 113072;
@@ -101,25 +82,14 @@ fn load_disk_sessions() -> Vec<DiskSession> {
     let mut sessions = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path().join("trace.jsonl");
-        let Ok(contents) = std::fs::read_to_string(&path) else {
+        let Ok(file) = std::fs::File::open(&path) else {
             continue;
         };
-        let records: Result<Vec<auger_traces::schema::TraceRecord>, _> = contents
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(serde_json::from_str)
-            .collect();
-        let Ok(records) = records else {
-            tracing::warn!(path = %path.display(), "failed to parse session trace");
-            continue;
-        };
-        let Some(auger_traces::schema::TraceRecord::Session(header)) = records.first() else {
-            tracing::warn!(path = %path.display(), "session trace has no header");
-            continue;
-        };
-        let model = header.model().id().clone();
-        match agent_core::SessionRecord::restore(records) {
-            Ok(record) => sessions.push(DiskSession { record, model, path }),
+        match TraceReader::read(BufReader::new(file)) {
+            Ok(record) => {
+                let model = record.data().model_info().id().clone();
+                sessions.push(DiskSession { record, model, path });
+            }
             Err(error) => tracing::warn!(path = %path.display(), %error, "failed to restore session trace"),
         }
     }
@@ -280,34 +250,43 @@ async fn start_session(
     let session_id = builder.id();
     create_dir_all(trace_path.parent().expect("trace path has a parent"))
         .expect("failed to create session trace directory");
+    let is_new_trace = !trace_path.exists()
+        || std::fs::metadata(&trace_path).expect("failed to inspect session trace file").len() == 0;
     let trace_file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&trace_path)
         .expect("failed to create session trace file");
-    let trace_writer = Arc::new(Mutex::new(BufWriter::new(trace_file)));
-    if std::fs::metadata(&trace_path).expect("failed to inspect session trace file").len() == 0 {
-        let root_turn_id: Uuid = builder.root_turn_id().into();
-        let header = auger_traces::schema::SessionHeader::new(
-            1,
-            session_id.as_uuid(),
-            auger_traces::schema::TurnId::from(root_turn_id),
-            builder.created_at(),
-            cwd.clone(),
-            auger_traces::schema::ModelInfo::new("to-be-added".to_string(), model.clone()),
-        );
-        write_trace_record(&trace_writer, &auger_traces::schema::TraceRecord::Session(header));
-    }
+    let writer = BufWriter::new(trace_file);
+    let trace_writer = if is_new_trace {
+        TraceWriter::new(writer, builder.session_data())
+            .expect("failed to write session trace header")
+    } else {
+        TraceWriter::resume(writer)
+    };
+    let trace_writer = Arc::new(Mutex::new(trace_writer));
     let turn_writer = Arc::clone(&trace_writer);
     let event_writer = Arc::clone(&trace_writer);
     let builder = builder
         .on_turn(move |_, record| {
-            write_trace_record(&turn_writer, &auger_traces::schema::TraceRecord::Turn(record.clone().into()));
+            match turn_writer.lock() {
+                Ok(mut writer) => {
+                    if let Err(error) = writer.write_turn(record) {
+                        tracing::error!(%error, "failed to write session trace turn");
+                    }
+                }
+                Err(_) => tracing::error!("trace writer lock poisoned"),
+            }
         })
         .on_event(move |turn_id, record| {
-            let event: auger_traces::schema::EventRecord =
-                TurnEvent::new(turn_id, record.clone()).into();
-            write_trace_record(&event_writer, &auger_traces::schema::TraceRecord::Event(event));
+            match event_writer.lock() {
+                Ok(mut writer) => {
+                    if let Err(error) = writer.write_event(turn_id, record) {
+                        tracing::error!(%error, "failed to write session trace event");
+                    }
+                }
+                Err(_) => tracing::error!("trace writer lock poisoned"),
+            }
         });
     let (handle, event_rx) = builder.start(
         LlmModel::new(state.provider.clone(), &model),
@@ -421,7 +400,29 @@ async fn snapshot(
     // what do I do with snapshot_rx?
     match tokio::task::spawn_blocking(move || session_handle.send_command(SessionCommand::Snapshot { reply_tx: snapshot_tx })).await {
         Ok(Ok(())) => match snapshot_rx.recv() {
-            Ok(record) => Json(record.trace_records()).into_response(),
+            Ok(record) => {
+                let mut trace = Vec::new();
+                let result = (|| {
+                    let mut writer = TraceWriter::new(&mut trace, record.data())?;
+                    for turn in record.turns() {
+                        writer.write_turn(turn)?;
+                        for event in turn.events() {
+                            writer.write_event(turn.data().turn_id(), event)?;
+                        }
+                    }
+                    Ok::<_, agent_core::TraceWriteError>(())
+                })();
+                match result {
+                    Ok(()) => (
+                        [(CONTENT_TYPE, "application/x-ndjson")],
+                        String::from_utf8(trace).expect("serialized JSON is UTF-8"),
+                    ).into_response(),
+                    Err(error) => {
+                        tracing::error!(%error, "failed to serialize session snapshot");
+                        (StatusCode::INTERNAL_SERVER_ERROR, "snapshot serialization failed").into_response()
+                    }
+                }
+            }
             Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot channel dropped").into_response()
         },
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot failed").into_response(),
@@ -470,15 +471,10 @@ fn session_event_json(event: SessionEvent) -> serde_json::Value {
             "type": "tool_consent_required",
             "tool_calls": tool_calls,
         }),
-        SessionEvent::ToolCallResult { id, result } => json!({
+        SessionEvent::ToolCallResult(result) => json!({
             "type": "tool_call_result",
-            "id": id,
+            "id": result.tool_call_id(),
             "result": result,
-        }),
-        SessionEvent::ToolCallError { id, error } => json!({
-            "type": "tool_call_error",
-            "id": id,
-            "error": error,
         }),
         SessionEvent::Interrupted => json!({ "type": "interrupted" }),
         SessionEvent::StreamError { error } => json!({ "type": "stream_error", "error": error }),
