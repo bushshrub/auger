@@ -1,4 +1,3 @@
-use getset::Getters;
 use serde::{Deserialize, Serialize};
 use crate::types::{Message, ToolDefinition};
 
