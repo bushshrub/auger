@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
+use tokio::time::Instant;
 
 pub(crate) struct RateLimiter {
     last_request: Arc<Mutex<Option<Instant>>>,

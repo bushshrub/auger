@@ -1,13 +1,15 @@
+use crate::types::AppEvent;
+use crate::types::RawSessionEvent;
+use crate::types::SessionInfo;
+use crate::types::SnapshotMessage;
+use crate::types::SseEvent;
+use crate::types::TuiEvent;
+use crate::types::transform_raw_event;
 use futures::StreamExt;
 use reqwest::Client;
 use serde_json::json;
 use tokio::sync::mpsc;
 use uuid::Uuid;
-
-use crate::types::{
-    AppEvent, RawSessionEvent, SessionInfo, SnapshotMessage, SseEvent, TuiEvent,
-    transform_raw_event,
-};
 
 fn parse_sse_data(frame: &str) -> Option<String> {
     let lines: Vec<&str> = frame.lines().collect();
@@ -40,7 +42,8 @@ pub async fn list_sessions(server: &str) -> anyhow::Result<Vec<SessionInfo>> {
             let session_id = s["session_id"].as_str()?.parse::<Uuid>().ok()?;
             let model = s["model"].as_str().unwrap_or("unknown").to_string();
             let context_window = s["context_window"].as_u64().unwrap_or(8192);
-            // agent-server returns tokens.read / tokens.write (not owner_token/viewer_token)
+            // agent-server returns tokens.read / tokens.write (not
+            // owner_token/viewer_token)
             let write_token = s["tokens"]["write"].as_str().unwrap_or("").to_string();
             let read_token = s["tokens"]["read"].as_str().unwrap_or("").to_string();
             Some(SessionInfo {
@@ -148,7 +151,8 @@ pub async fn get_snapshot(
     Ok(messages)
 }
 
-/// Spawn a task that loads the snapshot then streams SSE events, both forwarded to `tx`.
+/// Spawn a task that loads the snapshot then streams SSE events, both forwarded
+/// to `tx`.
 pub fn spawn_event_stream(
     server: String,
     session_id: Uuid,

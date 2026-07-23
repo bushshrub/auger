@@ -1,13 +1,23 @@
-use ratatui::{
-    Frame,
-    layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
-};
-
-use crate::app::{App, View};
-use crate::types::{ChatItem, Status, ToolDecision};
+use crate::app::App;
+use crate::app::View;
+use crate::types::ChatItem;
+use crate::types::Status;
+use crate::types::ToolDecision;
+use ratatui::Frame;
+use ratatui::layout::Constraint;
+use ratatui::layout::Layout;
+use ratatui::layout::Rect;
+use ratatui::style::Color;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::text::Text;
+use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
+use ratatui::widgets::List;
+use ratatui::widgets::ListItem;
+use ratatui::widgets::Paragraph;
 
 pub fn render(frame: &mut Frame, app: &App) {
     match app.view {

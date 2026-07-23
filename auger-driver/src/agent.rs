@@ -1,6 +1,10 @@
 use crate::streaming::LlmStreaming as LlmStreamingFuture;
 use getset::Getters;
-use provider::{AssistantResponse, LlmModel, Message, ToolDefinition, UserPrompt};
+use provider::AssistantResponse;
+use provider::LlmModel;
+use provider::Message;
+use provider::ToolDefinition;
+use provider::UserPrompt;
 use tokio_util::sync::CancellationToken;
 /// Synchronous state machine for the auger driver.
 /// This is the main state machine.
@@ -28,7 +32,6 @@ pub struct WaitingForUserMessage;
 impl State for WaitingForUserMessage {}
 
 impl TypedAgent<WaitingForUserMessage> {
-
     /// Create a new agent with the given system prompt and model.
     pub fn new(model: LlmModel, system_prompt: String, tools: Vec<ToolDefinition>) -> Self {
         let mut messages = Vec::new();
@@ -48,14 +51,18 @@ impl TypedAgent<WaitingForUserMessage> {
         let assistant_message = self.messages().last()?;
         match assistant_message {
             Message::Assistant { response } => Some(response),
-            _ => panic!("auger driver state invariant violation: last message should be an assistant message when in WaitingForUserMessage state")
+            _ => panic!(
+                "auger driver state invariant violation: last message should be an assistant \
+                 message when in WaitingForUserMessage state"
+            ),
         }
     }
 
-    /// Add a user message to the driver and transition it to the [`ReadyToStream`] state.
+    /// Add a user message to the driver and transition it to the
+    /// [`ReadyToStream`] state.
     pub fn add_message(mut self, msg: UserPrompt) -> TypedAgent<ReadyToStream> {
         self.messages.push(msg.into());
-        let state =ReadyToStream {};
+        let state = ReadyToStream {};
         TypedAgent {
             model: self.model,
             tools: self.tools,
@@ -71,10 +78,11 @@ pub struct ReadyToStream {}
 impl State for ReadyToStream {}
 
 impl TypedAgent<ReadyToStream> {
-
     /// Creates an interruptible LLM stream future.
-    ///
-    pub fn create_stream(self, cb: impl Fn(provider::StreamEvent) + Send + Sync + 'static) -> LlmStreamingFuture {
+    pub fn create_stream(
+        self,
+        cb: impl Fn(provider::StreamEvent) + Send + Sync + 'static,
+    ) -> LlmStreamingFuture {
         let cancellation = CancellationToken::new();
 
         LlmStreamingFuture::new(

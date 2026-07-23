@@ -1,10 +1,15 @@
-use futures::{StreamExt, stream};
-use provider::{
-    CompletedLlmResponse, LlmError, LlmProvider, LlmRequest, LlmStream, StreamEvent,
-    ToolCallRequest,
-};
+use futures::StreamExt;
+use futures::stream;
+use provider::CompletedLlmResponse;
+use provider::LlmError;
+use provider::LlmProvider;
+use provider::LlmRequest;
+use provider::LlmStream;
+use provider::StreamEvent;
+use provider::ToolCallRequest;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
 use tracing::debug;
 
 #[derive(Clone, Debug, Default)]
@@ -88,9 +93,7 @@ impl LlmProvider for DummyProvider {
                 model,
             ))),
             DummyResponse::Error(error) => Err(error),
-            DummyResponse::Stream(events) => {
-                Ok(LlmStream::new(finite_stream(events, model)))
-            }
+            DummyResponse::Stream(events) => Ok(LlmStream::new(finite_stream(events, model))),
             DummyResponse::PendingStream(events) => Ok(LlmStream::new(
                 stream::iter(events).chain(stream::pending()),
             )),
@@ -117,9 +120,7 @@ fn finite_stream(
     )
 }
 
-fn response_to_stream_events(
-    response: CompletedLlmResponse,
-) -> Vec<Result<StreamEvent, LlmError>> {
+fn response_to_stream_events(response: CompletedLlmResponse) -> Vec<Result<StreamEvent, LlmError>> {
     let mut events = Vec::new();
 
     if !response.content.is_empty() {

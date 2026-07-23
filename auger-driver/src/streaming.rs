@@ -1,18 +1,23 @@
 //! State when LLM is streaming the response back.
-//!
 
-use crate::agent::{TypedAgent, WaitingForUserMessage};
-use crate::interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
+use crate::agent::TypedAgent;
+use crate::agent::WaitingForUserMessage;
+use crate::interrupt_states::LlmStreamingFailed;
+use crate::interrupt_states::LlmStreamingInterrupted;
 use crate::waiting_for_tools::WaitingForToolResponses;
-use provider::{LlmModel, LlmRequest, ToolDefinition};
+use provider::LlmModel;
+use provider::LlmRequest;
+use provider::ToolDefinition;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::Context;
+use std::task::Poll;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 /// Future which when awaited, streams the LLM response.
-/// Once done, returns a StreamResult which gives the result state after streaming.
+/// Once done, returns a StreamResult which gives the result state after
+/// streaming.
 pub struct LlmStreaming {
     cancellation: CancellationToken,
     inner: Pin<Box<dyn Future<Output = StreamResult> + Send>>,
@@ -142,14 +147,14 @@ pub(crate) async fn run_stream(
             model,
             tools,
             messages: messages_so_far,
-            state: WaitingForUserMessage {}
+            state: WaitingForUserMessage {},
         })
     } else {
         StreamResult::WaitingForToolResponses(TypedAgent {
             model,
             tools,
             messages: messages_so_far,
-            state: WaitingForToolResponses {}
+            state: WaitingForToolResponses {},
         })
     }
 }

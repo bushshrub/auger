@@ -1,7 +1,10 @@
+use agent_tools::JsonSchema;
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolDetails;
+use agent_tools::ToolError;
 use async_trait::async_trait;
 use serde_json::json;
-
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 const INLINE_LINE_LIMIT: usize = 500;
 
@@ -12,7 +15,11 @@ impl Tool for ReadFile {
     fn details(&self) -> ToolDetails {
         ToolDetails {
             name: "read_file".to_string(),
-            description: "Read a file from the local filesystem. Returns file contents with line numbers. Use offset and limit to read a specific range of lines. If the output exceeds 500 lines and no limit is set, the result is written to a temp file instead.".to_string(),
+            description: "Read a file from the local filesystem. Returns file contents with line \
+                          numbers. Use offset and limit to read a specific range of lines. If the \
+                          output exceeds 500 lines and no limit is set, the result is written to \
+                          a temp file instead."
+                .to_string(),
         }
     }
 
@@ -75,7 +82,8 @@ impl Tool for ReadFile {
             let tmp_path = format!("/tmp/auger_read_{}.txt", sanitize_filename(path));
             tokio::fs::write(&tmp_path, &out).await?;
             return Ok(ToolCallResult::success(format!(
-                "File has {total} lines (exceeds inline limit of {INLINE_LINE_LIMIT}). Full contents written to: {tmp_path}"
+                "File has {total} lines (exceeds inline limit of {INLINE_LINE_LIMIT}). Full \
+                 contents written to: {tmp_path}"
             )));
         }
 

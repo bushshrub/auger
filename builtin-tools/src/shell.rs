@@ -1,8 +1,12 @@
+use crate::grep::Grep;
+use crate::shell_policy::parse_simple_command;
+use agent_tools::JsonSchema;
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolDetails;
+use agent_tools::ToolError;
 use async_trait::async_trait;
 use serde_json::json;
-
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
-use crate::{grep::Grep, shell_policy::parse_simple_command};
 
 pub struct Shell;
 
@@ -13,8 +17,9 @@ impl Tool for Shell {
     fn details(&self) -> ToolDetails {
         ToolDetails {
             name: "shell".to_string(),
-            description: "Run a shell command and return its stdout, stderr, and exit code. \
-                Use for builds, tests, git, find, etc. Avoid interactive commands.".to_string(),
+            description: "Run a shell command and return its stdout, stderr, and exit code. Use \
+                          for builds, tests, git, find, etc. Avoid interactive commands."
+                .to_string(),
         }
     }
 
@@ -38,8 +43,8 @@ impl Tool for Shell {
             .to_owned();
 
         let output = tokio::task::spawn_blocking(move || {
-            if let Some(result) = parse_simple_command(&command)
-                .and_then(|words| Grep::run_shell_command(&words))
+            if let Some(result) =
+                parse_simple_command(&command).and_then(|words| Grep::run_shell_command(&words))
             {
                 return result.map(|stdout| (stdout, String::new(), 0));
             }
@@ -48,8 +53,7 @@ impl Tool for Shell {
                 .arg("-c")
                 .arg(&command)
                 .output()
-                .map_err(|error| ToolError::Execution(error.to_string()))
-                ?;
+                .map_err(|error| ToolError::Execution(error.to_string()))?;
             Ok((
                 String::from_utf8_lossy(&output.stdout).into_owned(),
                 String::from_utf8_lossy(&output.stderr).into_owned(),

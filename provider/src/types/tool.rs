@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
@@ -14,7 +15,8 @@ pub struct ToolDefinition {
 pub struct ToolCallRequest {
     /// The unique ID of this tool call, used for approval and result reporting
     pub id: String,
-    /// The name of the tool to call, which should match one of the tools provided in the request
+    /// The name of the tool to call, which should match one of the tools
+    /// provided in the request
     pub name: String,
     /// The arguments to call the tool with. Generally this is a JSON string.
     pub arguments: String,

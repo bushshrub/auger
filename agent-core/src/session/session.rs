@@ -1,26 +1,55 @@
-use mpsc::Receiver;
-use std::env::current_dir;
 use crate::SystemPrompt;
-use crate::events::{LoopMessage, SessionCommand, SessionEvent};
-use crate::tools::auto_approval::AutoApprovalPolicies;
-use crate::tools::tool_decisions::{ToolAuthorization, UserToolDecisions};
-use crate::tools::tool_execution::{ToolCallResult, ToolData, ToolExecution, ToolExecutionCompleted, ToolOutcome};
-use crate::tools::tool_registry::ToolRegistry;
-use agent_tools::Tool;
-use auger_driver::{restore, RestoreState, RestoredAgent, StreamResult, TypedAgent, WaitingForUserMessage};
-use provider::{LlmError, LlmModel, Message, ToolDefinition, UserPrompt};
-use std::fmt;
-use std::sync::{mpsc, Arc};
-use std::sync::mpsc::Sender;
-use chrono::{DateTime, Utc};
-use either::Either;
-use getset::CopyGetters;
-use serde::{Deserialize, Serialize};
-use tokio::runtime::Handle;
-use tracing::{debug, error, info, warn};
-use crate::session::history::{AssistantTurnOutcome, AuthorizationSource, EventId, InputContent, ModelInfo, RecordableEvent, RecordableTurn, SessionRecord};
+use crate::events::LoopMessage;
+use crate::events::SessionCommand;
+use crate::events::SessionEvent;
+use crate::session::history::AssistantTurnOutcome;
+use crate::session::history::AuthorizationSource;
+use crate::session::history::EventId;
+use crate::session::history::InputContent;
+use crate::session::history::ModelInfo;
+use crate::session::history::RecordableEvent;
+use crate::session::history::RecordableTurn;
+use crate::session::history::SessionRecord;
 use crate::session::recorder::SessionRecorder;
 use crate::session::states::HarnessState;
+use crate::tools::auto_approval::AutoApprovalPolicies;
+use crate::tools::tool_decisions::ToolAuthorization;
+use crate::tools::tool_decisions::UserToolDecisions;
+use crate::tools::tool_execution::ToolCallResult;
+use crate::tools::tool_execution::ToolData;
+use crate::tools::tool_execution::ToolExecution;
+use crate::tools::tool_execution::ToolExecutionCompleted;
+use crate::tools::tool_execution::ToolOutcome;
+use crate::tools::tool_registry::ToolRegistry;
+use agent_tools::Tool;
+use auger_driver::RestoreState;
+use auger_driver::RestoredAgent;
+use auger_driver::StreamResult;
+use auger_driver::TypedAgent;
+use auger_driver::WaitingForUserMessage;
+use auger_driver::restore;
+use chrono::DateTime;
+use chrono::Utc;
+use either::Either;
+use getset::CopyGetters;
+use mpsc::Receiver;
+use provider::LlmError;
+use provider::LlmModel;
+use provider::Message;
+use provider::ToolDefinition;
+use provider::UserPrompt;
+use serde::Deserialize;
+use serde::Serialize;
+use std::env::current_dir;
+use std::fmt;
+use std::sync::Arc;
+use std::sync::mpsc;
+use std::sync::mpsc::Sender;
+use tokio::runtime::Handle;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SessionId(uuid::Uuid);
@@ -63,7 +92,7 @@ pub struct SessionHandle {
     // TODO: This REALLY does not belong here.
     // But SessionRecord is owned by Session...
     #[get_copy = "pub"]
-    created_at: DateTime<Utc>
+    created_at: DateTime<Utc>,
 }
 
 impl SessionHandle {
@@ -81,10 +110,7 @@ impl SessionHandle {
             .send(LoopMessage::Cmd(cmd))
             .map_err(|_| ())
     }
-
 }
-
-
 
 pub struct Session {
     id: SessionId,
@@ -99,8 +125,12 @@ pub struct Session {
 }
 
 impl Session {
-
-    fn create_initial_agent(system_prompt: SystemPrompt, record: &SessionRecord, model: LlmModel, tools: Vec<ToolDefinition>) -> RestoredAgent {
+    fn create_initial_agent(
+        system_prompt: SystemPrompt,
+        record: &SessionRecord,
+        model: LlmModel,
+        tools: Vec<ToolDefinition>,
+    ) -> RestoredAgent {
         let last_turn = record.get_previous_turn();
         let restore_state = match last_turn {
             Some(turn) => {
@@ -115,12 +145,15 @@ impl Session {
                                 messages.insert(0, system_prompt.into());
                                 RestoreState::from_messages(messages)
                             }
-                            AssistantTurnOutcome::Interrupted { partial_response: _ } => {
+                            AssistantTurnOutcome::Interrupted {
+                                partial_response: _,
+                            } => {
                                 let mut messages = record.as_messages();
                                 messages.insert(0, system_prompt.into());
                                 RestoreState::Interrupted {
                                     messages,
-                                    events: Vec::new() // TODO: insert actual interrupted partial message
+                                    events: Vec::new(), /* TODO: insert actual interrupted
+                                                         * partial message */
                                 }
                             }
                             AssistantTurnOutcome::Failed => {
@@ -129,22 +162,21 @@ impl Session {
                                 RestoreState::Failed {
                                     messages,
                                     events: Vec::new(),
-                                    error: LlmError { message: "fake error".to_string() } // TODO: real error
+                                    error: LlmError {
+                                        message: "fake error".to_string(),
+                                    }, // TODO: real error
                                 }
                             }
                         }
                     }
                 }
             }
-            None => {
-                RestoreState::WaitingForUserMessage {
-                    messages: vec![system_prompt.into()],
-                }
-            }
+            None => RestoreState::WaitingForUserMessage {
+                messages: vec![system_prompt.into()],
+            },
         };
         restore(model, tools, restore_state)
     }
-
 
     pub(super) fn spawn(
         rt: Handle,
@@ -172,11 +204,12 @@ impl Session {
             event_tx,
             tool_registry,
             auto_approval_policies: Arc::new(auto_approval_policies),
-            recorder: record
+            recorder: record,
         };
         let handle = SessionHandle::new(session.id, cmd_tx.clone(), creation_time);
 
-        let initial_agent = Self::create_initial_agent(system_prompt, &session.recorder.record(), model, llm_tools);
+        let initial_agent =
+            Self::create_initial_agent(system_prompt, &session.recorder.record(), model, llm_tools);
 
         std::thread::Builder::new()
             .name(format!("auger-session-{}", session.id.0))
@@ -192,7 +225,9 @@ impl Session {
         if let HarnessState::HasToolCalls { _agent: agent } = curr_state {
             let tool_calls = agent.get_requested_tools();
             let undecided = tool_calls.iter().map(|call| call.id.clone()).collect();
-            let _ = self.event_tx.send(SessionEvent::ToolConsentRequired { tool_calls });
+            let _ = self
+                .event_tx
+                .send(SessionEvent::ToolConsentRequired { tool_calls });
             curr_state = HarnessState::NeedToolConsent {
                 agent,
                 user_tool_decisions: UserToolDecisions::new_undecided(undecided),
@@ -200,114 +235,143 @@ impl Session {
         }
         'session_loop: while let Ok(msg) = self.cmd_rx.recv() {
             match msg {
-                LoopMessage::Cmd(cmd) => {
-                    match cmd {
-                        SessionCommand::Stop { reply_tx } => {
-                            let _ = reply_tx.send(());
-                            break 'session_loop;
-                        }
-                        SessionCommand::Snapshot { reply_tx } => {
-                            let _ = reply_tx.send(self.recorder.record().clone());
-                        }
-                        SessionCommand::SendMessage(prompt) => {
-                            info!(session_id = %self.id, "Received user message {:?}", prompt);
-                            let new_agent = match curr_state {
-                                HarnessState::WaitingForUserMessage { agent } => {
-                                    agent.add_message(prompt.clone())
-                                }
-                                HarnessState::StreamingInterrupted { agent } => {
-                                    agent.add_message_to_continue(prompt.clone(), true)
-                                }
-                                HarnessState::StreamingFailed { agent } => {
-                                    agent.add_message_to_continue(prompt.clone())
-                                }
-                                HarnessState::InterruptingStream { pending_message: None } => {
-                                    curr_state = HarnessState::InterruptingStream {
-                                        pending_message: Some(prompt),
-                                    };
-                                    return;
-                                }
-                                other => {
-                                    warn!(session_id = %self.id, command = "send_message", "Ignoring command in invalid harness state");
-                                    curr_state = other;
-                                    return;
-                                }
-                            };
+                LoopMessage::Cmd(cmd) => match cmd {
+                    SessionCommand::Stop { reply_tx } => {
+                        let _ = reply_tx.send(());
+                        break 'session_loop;
+                    }
+                    SessionCommand::Snapshot { reply_tx } => {
+                        let _ = reply_tx.send(self.recorder.record().clone());
+                    }
+                    SessionCommand::SendMessage(prompt) => {
+                        info!(session_id = %self.id, "Received user message {:?}", prompt);
+                        let new_agent = match curr_state {
+                            HarnessState::WaitingForUserMessage { agent } => {
+                                agent.add_message(prompt.clone())
+                            }
+                            HarnessState::StreamingInterrupted { agent } => {
+                                agent.add_message_to_continue(prompt.clone(), true)
+                            }
+                            HarnessState::StreamingFailed { agent } => {
+                                agent.add_message_to_continue(prompt.clone())
+                            }
+                            HarnessState::InterruptingStream {
+                                pending_message: None,
+                            } => {
+                                curr_state = HarnessState::InterruptingStream {
+                                    pending_message: Some(prompt),
+                                };
+                                return;
+                            }
+                            other => {
+                                warn!(session_id = %self.id, command = "send_message", "Ignoring command in invalid harness state");
+                                curr_state = other;
+                                return;
+                            }
+                        };
 
-                            let event_tx = self.event_tx.clone();
-                            let inbox_tx = self.harness_internal_event_tx.clone();
-                            let stream_fut = new_agent.create_stream(move |event| {
-                                let _ = event_tx.send(SessionEvent::StreamEvent(event));
-                            });
-                            let cancel = stream_fut.interrupt_handle();
-                            let sess_id = self.id;
+                        let event_tx = self.event_tx.clone();
+                        let inbox_tx = self.harness_internal_event_tx.clone();
+                        let stream_fut = new_agent.create_stream(move |event| {
+                            let _ = event_tx.send(SessionEvent::StreamEvent(event));
+                        });
+                        let cancel = stream_fut.interrupt_handle();
+                        let sess_id = self.id;
 
-                            self.recorder.record_turn(RecordableTurn::user_prompt(prompt.into())).expect("previous turn to have been assistant/session start");
-                            rt.spawn(async move {
-                                info!(session_id=%sess_id, "Starting stream");
-                                let res = stream_fut.await;
-                                inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
-                            });
-                            curr_state = HarnessState::Streaming { cancel };
-                        }
-                        SessionCommand::Interrupt => {
-                            curr_state = match curr_state {
-                                HarnessState::Streaming { cancel } => {
-                                    cancel.cancel();
-                                    HarnessState::InterruptingStream { pending_message: None }
-                                }
-                                HarnessState::ToolCallsAreRunning { agent, cancel } => {
-                                    cancel.cancel();
-                                    HarnessState::InterruptingToolExecution { agent }
-                                }
-                                _ => {
-                                    warn!(session_id = %self.id, command = "interrupt", "Ignoring command in invalid harness state");
-                                    curr_state
+                        self.recorder
+                            .record_turn(RecordableTurn::user_prompt(prompt.into()))
+                            .expect("previous turn to have been assistant/session start");
+                        rt.spawn(async move {
+                            info!(session_id=%sess_id, "Starting stream");
+                            let res = stream_fut.await;
+                            inbox_tx
+                                .send(LoopMessage::StreamResult(res))
+                                .expect("inbox_rx was dropped");
+                        });
+                        curr_state = HarnessState::Streaming { cancel };
+                    }
+                    SessionCommand::Interrupt => {
+                        curr_state = match curr_state {
+                            HarnessState::Streaming { cancel } => {
+                                cancel.cancel();
+                                HarnessState::InterruptingStream {
+                                    pending_message: None,
                                 }
                             }
-                        }
-                        SessionCommand::ToolDecision { id, approved, message } => {
-                            curr_state = match curr_state {
-                                HarnessState::NeedToolConsent { agent, user_tool_decisions } => {
-                                    let valid_decision = user_tool_decisions.is_undecided(&id);
-                                    if valid_decision {
-                                        let prev_turn_id = self.recorder.previous_turn_id().expect("there to be a previous turn");
-                                        self.recorder.record_tool_decision(prev_turn_id, id.clone().into(), approved, AuthorizationSource::User, message.clone())
-                                            .expect("previous turn to be assistant");
-                                    }
-                                    match user_tool_decisions.record_decision(id, approved, message) {
-                                        Either::Left(not_all_decided) => {
-                                            HarnessState::NeedToolConsent {
-                                                agent,
-                                                user_tool_decisions: not_all_decided
-                                            }
-                                        }
-                                        Either::Right(all_decided) => {
-                                            let batch = agent.get_batch();
-                                            let execution = ToolExecution::new(
-                                                batch.requested().cloned().collect(),
-                                                ToolAuthorization::PerTool(all_decided),
-                                                self.tool_registry.clone(),
-                                                self.event_tx.clone(),
-                                            ).run();
-                                            let cancel = execution.interrupt_handle();
-                                            let inbox_tx = self.harness_internal_event_tx.clone();
-                                            rt.spawn(async move {
-                                                let results = execution.await;
-                                                let _ = inbox_tx.send(LoopMessage::ToolBatchExecutionResult { batch , results });
-                                            });
-                                            HarnessState::ToolCallsAreRunning { agent, cancel }
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    warn!(session_id = %self.id, command = "tool_decision", "Ignoring command in invalid harness state");
-                                    curr_state
-                                }
+                            HarnessState::ToolCallsAreRunning { agent, cancel } => {
+                                cancel.cancel();
+                                HarnessState::InterruptingToolExecution { agent }
+                            }
+                            _ => {
+                                warn!(session_id = %self.id, command = "interrupt", "Ignoring command in invalid harness state");
+                                curr_state
                             }
                         }
                     }
-                }
+                    SessionCommand::ToolDecision {
+                        id,
+                        approved,
+                        message,
+                    } => {
+                        curr_state = match curr_state {
+                            HarnessState::NeedToolConsent {
+                                agent,
+                                user_tool_decisions,
+                            } => {
+                                let valid_decision = user_tool_decisions.is_undecided(&id);
+                                if valid_decision {
+                                    let prev_turn_id = self
+                                        .recorder
+                                        .previous_turn_id()
+                                        .expect("there to be a previous turn");
+                                    self.recorder
+                                        .record_tool_decision(
+                                            prev_turn_id,
+                                            id.clone().into(),
+                                            approved,
+                                            AuthorizationSource::User,
+                                            message.clone(),
+                                        )
+                                        .expect("previous turn to be assistant");
+                                }
+                                match user_tool_decisions.record_decision(id, approved, message) {
+                                    Either::Left(not_all_decided) => {
+                                        HarnessState::NeedToolConsent {
+                                            agent,
+                                            user_tool_decisions: not_all_decided,
+                                        }
+                                    }
+                                    Either::Right(all_decided) => {
+                                        let batch = agent.get_batch();
+                                        let execution = ToolExecution::new(
+                                            batch.requested().cloned().collect(),
+                                            ToolAuthorization::PerTool(all_decided),
+                                            self.tool_registry.clone(),
+                                            self.event_tx.clone(),
+                                        )
+                                        .run();
+                                        let cancel = execution.interrupt_handle();
+                                        let inbox_tx = self.harness_internal_event_tx.clone();
+                                        rt.spawn(async move {
+                                            let results = execution.await;
+                                            let _ = inbox_tx.send(
+                                                LoopMessage::ToolBatchExecutionResult {
+                                                    batch,
+                                                    results,
+                                                },
+                                            );
+                                        });
+                                        HarnessState::ToolCallsAreRunning { agent, cancel }
+                                    }
+                                }
+                            }
+                            _ => {
+                                warn!(session_id = %self.id, command = "tool_decision", "Ignoring command in invalid harness state");
+                                curr_state
+                            }
+                        }
+                    }
+                },
                 LoopMessage::StreamResult(res) => {
                     curr_state = match curr_state {
                         HarnessState::Streaming { cancel } => {
@@ -315,7 +379,10 @@ impl Session {
                             match res {
                                 StreamResult::Interrupted(_) => {
                                     // invalid state - unrecoverable.
-                                    panic!("stream returned interrupted while harness was still streaming")
+                                    panic!(
+                                        "stream returned interrupted while harness was still \
+                                         streaming"
+                                    )
                                 }
                                 StreamResult::Failed(agent) => {
                                     warn!(
@@ -323,9 +390,11 @@ impl Session {
                                         error = %agent.error(),
                                         "LLM stream failed; waiting for a new user message"
                                     );
-                                    self.recorder.record_turn(RecordableTurn::AssistantMessage {
-                                        outcome: AssistantTurnOutcome::Failed,
-                                    }).expect("previous turn was user");
+                                    self.recorder
+                                        .record_turn(RecordableTurn::AssistantMessage {
+                                            outcome: AssistantTurnOutcome::Failed,
+                                        })
+                                        .expect("previous turn was user");
                                     let _ = self.event_tx.send(SessionEvent::StreamError {
                                         error: agent.error().to_string(),
                                     });
@@ -334,20 +403,28 @@ impl Session {
                                 StreamResult::WaitingForToolResponses(agent) => {
                                     debug!(session_id = %self.id, "agent has called tools");
 
-                                    let turn_id = self.recorder.
-                                        record_turn(
-                                            RecordableTurn::AssistantMessage {
-                                                outcome: AssistantTurnOutcome::Completed { response: agent.previous_message().clone() }
-                                            }
-                                        )
+                                    let turn_id = self
+                                        .recorder
+                                        .record_turn(RecordableTurn::AssistantMessage {
+                                            outcome: AssistantTurnOutcome::Completed {
+                                                response: agent.previous_message().clone(),
+                                            },
+                                        })
                                         .expect("last turn to be user");
 
                                     let call_requests = agent.get_requested_tools();
-                                    if self.auto_approval_policies.will_approve_all(&call_requests) {
+                                    if self.auto_approval_policies.will_approve_all(&call_requests)
+                                    {
                                         info!(session_id=%self.id, "automatically running all tools");
                                         for call in &call_requests {
-                                            self.recorder.
-                                                record_tool_decision(turn_id, call.id.clone().into(), true, AuthorizationSource::Policy, None)
+                                            self.recorder
+                                                .record_tool_decision(
+                                                    turn_id,
+                                                    call.id.clone().into(),
+                                                    true,
+                                                    AuthorizationSource::Policy,
+                                                    None,
+                                                )
                                                 .expect("turn to be assistant");
                                         }
                                         let batch = agent.get_batch();
@@ -356,85 +433,113 @@ impl Session {
                                             ToolAuthorization::AllAutoApproved,
                                             self.tool_registry.clone(),
                                             self.event_tx.clone(),
-                                        ).run();
+                                        )
+                                        .run();
                                         let cancel = execution.interrupt_handle();
                                         let inbox_tx = self.harness_internal_event_tx.clone();
                                         rt.spawn(async move {
                                             let results = execution.await;
-                                            let _ = inbox_tx.send(LoopMessage::ToolBatchExecutionResult { batch, results });
+                                            let _ = inbox_tx.send(
+                                                LoopMessage::ToolBatchExecutionResult {
+                                                    batch,
+                                                    results,
+                                                },
+                                            );
                                         });
                                         HarnessState::ToolCallsAreRunning { agent, cancel }
                                     } else {
                                         info!(session_id=%self.id, "Some tools require consent");
                                         for call in &call_requests {
                                             if self.auto_approval_policies.is_approved(call) {
-                                                self.recorder.
-                                                    record_tool_decision(turn_id, call.id.clone().into(), true, AuthorizationSource::Policy, None)
+                                                self.recorder
+                                                    .record_tool_decision(
+                                                        turn_id,
+                                                        call.id.clone().into(),
+                                                        true,
+                                                        AuthorizationSource::Policy,
+                                                        None,
+                                                    )
                                                     .expect("turn to be assistant");
                                             }
                                         }
-                                        let unapproved = self.auto_approval_policies.ids_needing_consent(&call_requests);
+                                        let unapproved = self
+                                            .auto_approval_policies
+                                            .ids_needing_consent(&call_requests);
                                         let tool_calls = agent
                                             .get_requested_tools()
                                             .into_iter()
                                             .filter(|call| unapproved.contains(&call.id))
                                             .collect();
-                                        let _ = self.event_tx.send(SessionEvent::ToolConsentRequired {
-                                            tool_calls,
-                                        });
-                                        HarnessState::NeedToolConsent { agent, user_tool_decisions: UserToolDecisions::new_undecided(unapproved) }
+                                        let _ = self
+                                            .event_tx
+                                            .send(SessionEvent::ToolConsentRequired { tool_calls });
+                                        HarnessState::NeedToolConsent {
+                                            agent,
+                                            user_tool_decisions: UserToolDecisions::new_undecided(
+                                                unapproved,
+                                            ),
+                                        }
                                     }
                                 }
                                 StreamResult::WaitingForUserMessage(agent) => {
                                     info!(session_id=%self.id, "No tools called");
-                                    self.recorder.
-                                        record_turn(
-                                            RecordableTurn::AssistantMessage { outcome: AssistantTurnOutcome::Completed {
-                                                response: agent.previous_message().expect("a previous message to exist").clone().into(),
-                                            } }
-                                        )
+                                    self.recorder
+                                        .record_turn(RecordableTurn::AssistantMessage {
+                                            outcome: AssistantTurnOutcome::Completed {
+                                                response: agent
+                                                    .previous_message()
+                                                    .expect("a previous message to exist")
+                                                    .clone()
+                                                    .into(),
+                                            },
+                                        })
                                         .expect("last turn to be user");
                                     HarnessState::WaitingForUserMessage { agent }
                                 }
                             }
                         }
                         HarnessState::InterruptingStream { pending_message } => match res {
-                            StreamResult::Interrupted(agent) => {
-                                match pending_message {
-                                    Some(prompt) => {
-                                        let event_tx = self.event_tx.clone();
-                                        let new_agent = agent
-                                            .add_message_to_continue(prompt.clone(), true);
-                                        let inbox_tx = self.harness_internal_event_tx.clone();
-                                        let stream_fut = new_agent.create_stream(move |event| {
-                                            let _ = event_tx.send(SessionEvent::StreamEvent(event));
-                                        });
-                                        let cancel = stream_fut.interrupt_handle();
-                                        self.recorder.record_turn(RecordableTurn::user_prompt(prompt.into())).expect("last turn was assistant");
-                                        rt.spawn(async move {
-                                            let res = stream_fut.await;
-                                            inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
-                                        });
-                                        HarnessState::Streaming { cancel }
-                                    }
-                                    None => {
-                                        let _ = self.event_tx.send(SessionEvent::Interrupted);
-                                        HarnessState::StreamingInterrupted { agent }
-                                    }
+                            StreamResult::Interrupted(agent) => match pending_message {
+                                Some(prompt) => {
+                                    let event_tx = self.event_tx.clone();
+                                    let new_agent =
+                                        agent.add_message_to_continue(prompt.clone(), true);
+                                    let inbox_tx = self.harness_internal_event_tx.clone();
+                                    let stream_fut = new_agent.create_stream(move |event| {
+                                        let _ = event_tx.send(SessionEvent::StreamEvent(event));
+                                    });
+                                    let cancel = stream_fut.interrupt_handle();
+                                    self.recorder
+                                        .record_turn(RecordableTurn::user_prompt(prompt.into()))
+                                        .expect("last turn was assistant");
+                                    rt.spawn(async move {
+                                        let res = stream_fut.await;
+                                        inbox_tx
+                                            .send(LoopMessage::StreamResult(res))
+                                            .expect("inbox_rx was dropped");
+                                    });
+                                    HarnessState::Streaming { cancel }
                                 }
-                            }
+                                None => {
+                                    let _ = self.event_tx.send(SessionEvent::Interrupted);
+                                    HarnessState::StreamingInterrupted { agent }
+                                }
+                            },
                             // TODO: we must handle these
                             StreamResult::Failed(_) => {
                                 panic!("stream failed while harness was interrupting the stream")
                             }
                             StreamResult::WaitingForToolResponses(_) => {
-                                panic!("stream requested tools while harness was interrupting the stream")
+                                panic!(
+                                    "stream requested tools while harness was interrupting the \
+                                     stream"
+                                )
                             }
                             StreamResult::WaitingForUserMessage(_) => {
                                 panic!("stream completed while harness was interrupting the stream")
                             }
                         },
-                        _ => curr_state
+                        _ => curr_state,
                     };
                 }
                 LoopMessage::ToolBatchExecutionResult { mut batch, results } => {
@@ -444,31 +549,38 @@ impl Session {
                             drop(cancel);
                             agent
                         }
-                        HarnessState::InterruptingToolExecution { agent } => {
-                            agent
-                        }
+                        HarnessState::InterruptingToolExecution { agent } => agent,
                         other => {
                             curr_state = other;
                             return;
                         }
                     };
 
-                    let prev_turn_id = self.recorder.previous_turn_id().expect("there to be a previous turn");
-                    // TODO: That enum is useless if we are just going to mark everything as interrupted?
+                    let prev_turn_id = self
+                        .recorder
+                        .previous_turn_id()
+                        .expect("there to be a previous turn");
+                    // TODO: That enum is useless if we are just going to mark everything as
+                    // interrupted?
                     let tool_results = match results {
                         ToolExecutionCompleted::Completed(results) => results,
-                        ToolExecutionCompleted::Interrupted(interrupted_results) => interrupted_results
+                        ToolExecutionCompleted::Interrupted(interrupted_results) => {
+                            interrupted_results
+                        }
                     };
                     let mut tool_result_content = Vec::new();
                     for result in tool_results {
-                        self.recorder.record_tool_result(prev_turn_id, result.clone())
+                        self.recorder
+                            .record_tool_result(prev_turn_id, result.clone())
                             .expect("previous turn to be assistant");
                         tool_result_content.push(result.clone().into());
                         batch.add_result(result.tool_call_id(), result.into());
                     }
                     let resolved_batch = batch.into_resolved().expect_right("there is a bug");
                     self.recorder
-                        .record_turn(RecordableTurn::InputMessage { content: tool_result_content })
+                        .record_turn(RecordableTurn::InputMessage {
+                            content: tool_result_content,
+                        })
                         .expect("previous turn to be assistant");
                     // TODO: allow steering message to ride along
                     let new_agent = agent.add_all_tool_responses(None, resolved_batch);
@@ -481,17 +593,16 @@ impl Session {
 
                     rt.spawn(async move {
                         let res = stream_fut.await;
-                        inbox_tx.send(LoopMessage::StreamResult(res)).expect("inbox_rx was dropped");
+                        inbox_tx
+                            .send(LoopMessage::StreamResult(res))
+                            .expect("inbox_rx was dropped");
                     });
                     curr_state = HarnessState::Streaming { cancel };
                 }
             }
         }
 
-
         info!(session_id = %self.id, "Session exited");
         let _ = self.event_tx.send(SessionEvent::Closed);
     }
-
-
 }

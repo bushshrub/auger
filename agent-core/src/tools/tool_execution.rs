@@ -6,11 +6,14 @@ use auger_driver::ToolCallId;
 use futures::future::join_all;
 use getset::CloneGetters;
 use provider::ToolCallRequest;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{mpsc, Arc};
-use std::task::{Context, Poll};
+use std::sync::Arc;
+use std::sync::mpsc;
+use std::task::Context;
+use std::task::Poll;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct ToolExecution {
@@ -72,23 +75,21 @@ impl ToolExecution {
         let execution = async {
             join_all(calls.iter().map(|call| async {
                 let outcome = match authorization.denial_reason(&call.id) {
-                    Some(reason) => {
-                        ToolOutcome::Denied {
-                            reason: Some(reason)
-                        }
-                    }
+                    Some(reason) => ToolOutcome::Denied {
+                        reason: Some(reason),
+                    },
                     // TODO: Why on earth does None mean not denied??
                     None => match registry.invoke(call.clone()).await {
                         Ok(result) => {
                             let result = result.to_string();
                             ToolOutcome::Success {
-                                content: vec![ToolData::Text { text: result }]
+                                content: vec![ToolData::Text { text: result }],
                             }
                         }
                         Err(error) => {
                             let error = error.to_string();
                             ToolOutcome::Error {
-                                error: vec![ToolData::Text { text: error }]
+                                error: vec![ToolData::Text { text: error }],
                             }
                         }
                     },
@@ -127,7 +128,6 @@ impl Future for ToolExecutionFuture {
     }
 }
 
-
 #[derive(Serialize, Deserialize, Debug, Clone, CloneGetters)]
 pub struct ToolCallResult {
     #[getset(get_clone = "pub")]
@@ -139,21 +139,32 @@ impl From<ToolCallResult> for provider::ToolResult {
     fn from(result: ToolCallResult) -> Self {
         let content = match result.outcome {
             ToolOutcome::Success { content } => content,
-            ToolOutcome::Error { error } =>  error,
-            ToolOutcome::Denied { reason } => {
-                match reason {
-                    Some(r) => vec![ToolData::Text { text: format!("Tool call was denied: {}", r) }],
-                    None => vec![ToolData::Text { text: "Tool call was denied. Do not attempt to make the same tool call.".into() }]
-                }
-            }
+            ToolOutcome::Error { error } => error,
+            ToolOutcome::Denied { reason } => match reason {
+                Some(r) => vec![ToolData::Text {
+                    text: format!("Tool call was denied: {}", r),
+                }],
+                None => vec![ToolData::Text {
+                    text: "Tool call was denied. Do not attempt to make the same tool call.".into(),
+                }],
+            },
             ToolOutcome::Interrupted => {
-                vec![ToolData::Text { text: "Tool call was interrupted. Do not attempt to make the same tool call.".into() }]
+                vec![ToolData::Text {
+                    text: "Tool call was interrupted. Do not attempt to make the same tool call."
+                        .into(),
+                }]
             }
         };
         provider::ToolResult {
             tool_call_id: result.tool_call_id.into(),
             // TODO: The provider should be updated to take a vec
-            content: content.iter().map(|d| match d { ToolData::Text { text } => text.as_str() }).collect::<Vec<_>>().join(" "),
+            content: content
+                .iter()
+                .map(|d| match d {
+                    ToolData::Text { text } => text.as_str(),
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
         }
     }
 }
@@ -162,40 +173,40 @@ impl From<ToolCallResult> for InputContent {
     fn from(result: ToolCallResult) -> Self {
         let content = match result.outcome {
             ToolOutcome::Success { content } => content,
-            ToolOutcome::Error { error } =>  error,
-            ToolOutcome::Denied { reason } => {
-                match reason {
-                    Some(r) => vec![ToolData::Text { text: format!("Tool call was denied: {}", r) }],
-                    None => vec![ToolData::Text { text: "Tool call was denied. Do not attempt to make the same tool call.".into() }]
-                }
-            }
+            ToolOutcome::Error { error } => error,
+            ToolOutcome::Denied { reason } => match reason {
+                Some(r) => vec![ToolData::Text {
+                    text: format!("Tool call was denied: {}", r),
+                }],
+                None => vec![ToolData::Text {
+                    text: "Tool call was denied. Do not attempt to make the same tool call.".into(),
+                }],
+            },
             ToolOutcome::Interrupted => {
-                vec![ToolData::Text { text: "Tool call was interrupted. Do not attempt to make the same tool call.".into() }]
+                vec![ToolData::Text {
+                    text: "Tool call was interrupted. Do not attempt to make the same tool call."
+                        .into(),
+                }]
             }
         };
-        InputContent::ToolResult { tool_call_id: result.tool_call_id, content }
+        InputContent::ToolResult {
+            tool_call_id: result.tool_call_id,
+            content,
+        }
     }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolOutcome {
-    Success {
-        content: Vec<ToolData>
-    },
-    Error {
-        error: Vec<ToolData>
-    },
-    Denied {
-        reason: Option<String>
-    },
-    Interrupted
+    Success { content: Vec<ToolData> },
+    Error { error: Vec<ToolData> },
+    Denied { reason: Option<String> },
+    Interrupted,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolData {
-    Text {
-        text: String,
-    },
+    Text { text: String },
 }

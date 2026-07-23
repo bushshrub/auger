@@ -1,14 +1,20 @@
+use agent_tools::JsonSchema;
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolDetails;
+use agent_tools::ToolError;
 use async_trait::async_trait;
-use scraper::{ElementRef, Html, Selector};
+use scraper::ElementRef;
+use scraper::Html;
+use scraper::Selector;
 use serde_json::json;
-
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 pub struct WebFetchText {
     client: reqwest::Client,
 }
 
-// ~8000 chars ≈ 2000 tokens (English words ~1.3 tokens/word, ~5 chars/word → 3.85 chars/token)
+// ~8000 chars ≈ 2000 tokens (English words ~1.3 tokens/word, ~5 chars/word →
+// 3.85 chars/token)
 const MAX_INLINE: usize = 8_000;
 
 impl WebFetchText {
@@ -119,9 +125,11 @@ impl Tool for WebFetchText {
         ToolDetails {
             name: "web_fetch_text".to_string(),
             description: "Fetch a URL and return only the visible text content, stripping all \
-                HTML tags, scripts, and styles. Prefer this over web_fetch when you want readable \
-                prose rather than raw markup. If the extracted text exceeds the inline limit the \
-                full content is saved to a temporary file and the path is returned.".to_string(),
+                          HTML tags, scripts, and styles. Prefer this over web_fetch when you \
+                          want readable prose rather than raw markup. If the extracted text \
+                          exceeds the inline limit the full content is saved to a temporary file \
+                          and the path is returned."
+                .to_string(),
         }
     }
 

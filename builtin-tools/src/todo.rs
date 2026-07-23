@@ -1,9 +1,14 @@
+use agent_tools::JsonSchema;
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolDetails;
+use agent_tools::ToolError;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
-use std::sync::{Arc, Mutex};
-
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
+use std::sync::Arc;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -20,7 +25,8 @@ pub struct TodoItem {
     pub status: TodoStatus,
 }
 
-/// A stateful todo list tool. Maintains its item list across calls via shared state.
+/// A stateful todo list tool. Maintains its item list across calls via shared
+/// state.
 #[derive(Clone)]
 pub struct TodoList {
     items: Arc<Mutex<Vec<TodoItem>>>,
@@ -47,10 +53,10 @@ impl Tool for TodoList {
     fn details(&self) -> ToolDetails {
         ToolDetails {
             name: "todo_list".to_string(),
-            description: "Manage a shared todo list to track tasks. \
-                Use 'add' to create items, 'update' to change title/status, \
-                'remove' to delete, and 'list' to view all items. \
-                Status values: pending, in_progress, done.".to_string(),
+            description: "Manage a shared todo list to track tasks. Use 'add' to create items, \
+                          'update' to change title/status, 'remove' to delete, and 'list' to view \
+                          all items. Status values: pending, in_progress, done."
+                .to_string(),
         }
     }
 

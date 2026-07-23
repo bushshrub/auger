@@ -1,5 +1,9 @@
-use crate::{API_VERSION, AnthropicProvider};
-use provider::{LlmError, ModelCatalog, ModelId, ModelInfo};
+use crate::API_VERSION;
+use crate::AnthropicProvider;
+use provider::LlmError;
+use provider::ModelCatalog;
+use provider::ModelId;
+use provider::ModelInfo;
 use serde_json::Value;
 
 impl AnthropicProvider {

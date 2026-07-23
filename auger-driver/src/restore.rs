@@ -1,8 +1,17 @@
 //! Restore support for auger-driver sessions.
 
-use crate::{LlmStreamingFailed, LlmStreamingInterrupted, TypedAgent, WaitingForToolResponses, WaitingForUserMessage};
-use provider::{LlmError, LlmModel, Message, StreamEvent, ToolDefinition};
-use serde::{Deserialize, Serialize};
+use crate::LlmStreamingFailed;
+use crate::LlmStreamingInterrupted;
+use crate::TypedAgent;
+use crate::WaitingForToolResponses;
+use crate::WaitingForUserMessage;
+use provider::LlmError;
+use provider::LlmModel;
+use provider::Message;
+use provider::StreamEvent;
+use provider::ToolDefinition;
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Driver state reconstructed by the persistence owner.
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,11 +56,7 @@ pub enum RestoredAgent {
 }
 
 /// Restore an agent into the state selected by the persistence owner.
-pub fn restore(
-    model: LlmModel,
-    tools: Vec<ToolDefinition>,
-    state: RestoreState,
-) -> RestoredAgent {
+pub fn restore(model: LlmModel, tools: Vec<ToolDefinition>, state: RestoreState) -> RestoredAgent {
     macro_rules! agent {
         ($messages:expr, $state:expr) => {
             TypedAgent {
@@ -73,16 +78,19 @@ pub fn restore(
         RestoreState::Interrupted { messages, events } => {
             RestoredAgent::Interrupted(agent!(messages, LlmStreamingInterrupted::new(events)))
         }
-        RestoreState::Failed { messages, events, error } => {
-            RestoredAgent::Failed(agent!(messages, LlmStreamingFailed::new(events, error)))
-        }
+        RestoreState::Failed {
+            messages,
+            events,
+            error,
+        } => RestoredAgent::Failed(agent!(messages, LlmStreamingFailed::new(events, error))),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use provider::{AssistantResponse, ToolCallRequest};
+    use provider::AssistantResponse;
+    use provider::ToolCallRequest;
 
     #[test]
     fn messages_with_outstanding_tool_calls_wait_for_tool_responses() {
@@ -95,7 +103,7 @@ mod tests {
                     name: "shell".to_string(),
                     arguments: "{}".to_string(),
                 }],
-            }
+            },
         }];
 
         assert!(matches!(
@@ -111,7 +119,7 @@ mod tests {
                 reasoning: None,
                 content: String::new(),
                 tool_calls: vec![],
-            }
+            },
         }];
 
         assert!(matches!(

@@ -1,8 +1,16 @@
-use crate::schema::{OwnedTraceRecord, SessionHeader, TraceRecord, TraceRecordRef};
-use crate::session::history::{EventRecord, SessionData, TurnId, TurnRecord};
+use crate::schema::OwnedTraceRecord;
+use crate::schema::SessionHeader;
+use crate::schema::TraceRecord;
+use crate::schema::TraceRecordRef;
 use crate::session::SessionRecord;
-use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, Write};
+use crate::session::history::EventRecord;
+use crate::session::history::SessionData;
+use crate::session::history::TurnId;
+use crate::session::history::TurnRecord;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::io::BufRead;
+use std::io::Write;
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -20,7 +28,9 @@ pub struct TraceWriter<W> {
 impl<W: Write> TraceWriter<W> {
     pub fn new(writer: W, session: &SessionData) -> Result<Self, TraceWriteError> {
         let mut trace_writer = Self { writer };
-        trace_writer.write_record(&TraceRecordRef::Session(SessionHeader::new(session.clone())))?;
+        trace_writer.write_record(&TraceRecordRef::Session(SessionHeader::new(
+            session.clone(),
+        )))?;
         Ok(trace_writer)
     }
 
@@ -29,11 +39,20 @@ impl<W: Write> TraceWriter<W> {
     }
 
     pub fn write_turn(&mut self, turn: &TurnRecord) -> Result<(), TraceWriteError> {
-        self.write_record(&TraceRecordRef::Turn { record: turn.data() })
+        self.write_record(&TraceRecordRef::Turn {
+            record: turn.data(),
+        })
     }
 
-    pub fn write_event(&mut self, turn_id: TurnId, event: &EventRecord) -> Result<(), TraceWriteError> {
-        self.write_record(&TraceRecordRef::Event { turn_id, record: event })
+    pub fn write_event(
+        &mut self,
+        turn_id: TurnId,
+        event: &EventRecord,
+    ) -> Result<(), TraceWriteError> {
+        self.write_record(&TraceRecordRef::Event {
+            turn_id,
+            record: event,
+        })
     }
 
     pub fn into_inner(self) -> W {
@@ -84,12 +103,14 @@ impl TraceReader {
                         return Err(TraceRestoreError::DuplicateTurn(turn_uuid).into());
                     }
 
-                    let expected_parent = turns.last().map(|turn: &TurnRecord| turn.data().turn_id());
+                    let expected_parent =
+                        turns.last().map(|turn: &TurnRecord| turn.data().turn_id());
                     if record.parent_id() != expected_parent {
                         return Err(TraceRestoreError::InvalidTurnParent {
                             turn_id: turn_uuid,
                             expected_parent: expected_parent.map(Into::into),
-                        }.into());
+                        }
+                        .into());
                     }
 
                     turn_indexes.insert(turn_id, turns.len());
@@ -106,7 +127,8 @@ impl TraceReader {
                         return Err(TraceRestoreError::UnknownEventTurn {
                             event_id: event_uuid,
                             turn_id: turn_id.into(),
-                        }.into());
+                        }
+                        .into());
                     };
 
                     if let Some(parent_event_id) = record.parent_id() {
@@ -114,7 +136,8 @@ impl TraceReader {
                             return Err(TraceRestoreError::UnknownParentEvent {
                                 event_id: event_uuid,
                                 parent_event_id: parent_event_id.into(),
-                            }.into());
+                            }
+                            .into());
                         }
                     }
 
@@ -162,11 +185,17 @@ pub enum TraceRestoreError {
     #[error("duplicate turn {0}")]
     DuplicateTurn(Uuid),
     #[error("turn {turn_id} does not follow parent {expected_parent:?}")]
-    InvalidTurnParent { turn_id: Uuid, expected_parent: Option<Uuid> },
+    InvalidTurnParent {
+        turn_id: Uuid,
+        expected_parent: Option<Uuid>,
+    },
     #[error("duplicate event {0}")]
     DuplicateEvent(Uuid),
     #[error("event {event_id} refers to unknown turn {turn_id}")]
     UnknownEventTurn { event_id: Uuid, turn_id: Uuid },
     #[error("event {event_id} refers to unknown parent event {parent_event_id}")]
-    UnknownParentEvent { event_id: Uuid, parent_event_id: Uuid },
+    UnknownParentEvent {
+        event_id: Uuid,
+        parent_event_id: Uuid,
+    },
 }

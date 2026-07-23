@@ -1,10 +1,13 @@
-use crate::{AssistantResponse, Message};
+use crate::AssistantResponse;
+use crate::Message;
 use crate::types::ToolCallRequest;
 use futures_core::Stream;
-use serde::{Deserialize, Serialize};
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use getset::Getters;
+use serde::Deserialize;
+use serde::Serialize;
+use std::pin::Pin;
+use std::task::Context;
+use std::task::Poll;
 use thiserror::Error;
 
 /// Token usage details
@@ -51,8 +54,6 @@ pub struct ClankerMessage {
     content: String,
 }
 
-
-
 impl From<CompletedLlmResponse> for ClankerMessage {
     fn from(response: CompletedLlmResponse) -> Self {
         Self {
@@ -80,7 +81,7 @@ impl From<ClankerMessage> for Message {
                 reasoning: msg.reasoning,
                 tool_calls: msg.tool_calls,
                 content: msg.content,
-            }
+            },
         }
     }
 }

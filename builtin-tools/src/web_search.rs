@@ -1,9 +1,13 @@
-use async_trait::async_trait;
-use scraper::{Html, Selector};
-use serde_json::json;
-
 use crate::rate_limiter::RateLimiter;
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
+use agent_tools::JsonSchema;
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolDetails;
+use agent_tools::ToolError;
+use async_trait::async_trait;
+use scraper::Html;
+use scraper::Selector;
+use serde_json::json;
 
 /// Minimum milliseconds between DuckDuckGo search requests.
 const SEARCH_RATE_LIMIT_MS: u64 = 2000;
@@ -19,7 +23,10 @@ impl WebSearch {
     pub fn new() -> Self {
         WebSearch {
             client: reqwest::Client::builder()
-                .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .user_agent(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, \
+                     like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                )
                 .build()
                 .expect("failed to build reqwest client"),
             rate_limiter: RateLimiter::new(SEARCH_RATE_LIMIT_MS),
@@ -90,7 +97,8 @@ impl Tool for WebSearch {
         ToolDetails {
             name: "web_search".to_string(),
             description: "Search the web using DuckDuckGo. Returns titles, URLs, and snippets. \
-                Use fetch_content to retrieve the full text of any result URL.".to_string(),
+                          Use fetch_content to retrieve the full text of any result URL."
+                .to_string(),
         }
     }
 

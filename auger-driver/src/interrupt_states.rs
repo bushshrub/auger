@@ -3,10 +3,15 @@
 //! Interruption can either be caused by the user
 //! or by the stream failing midway.
 
-use crate::agent::{ReadyToStream, State, TypedAgent};
 use crate::ToolBatch;
+use crate::agent::ReadyToStream;
+use crate::agent::State;
+use crate::agent::TypedAgent;
 use getset::Getters;
-use provider::{ClankerMessage, LlmResponse, Message, UserPrompt};
+use provider::ClankerMessage;
+use provider::LlmResponse;
+use provider::Message;
+use provider::UserPrompt;
 
 /// The LLM stream was interrupted midway.
 #[derive(Getters)]
@@ -19,14 +24,14 @@ impl State for LlmStreamingInterrupted {}
 
 impl LlmStreamingInterrupted {
     pub(crate) fn new(events: Vec<provider::StreamEvent>) -> Self {
-        Self {  events }
+        Self { events }
     }
 }
 
 impl TypedAgent<LlmStreamingInterrupted> {
-
     /// Add a new user message.
-    /// Choose whether the stream should be left with the partial response or not.
+    /// Choose whether the stream should be left with the partial response or
+    /// not.
     pub fn add_message_to_continue(
         mut self,
         msg: UserPrompt,
@@ -35,13 +40,19 @@ impl TypedAgent<LlmStreamingInterrupted> {
         let user_message = if leave_partial_response {
             let response = LlmResponse::from_events(self.state.events);
             let reply = ClankerMessage::from(response);
-            // TODO: Should marking the remaining tool calls be the responsibility of the driver?
+            // TODO: Should marking the remaining tool calls be the responsibility of the
+            // driver?
             let tool_call_results = if !reply.tool_calls().is_empty() {
-                ToolBatch::new(reply.tool_calls().to_vec()).interrupt_remaining().drain()
+                ToolBatch::new(reply.tool_calls().to_vec())
+                    .interrupt_remaining()
+                    .drain()
             } else {
                 Vec::new()
             };
-            Message::User { message: msg, tool_call_results }
+            Message::User {
+                message: msg,
+                tool_call_results,
+            }
         } else {
             msg.into()
         };
@@ -69,11 +80,8 @@ pub struct LlmStreamingFailed {
 impl State for LlmStreamingFailed {}
 
 impl LlmStreamingFailed {
-    pub(crate) fn new(
-        events: Vec<provider::StreamEvent>,
-        error: provider::LlmError,
-    ) -> Self {
-        Self {events, error }
+    pub(crate) fn new(events: Vec<provider::StreamEvent>, error: provider::LlmError) -> Self {
+        Self { events, error }
     }
 }
 

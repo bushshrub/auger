@@ -1,9 +1,14 @@
-use async_trait::async_trait;
-use scraper::{ElementRef, Html, Selector};
-use serde_json::json;
-
 use crate::rate_limiter::RateLimiter;
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
+use agent_tools::JsonSchema;
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolDetails;
+use agent_tools::ToolError;
+use async_trait::async_trait;
+use scraper::ElementRef;
+use scraper::Html;
+use scraper::Selector;
+use serde_json::json;
 
 /// Minimum milliseconds between content fetch requests.
 const FETCH_RATE_LIMIT_MS: u64 = 1000;
@@ -56,7 +61,10 @@ impl FetchContent {
     pub fn new() -> Self {
         FetchContent {
             client: reqwest::Client::builder()
-                .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .user_agent(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, \
+                     like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                )
                 .build()
                 .expect("failed to build reqwest client"),
             rate_limiter: RateLimiter::new(FETCH_RATE_LIMIT_MS),
@@ -152,9 +160,10 @@ impl Tool for FetchContent {
     fn details(&self) -> ToolDetails {
         ToolDetails {
             name: "fetch_content".to_string(),
-            description: "Fetch a URL and extract its readable text content. \
-                HTML is parsed and converted to clean text suitable for LLM consumption. \
-                Use this after web_search to read the full content of a result.".to_string(),
+            description: "Fetch a URL and extract its readable text content. HTML is parsed and \
+                          converted to clean text suitable for LLM consumption. Use this after \
+                          web_search to read the full content of a result."
+                .to_string(),
         }
     }
 

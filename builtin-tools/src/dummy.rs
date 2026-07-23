@@ -1,7 +1,10 @@
+use agent_tools::JsonSchema;
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolDetails;
+use agent_tools::ToolError;
 use async_trait::async_trait;
 use serde_json::json;
-
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 pub struct Dummy;
 
@@ -10,7 +13,9 @@ impl Tool for Dummy {
     fn details(&self) -> ToolDetails {
         ToolDetails {
             name: "dummy".to_string(),
-            description: "Test tool. Echoes back its arguments. Use to verify tool call routing works.".to_string(),
+            description: "Test tool. Echoes back its arguments. Use to verify tool call routing \
+                          works."
+                .to_string(),
         }
     }
 

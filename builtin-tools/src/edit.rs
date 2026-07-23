@@ -1,8 +1,11 @@
+use agent_tools::JsonSchema;
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolDetails;
+use agent_tools::ToolError;
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::fs;
-
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 pub struct EditFile;
 
@@ -11,8 +14,9 @@ impl Tool for EditFile {
     fn details(&self) -> ToolDetails {
         ToolDetails {
             name: "edit_file".to_string(),
-            description: "Perform an exact string replacement in a file. \
-                Fails if old_string is not found or appears more than once.".to_string(),
+            description: "Perform an exact string replacement in a file. Fails if old_string is \
+                          not found or appears more than once."
+                .to_string(),
         }
     }
 

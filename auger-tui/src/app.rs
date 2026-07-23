@@ -1,10 +1,14 @@
+use crate::types::AppEvent;
+use crate::types::ChatItem;
+use crate::types::SessionInfo;
+use crate::types::SnapshotMessage;
+use crate::types::SseEvent;
+use crate::types::Status;
+use crate::types::ToolDecision;
 use ratatui::widgets::ListState;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 use uuid::Uuid;
-
-use crate::types::{
-    AppEvent, ChatItem, SessionInfo, SnapshotMessage, SseEvent, Status, ToolDecision,
-};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum View {
@@ -311,7 +315,8 @@ impl App {
         Some((session_id, write_token, text))
     }
 
-    /// Populate chat history from a snapshot. Mirrors the webui's snapshotToItems logic.
+    /// Populate chat history from a snapshot. Mirrors the webui's
+    /// snapshotToItems logic.
     pub fn apply_snapshot(&mut self, messages: Vec<SnapshotMessage>) {
         self.items.clear();
         self.assistant_idx = None;
@@ -368,7 +373,8 @@ impl App {
             }
         }
 
-        // Tool calls from the last assistant block that have no follow-up are still pending.
+        // Tool calls from the last assistant block that have no follow-up are still
+        // pending.
         let pending: HashSet<String> = last_block_ids.into_iter().collect();
         for (id, idx) in &tool_idx_map {
             if pending.contains(id) {
@@ -383,7 +389,8 @@ impl App {
         self.scroll_to_bottom();
     }
 
-    /// Returns (session_id, write_token, tool_call_id) if there's a pending tool.
+    /// Returns (session_id, write_token, tool_call_id) if there's a pending
+    /// tool.
     pub fn approve_tool(&mut self, approved: bool) -> Option<(Uuid, String, String)> {
         let tool_id = self.pending_tool_id.clone()?;
         let session_id = self.session_id?;

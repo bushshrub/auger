@@ -1,10 +1,18 @@
 use agent_core::AutoApprovalPolicy;
 use provider::ToolCallRequest;
 use serde_json::Value;
-use std::path::{Component, Path, PathBuf};
-use yash_syntax::syntax::{
-    AndOr, Command, List, Pipeline, SimpleCommand, Text, TextUnit, Word, WordUnit,
-};
+use std::path::Component;
+use std::path::Path;
+use std::path::PathBuf;
+use yash_syntax::syntax::AndOr;
+use yash_syntax::syntax::Command;
+use yash_syntax::syntax::List;
+use yash_syntax::syntax::Pipeline;
+use yash_syntax::syntax::SimpleCommand;
+use yash_syntax::syntax::Text;
+use yash_syntax::syntax::TextUnit;
+use yash_syntax::syntax::Word;
+use yash_syntax::syntax::WordUnit;
 
 /// Conservative auto-approval policy for the `/bin/sh -c` shell tool.
 pub struct BashAutoApprovalPolicy {
@@ -79,11 +87,7 @@ pub(crate) fn parse_simple_command(command: &str) -> Option<Vec<String>> {
     simple_words(simple, true)
 }
 
-fn is_cwd_cd_prefix(
-    first: &Pipeline,
-    rest: &[(AndOr, Pipeline)],
-    cwd: &Path,
-) -> bool {
+fn is_cwd_cd_prefix(first: &Pipeline, rest: &[(AndOr, Pipeline)], cwd: &Path) -> bool {
     if first.negation || first.commands.len() != 1 {
         return false;
     }
@@ -237,8 +241,12 @@ fn validate_ls(args: &[String], cwd: &Path) -> bool {
 }
 
 fn validate_grep(args: &[String], cwd: &Path, ripgrep: bool) -> bool {
-    const GREP_OPTIONS: &[char] = &['E', 'F', 'G', 'H', 'L', 'R', 'c', 'h', 'i', 'l', 'n', 'o', 'q', 'r', 's', 'v', 'w', 'x'];
-    const RG_OPTIONS: &[char] = &['F', 'H', 'L', 'c', 'h', 'i', 'l', 'n', 'o', 'q', 's', 'v', 'w', 'x'];
+    const GREP_OPTIONS: &[char] = &[
+        'E', 'F', 'G', 'H', 'L', 'R', 'c', 'h', 'i', 'l', 'n', 'o', 'q', 'r', 's', 'v', 'w', 'x',
+    ];
+    const RG_OPTIONS: &[char] = &[
+        'F', 'H', 'L', 'c', 'h', 'i', 'l', 'n', 'o', 'q', 's', 'v', 'w', 'x',
+    ];
     let allowed_options = if ripgrep { RG_OPTIONS } else { GREP_OPTIONS };
 
     let mut index = 0;
@@ -263,9 +271,9 @@ fn validate_grep(args: &[String], cwd: &Path, ripgrep: bool) -> bool {
     }
     index += 1;
 
-    args[index..].iter().all(|path| {
-        path != "-" && !path.starts_with('-') && path_is_within(cwd, path)
-    })
+    args[index..]
+        .iter()
+        .all(|path| path != "-" && !path.starts_with('-') && path_is_within(cwd, path))
 }
 
 fn validate_find(args: &[String], cwd: &Path) -> bool {
@@ -289,7 +297,10 @@ fn validate_find(args: &[String], cwd: &Path) -> bool {
             }
             "-type" => {
                 if index >= args.len()
-                    || !matches!(args[index].as_str(), "b" | "c" | "d" | "f" | "l" | "p" | "s")
+                    || !matches!(
+                        args[index].as_str(),
+                        "b" | "c" | "d" | "f" | "l" | "p" | "s"
+                    )
                 {
                     return false;
                 }
@@ -301,9 +312,9 @@ fn validate_find(args: &[String], cwd: &Path) -> bool {
                 }
                 index += 1;
             }
-            "-a" | "-and" | "-o" | "-or" | "!" | "-not" | "(" | ")" | "-xdev"
-            | "-mount" | "-depth" | "-d" | "-prune" | "-print" | "-print0" | "-ls"
-            | "-empty" | "-readable" | "-writable" | "-executable" => {}
+            "-a" | "-and" | "-o" | "-or" | "!" | "-not" | "(" | ")" | "-xdev" | "-mount"
+            | "-depth" | "-d" | "-prune" | "-print" | "-print0" | "-ls" | "-empty"
+            | "-readable" | "-writable" | "-executable" => {}
             _ => return false,
         }
     }

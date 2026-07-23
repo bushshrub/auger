@@ -11,4 +11,7 @@
 
 mod catalog;
 
-pub use catalog::{ModelCatalog, ModelId, ModelInfo, resolve_model};
+pub use catalog::ModelCatalog;
+pub use catalog::ModelId;
+pub use catalog::ModelInfo;
+pub use catalog::resolve_model;

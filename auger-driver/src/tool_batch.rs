@@ -1,9 +1,10 @@
+use either::Either;
+use provider::ToolCallRequest;
+use provider::ToolResult;
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-
-use either::Either;
-use serde::{Deserialize, Serialize};
-use provider::{ToolCallRequest, ToolResult};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
@@ -71,7 +72,11 @@ impl ToolBatch<Resolving> {
         self.pending_calls.values()
     }
 
-    pub fn add_result(&mut self, call_id: ToolCallId, result: ToolResult) -> Result<(), AddToolResponseIssue> {
+    pub fn add_result(
+        &mut self,
+        call_id: ToolCallId,
+        result: ToolResult,
+    ) -> Result<(), AddToolResponseIssue> {
         if self.results.contains_key(&call_id) {
             return Err(AddToolResponseIssue::AlreadyProvided(call_id));
         }
@@ -93,7 +98,7 @@ impl ToolBatch<Resolving> {
                     tool_call_id: call_id.clone().0,
                     // TODO: Hardcoded here...?
                     content: "Tool call interrupted before execution".to_string(),
-                }
+                },
             );
         }
 

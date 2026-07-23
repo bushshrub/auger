@@ -1,4 +1,5 @@
-use provider::{CompletedLlmResponse, ToolCallRequest};
+use provider::CompletedLlmResponse;
+use provider::ToolCallRequest;
 use uuid::Uuid;
 
 pub struct XmlStyleToolCallHealer;
@@ -78,7 +79,8 @@ mod tests {
     #[test]
     fn heals_multiple_tool_calls() {
         let healer = XmlStyleToolCallHealer;
-        let content = "<tool_call>{\"name\":\"a\",\"arguments\":{}}</tool_call> text <tool_call>{\"name\":\"b\",\"arguments\":{}}</tool_call>";
+        let content = "<tool_call>{\"name\":\"a\",\"arguments\":{}}</tool_call> text \
+                       <tool_call>{\"name\":\"b\",\"arguments\":{}}</tool_call>";
         let result = healer.heal(base_response(content));
 
         let tcs = result.tool_calls.unwrap();

@@ -1,12 +1,15 @@
 //! Request and response types for the agent server API
-use agent_core::{SessionEvent, SessionHandle};
+use agent_core::SessionEvent;
+use agent_core::SessionHandle;
 use serde::Deserialize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-/// A session entry holds the handle plus its access tokens, which are owned by the server.
+/// A session entry holds the handle plus its access tokens, which are owned by
+/// the server.
 #[derive(Clone)]
 pub(crate) struct SessionEntry {
     pub(crate) handle: SessionHandle,

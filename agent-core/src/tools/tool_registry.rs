@@ -1,5 +1,8 @@
-use agent_tools::{Tool, ToolCallResult, ToolError};
-use provider::{ToolCallRequest, ToolDefinition};
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolError;
+use provider::ToolCallRequest;
+use provider::ToolDefinition;
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -13,7 +16,8 @@ pub(crate) enum ToolInvokeIssue {
     ToolError(ToolError),
 }
 
-// TODO: refactor tool registry into the agent-tools crate and other tool handling stuff.
+// TODO: refactor tool registry into the agent-tools crate and other tool
+// handling stuff.
 pub(crate) struct ToolRegistry(HashMap<String, Box<dyn Tool>>);
 impl ToolRegistry {
     pub(crate) fn new() -> Self {

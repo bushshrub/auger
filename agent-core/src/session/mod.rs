@@ -1,15 +1,18 @@
-pub(crate) mod session;
 pub(crate) mod history;
-mod trace;
-mod states;
 mod recorder;
+pub(crate) mod session;
 mod session_builder;
+mod states;
+mod trace;
 
-pub use session::{
-    SessionHandle, SessionId, SnapshotError
-};
-
+pub use history::SessionRecord;
+pub use history::TurnEvent;
+pub use session::SessionHandle;
+pub use session::SessionId;
+pub use session::SnapshotError;
 pub use session_builder::SessionBuilder;
-
-pub use history::{SessionRecord, TurnEvent};
-pub use trace::{TraceReadError, TraceReader, TraceRestoreError, TraceWriteError, TraceWriter};
+pub use trace::TraceReadError;
+pub use trace::TraceReader;
+pub use trace::TraceRestoreError;
+pub use trace::TraceWriteError;
+pub use trace::TraceWriter;

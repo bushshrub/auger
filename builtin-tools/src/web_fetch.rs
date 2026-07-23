@@ -1,13 +1,17 @@
+use agent_tools::JsonSchema;
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolDetails;
+use agent_tools::ToolError;
 use async_trait::async_trait;
 use serde_json::json;
-
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 pub struct WebFetch {
     client: reqwest::Client,
 }
 
-// ~8000 chars ≈ 2000 tokens (English words ~1.3 tokens/word, ~5 chars/word → 3.85 chars/token)
+// ~8000 chars ≈ 2000 tokens (English words ~1.3 tokens/word, ~5 chars/word →
+// 3.85 chars/token)
 const MAX_INLINE: usize = 8_000;
 
 impl WebFetch {
@@ -32,11 +36,12 @@ impl Tool for WebFetch {
     fn details(&self) -> ToolDetails {
         ToolDetails {
             name: "web_fetch".to_string(),
-            description: "Fetch a URL and return its content as text. \
-                Useful for reading documentation, APIs, or web pages. \
-                HTML is returned as-is; prefer URLs that serve plain text or JSON when possible. \
-                If the response body exceeds the inline limit the full content is saved to a \
-                temporary file and the path is returned instead.".to_string(),
+            description: "Fetch a URL and return its content as text. Useful for reading \
+                          documentation, APIs, or web pages. HTML is returned as-is; prefer URLs \
+                          that serve plain text or JSON when possible. If the response body \
+                          exceeds the inline limit the full content is saved to a temporary file \
+                          and the path is returned instead."
+                .to_string(),
         }
     }
 

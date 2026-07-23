@@ -1,7 +1,10 @@
+use agent_tools::JsonSchema;
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolDetails;
+use agent_tools::ToolError;
 use async_trait::async_trait;
 use serde_json::json;
-
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 pub struct Glob;
 
@@ -10,8 +13,10 @@ impl Tool for Glob {
     fn details(&self) -> ToolDetails {
         ToolDetails {
             name: "glob".to_string(),
-            description: "Find files and directories matching a glob pattern. Returns one absolute \
-                path per line. Supports `*`, `**`, and `?` wildcards. Respects .gitignore.".to_string(),
+            description: "Find files and directories matching a glob pattern. Returns one \
+                          absolute path per line. Supports `*`, `**`, and `?` wildcards. Respects \
+                          .gitignore."
+                .to_string(),
         }
     }
 

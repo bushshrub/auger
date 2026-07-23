@@ -1,12 +1,17 @@
 use async_stream::stream;
 use futures::StreamExt;
+use provider::CompletedLlmResponse;
+use provider::LlmError;
+use provider::LlmProvider;
+use provider::LlmRequest;
+use provider::LlmStream;
+use provider::StreamEvent;
+use provider::TokenUsage;
+use provider::ToolCallRequest;
 use provider::types::Message;
-use provider::{
-    CompletedLlmResponse, LlmError, LlmProvider, LlmRequest, LlmStream, StreamEvent, TokenUsage,
-    ToolCallRequest,
-};
 use reqwest::Client;
-use serde_json::{Value, json};
+use serde_json::Value;
+use serde_json::json;
 
 mod catalog;
 

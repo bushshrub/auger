@@ -1,7 +1,14 @@
-use auger_driver::{LlmStreamingFailed, LlmStreamingInterrupted, RestoredAgent, StreamResult, TypedAgent, WaitingForToolResponses, WaitingForUserMessage};
-use tokio_util::sync::CancellationToken;
+use crate::tools::tool_decisions::Resolving;
+use crate::tools::tool_decisions::UserToolDecisions;
+use auger_driver::LlmStreamingFailed;
+use auger_driver::LlmStreamingInterrupted;
+use auger_driver::RestoredAgent;
+use auger_driver::StreamResult;
+use auger_driver::TypedAgent;
+use auger_driver::WaitingForToolResponses;
+use auger_driver::WaitingForUserMessage;
 use provider::UserPrompt;
-use crate::tools::tool_decisions::{Resolving, UserToolDecisions};
+use tokio_util::sync::CancellationToken;
 
 /// States which a session can be restored from
 pub(crate) enum RestorableState {
@@ -33,9 +40,7 @@ pub(crate) enum HarnessState {
     /// LLM streaming is in progress
     Streaming { cancel: CancellationToken },
     /// Trying to interrupt the stream.
-    InterruptingStream {
-        pending_message: Option<UserPrompt>,
-    },
+    InterruptingStream { pending_message: Option<UserPrompt> },
     /// LLM streaming was interrupted, retaining the partial response.
     StreamingInterrupted {
         agent: TypedAgent<LlmStreamingInterrupted>,
@@ -49,7 +54,10 @@ pub(crate) enum HarnessState {
         _agent: TypedAgent<WaitingForToolResponses>,
     },
     /// Tool call execution is in progress
-    ToolCallsAreRunning { agent: TypedAgent<WaitingForToolResponses>,  cancel: CancellationToken },
+    ToolCallsAreRunning {
+        agent: TypedAgent<WaitingForToolResponses>,
+        cancel: CancellationToken,
+    },
     /// Tool execution is being interrupted.
     InterruptingToolExecution {
         agent: TypedAgent<WaitingForToolResponses>,
@@ -75,8 +83,12 @@ impl From<StreamResult> for HarnessState {
 impl From<RestoredAgent> for HarnessState {
     fn from(agent: RestoredAgent) -> Self {
         match agent {
-            RestoredAgent::WaitingForUserMessage(agent) => HarnessState::WaitingForUserMessage { agent },
-            RestoredAgent::WaitingForToolResponses(agent) => HarnessState::HasToolCalls { _agent: agent },
+            RestoredAgent::WaitingForUserMessage(agent) => {
+                HarnessState::WaitingForUserMessage { agent }
+            }
+            RestoredAgent::WaitingForToolResponses(agent) => {
+                HarnessState::HasToolCalls { _agent: agent }
+            }
             RestoredAgent::Interrupted(agent) => HarnessState::StreamingInterrupted { agent },
             RestoredAgent::Failed(agent) => HarnessState::StreamingFailed { agent },
         }

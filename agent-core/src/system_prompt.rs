@@ -36,11 +36,11 @@ impl From<SystemPrompt> for String {
     }
 }
 
-// SystemPrompt can be converted to message, but not always the other way around.
+// SystemPrompt can be converted to message, but not always the other way
+// around.
 #[allow(clippy::from_over_into)]
 impl Into<Message> for SystemPrompt {
     fn into(self) -> Message {
         Message::System(self.into())
     }
-
 }

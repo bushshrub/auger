@@ -9,8 +9,9 @@ pub trait AutoApprovalPolicy: Send + Sync {
 
 // TODO: Introduce new finer-grained auto approval policy system.
 // Needs more design. At a high level, based on layers.
-// Each tool can decide whether a tool call can be auto approved, or it can delegate.
-// In the future, extensions can also decide whether a tool call can be auto approved.
+// Each tool can decide whether a tool call can be auto approved, or it can
+// delegate. In the future, extensions can also decide whether a tool call can
+// be auto approved.
 /// A layered collection of auto-approval policies, grouped by tool name.
 #[derive(Clone, Default)]
 pub struct AutoApprovalPolicies {
@@ -24,7 +25,8 @@ impl AutoApprovalPolicies {
 
     /// Adds another policy layer for a tool.
     ///
-    /// A call is auto-approved when any policy registered for that tool approves it.
+    /// A call is auto-approved when any policy registered for that tool
+    /// approves it.
     pub fn add<P>(&mut self, tool_name: impl Into<String>, policy: P)
     where
         P: AutoApprovalPolicy + 'static,
@@ -50,10 +52,7 @@ impl AutoApprovalPolicies {
         tool_calls.iter().all(|call| self.is_approved(call))
     }
 
-    pub(crate) fn ids_needing_consent(
-        &self,
-        requested_calls: &[ToolCallRequest],
-    ) -> Vec<String> {
+    pub(crate) fn ids_needing_consent(&self, requested_calls: &[ToolCallRequest]) -> Vec<String> {
         requested_calls
             .iter()
             .filter(|call| !self.is_approved(call))

@@ -1,5 +1,7 @@
-use serde::{Deserialize, Serialize};
-use crate::types::{Message, ToolDefinition};
+use crate::types::Message;
+use crate::types::ToolDefinition;
+use serde::Deserialize;
+use serde::Serialize;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserPrompt {
@@ -32,7 +34,10 @@ pub struct ToolResult {
 
 impl ToolResult {
     pub fn new(tool_call_id: String, content: String) -> ToolResult {
-        ToolResult { tool_call_id, content }
+        ToolResult {
+            tool_call_id,
+            content,
+        }
     }
 }
 
@@ -42,7 +47,8 @@ impl ToolResult {
 pub struct LlmRequest {
     /// Full conversation history and the new message the user asks
     ///
-    /// Provider implementations should perform caching/state management as needed.
+    /// Provider implementations should perform caching/state management as
+    /// needed.
     messages: Vec<Message>,
     /// Tools that are available for the clanker to call.
     // TODO: add option to enforce tool use somehow.

@@ -2,7 +2,9 @@ pub mod capabilities;
 pub mod model;
 pub mod types;
 
-pub use capabilities::{ModelCatalog, ModelId, ModelInfo};
+pub use capabilities::ModelCatalog;
+pub use capabilities::ModelId;
+pub use capabilities::ModelInfo;
 pub use model::LlmModel;
 pub use types::*;
 

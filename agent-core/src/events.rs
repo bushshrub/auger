@@ -1,10 +1,14 @@
 //! Events and command types for a session
 
 use crate::session::SessionRecord;
-use auger_driver::{Resolved, Resolving, StreamResult, ToolBatch};
+use crate::tools::tool_execution::ToolCallResult;
+use crate::tools::tool_execution::ToolExecutionCompleted;
+use auger_driver::Resolved;
+use auger_driver::Resolving;
+use auger_driver::StreamResult;
+use auger_driver::ToolBatch;
 use provider::UserPrompt;
 use std::sync::mpsc;
-use crate::tools::tool_execution::{ToolCallResult, ToolExecutionCompleted};
 
 /// User sent commands to the session
 #[derive(Clone, Debug)]
@@ -55,7 +59,6 @@ pub(crate) enum LoopMessage {
     /// A tool batch has executed and returned its results
     ToolBatchExecutionResult {
         batch: ToolBatch<Resolving>,
-        results: ToolExecutionCompleted
-    }
+        results: ToolExecutionCompleted,
+    },
 }
-

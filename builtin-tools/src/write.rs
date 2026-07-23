@@ -1,8 +1,11 @@
+use agent_tools::JsonSchema;
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolDetails;
+use agent_tools::ToolError;
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::fs;
-
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 pub struct WriteFile;
 
@@ -11,8 +14,9 @@ impl Tool for WriteFile {
     fn details(&self) -> ToolDetails {
         ToolDetails {
             name: "write_file".to_string(),
-            description: "Write content to a file, creating it (and any missing parent directories) \
-                if it does not exist, or overwriting it if it does.".to_string(),
+            description: "Write content to a file, creating it (and any missing parent \
+                          directories) if it does not exist, or overwriting it if it does."
+                .to_string(),
         }
     }
 

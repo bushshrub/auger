@@ -1,7 +1,10 @@
+use agent_tools::JsonSchema;
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolDetails;
+use agent_tools::ToolError;
 use async_trait::async_trait;
 use serde_json::json;
-
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 pub struct ListFiles;
 
@@ -10,7 +13,9 @@ impl Tool for ListFiles {
     fn details(&self) -> ToolDetails {
         ToolDetails {
             name: "list_files".to_string(),
-            description: "List files and directories at a given path. Non-recursive by default; set recursive=true to walk the full tree. Respects .gitignore.".to_string(),
+            description: "List files and directories at a given path. Non-recursive by default; \
+                          set recursive=true to walk the full tree. Respects .gitignore."
+                .to_string(),
         }
     }
 

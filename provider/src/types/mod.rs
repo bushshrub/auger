@@ -2,9 +2,10 @@ mod request;
 mod response;
 mod tool;
 
-use serde::{Deserialize, Serialize};
 pub use request::*;
 pub use response::*;
+use serde::Deserialize;
+use serde::Serialize;
 pub use tool::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,9 +22,7 @@ pub enum Message {
         tool_call_results: Vec<ToolResult>,
     }, // TODO: in the future we will need to support images
     /// A message from the model.
-    Assistant {
-        response: AssistantResponse
-    },
+    Assistant { response: AssistantResponse },
 }
 /// Response from the assistant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,8 +45,8 @@ impl From<CompletedLlmResponse> for Message {
             response: AssistantResponse {
                 reasoning: response.reasoning,
                 content: response.content,
-                tool_calls
-            }
+                tool_calls,
+            },
         }
     }
 }

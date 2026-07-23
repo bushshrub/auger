@@ -1,12 +1,17 @@
 use async_openai::Client;
 use async_openai::config::OpenAIConfig;
 use futures::StreamExt;
-use provider::{
-    CompletedLlmResponse, LlmError, LlmProvider, LlmRequest, LlmStream, StreamEvent, TokenUsage,
-    ToolCallRequest,
-};
-use serde_json::{Value, json};
+use provider::CompletedLlmResponse;
+use provider::LlmError;
+use provider::LlmProvider;
+use provider::LlmRequest;
+use provider::LlmStream;
+use provider::StreamEvent;
+use provider::TokenUsage;
+use provider::ToolCallRequest;
 use reqwest::Client as HttpClient;
+use serde_json::Value;
+use serde_json::json;
 
 const DEFAULT_USER_AGENT: &str = "auger-code/0.1.0";
 
@@ -317,8 +322,12 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_reasoning, messages_to_json, normalize_base_url};
-    use provider::{Message, ToolResult, UserPrompt};
+    use super::extract_reasoning;
+    use super::messages_to_json;
+    use super::normalize_base_url;
+    use provider::Message;
+    use provider::ToolResult;
+    use provider::UserPrompt;
     use serde_json::json;
 
     #[test]
@@ -331,12 +340,18 @@ mod tests {
             normalize_base_url("https://opencode.ai/zen/v1/chat/completions/"),
             "https://opencode.ai/zen/v1"
         );
-        assert_eq!(normalize_base_url("https://opencode.ai/zen/v1"), "https://opencode.ai/zen/v1");
+        assert_eq!(
+            normalize_base_url("https://opencode.ai/zen/v1"),
+            "https://opencode.ai/zen/v1"
+        );
     }
 
     #[test]
     fn accepts_openai_reasoning_field_names() {
-        assert_eq!(extract_reasoning(&json!({"reasoning": "think"})), Some("think".to_string()));
+        assert_eq!(
+            extract_reasoning(&json!({"reasoning": "think"})),
+            Some("think".to_string())
+        );
         assert_eq!(
             extract_reasoning(&json!({"reasoning_content": "think"})),
             Some("think".to_string())

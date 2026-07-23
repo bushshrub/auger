@@ -69,7 +69,8 @@ pub enum AppEvent {
     NetworkError(String),
 }
 
-// ── Snapshot types ────────────────────────────────────────────────────────────
+// ── Snapshot types
+// ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct SnapshotToolCall {

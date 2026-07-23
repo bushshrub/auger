@@ -1,10 +1,14 @@
-use std::time::{Duration, Instant};
-
-use crossterm::{
-    event::{Event, KeyCode, KeyEventKind, KeyModifiers},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
+use crossterm::event::Event;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
+use crossterm::execute;
+use crossterm::terminal::EnterAlternateScreen;
+use crossterm::terminal::LeaveAlternateScreen;
+use crossterm::terminal::disable_raw_mode;
+use crossterm::terminal::enable_raw_mode;
+use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 mod api;
@@ -12,8 +16,10 @@ mod app;
 mod types;
 mod ui;
 
-use app::{App, View};
-use types::{AppEvent, TuiEvent};
+use app::App;
+use app::View;
+use types::AppEvent;
+use types::TuiEvent;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

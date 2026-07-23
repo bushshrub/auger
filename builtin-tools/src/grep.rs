@@ -1,15 +1,23 @@
+use agent_tools::JsonSchema;
+use agent_tools::Tool;
+use agent_tools::ToolCallResult;
+use agent_tools::ToolDetails;
+use agent_tools::ToolError;
 use async_trait::async_trait;
 use grep::regex::RegexMatcherBuilder;
-use grep::searcher::{Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
+use grep::searcher::Searcher;
+use grep::searcher::SearcherBuilder;
+use grep::searcher::Sink;
+use grep::searcher::SinkContext;
+use grep::searcher::SinkMatch;
 use ignore::WalkBuilder;
 use serde_json::json;
 use std::path::Path;
-use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, Mutex,
-};
-
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 pub struct Grep;
 
@@ -70,7 +78,10 @@ impl Grep {
 fn escape_regex(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
-        if matches!(character, '\\' | '.' | '^' | '$' | '|' | '(' | ')' | '[' | ']' | '{' | '}' | '*' | '+' | '?') {
+        if matches!(
+            character,
+            '\\' | '.' | '^' | '$' | '|' | '(' | ')' | '[' | ']' | '{' | '}' | '*' | '+' | '?'
+        ) {
             escaped.push('\\');
         }
         escaped.push(character);
@@ -84,7 +95,8 @@ impl Tool for Grep {
         ToolDetails {
             name: "grep".to_string(),
             description: "Search for a regex pattern in a file or directory. Returns matches in \
-                path:line:content format. Context lines use path-line-content format.".to_string(),
+                          path:line:content format. Context lines use path-line-content format."
+                .to_string(),
         }
     }
 
@@ -185,7 +197,11 @@ fn run_grep(
         walker
             .build()
             .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().is_some_and(|file_type| file_type.is_file()))
+            .filter(|entry| {
+                entry
+                    .file_type()
+                    .is_some_and(|file_type| file_type.is_file())
+            })
             .map(|entry| entry.into_path())
             .collect()
     };

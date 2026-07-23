@@ -1,5 +1,8 @@
 use crate::OpenAiChatCompletionsProvider;
-use provider::{LlmError, ModelCatalog, ModelId, ModelInfo};
+use provider::LlmError;
+use provider::ModelCatalog;
+use provider::ModelId;
+use provider::ModelInfo;
 
 #[async_trait::async_trait]
 impl ModelCatalog for OpenAiChatCompletionsProvider {

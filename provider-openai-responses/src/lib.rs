@@ -1,11 +1,16 @@
 use async_stream::stream;
 use futures::StreamExt;
-use provider::{
-    CompletedLlmResponse, LlmError, LlmProvider, LlmRequest, LlmStream, StreamEvent, TokenUsage,
-    ToolCallRequest,
-};
+use provider::CompletedLlmResponse;
+use provider::LlmError;
+use provider::LlmProvider;
+use provider::LlmRequest;
+use provider::LlmStream;
+use provider::StreamEvent;
+use provider::TokenUsage;
+use provider::ToolCallRequest;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
 
 const DEFAULT_USER_AGENT: &str = "auger-code/0.1.0";
