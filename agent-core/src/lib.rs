@@ -6,8 +6,8 @@ pub mod schema;
 
 pub use events::{SessionCommand, SessionEvent};
 pub use session::{
-    SessionBuilder, SessionHandle, SessionId, SessionRecord, SnapshotError, TraceRestoreError,
-    TurnEvent,
+    SessionBuilder, SessionHandle, SessionId, SessionRecord, SnapshotError, TraceReadError,
+    TraceReader, TraceRestoreError, TraceWriteError, TraceWriter, TurnEvent,
 };
 pub use system_prompt::SystemPrompt;
 pub use tools::auto_approval::{AutoApprovalPolicies, AutoApprovalPolicy};
