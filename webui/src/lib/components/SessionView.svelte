@@ -111,9 +111,6 @@
 		return out;
 	});
 
-	const totalTokens = $derived(
-		agent.totalUsage.prompt_tokens + agent.totalUsage.completion_tokens
-	);
 	const contextPct = $derived(
 		Math.min(100, Math.round((agent.contextTokens / session.context_window) * 100))
 	);
@@ -140,7 +137,7 @@
 		</span>
 		<div class="ml-auto flex items-center gap-3">
 			<span class="hidden font-mono text-[10px] text-muted-foreground sm:inline">
-				{totalTokens > 0 ? `${totalTokens.toLocaleString()} tokens total` : 'no usage yet'}
+				{agent.contextTokens > 0 ? `${agent.contextTokens.toLocaleString()} tokens in context` : 'no usage yet'}
 			</span>
 			<div class="flex items-center gap-1.5" title={`Context: ${contextPct}%`}>
 				<div class="h-1.5 w-16 overflow-hidden rounded-full bg-muted">

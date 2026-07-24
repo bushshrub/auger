@@ -25,7 +25,7 @@ import {
  * @typedef {(
  *   | { kind: 'user', id: string, text: string }
  *   | { kind: 'assistant', id: string, reasoning: string, content: string,
- *       streaming: boolean, stopReason?: string | null }
+ *       streaming: boolean, stopReason?: string | null, empty?: boolean }
  *   | { kind: 'tool', id: string, call: UiToolCall }
  * )} UiItem
  */
@@ -55,7 +55,9 @@ export class AugerSession {
 	connected = $state(false);
 	/** @type {string | null} */
 	error = $state(null);
-	totalUsage = $state({ prompt_tokens: 0, completion_tokens: 0 });
+	// Tokens currently in the model's context (latest turn's total), used for the
+	// context-usage bar. Bounded by the context window -- this is NOT a cumulative
+	// sum across turns (each turn re-sends the full history, so summing overcounts).
 	contextTokens = $state(0);
 
 	/**
@@ -323,14 +325,30 @@ export class AugerSession {
 					existing.stopReason = e.stop_reason;
 				}
 				if (e.usage) {
-					this.totalUsage = {
-						prompt_tokens: this.totalUsage.prompt_tokens + (e.usage.prompt_tokens ?? 0),
-						completion_tokens:
-							this.totalUsage.completion_tokens + (e.usage.completion_tokens ?? 0)
-					};
 					this.contextTokens =
 						e.usage.total_tokens ??
 						(e.usage.prompt_tokens ?? 0) + (e.usage.completion_tokens ?? 0);
+				}
+				// Surface turns that completed without any assistant output (no
+				// reasoning, no content) and without calling a tool -- otherwise the
+				// turn is invisible. Happens when a model tier streams zero deltas.
+				// stop_reason 'tool_calls' means tools ran, so it isn't empty.
+				const noOutput =
+					!existing || (existing.reasoning.trim() === '' && existing.content.trim() === '');
+				if (noOutput && e.stop_reason !== 'tool_calls' && !this.#hasUnresolvedTools()) {
+					if (existing) {
+						existing.empty = true;
+					} else {
+						this.items.push({
+							kind: 'assistant',
+							id: nextId(),
+							reasoning: '',
+							content: '',
+							streaming: false,
+							stopReason: e.stop_reason,
+							empty: true
+						});
+					}
 				}
 				// The turn continues (tool execution, then another stream) while
 				// any tool call is still awaiting consent or running.

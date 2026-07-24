@@ -39,8 +39,21 @@
 		creating = true;
 		try {
 			const creds = await createSession(model);
-			await refresh();
+			// Insert the new session optimistically and switch to it immediately, so
+			// the view opens without waiting on a second /sessions round-trip.
+			// refresh() reconciles created_at/archived shortly after.
+			/** @type {import('$lib/api.js').SessionInfo} */
+			const info = {
+				session_id: creds.session_id,
+				model: creds.model,
+				created_at: new Date().toISOString(),
+				context_window: creds.context_window,
+				tokens: creds.tokens,
+				archived: false
+			};
+			sessions = [info, ...sessions.filter((s) => s.session_id !== info.session_id)];
 			activeId = creds.session_id;
+			refresh();
 		} finally {
 			creating = false;
 		}

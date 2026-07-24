@@ -24,7 +24,7 @@ const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
  * @typedef {{ read: string, write: string }} SessionTokens
  * @typedef {{ session_id: string, model: string, created_at: string,
  *             context_window: number, tokens: SessionTokens, archived: boolean }} SessionInfo
- * @typedef {{ session_id: string, context_window: number, tokens: SessionTokens }} SessionCreds
+ * @typedef {{ session_id: string, model: string, context_window: number, tokens: SessionTokens }} SessionCreds
  * @typedef {{ id: string, name: string, arguments: string }} ToolCall
  * @typedef {{ prompt_tokens: number | null, completion_tokens: number | null,
  *             total_tokens: number | null, cached_tokens: number | null,
