@@ -8,6 +8,7 @@ use serde::Serialize;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
+use std::time::Duration;
 use thiserror::Error;
 
 /// Token usage details
@@ -192,6 +193,15 @@ impl From<LlmResponse> for ClankerMessage {
             LlmResponse::Completed(response) => response.into(),
         }
     }
+}
+
+/// The kind of LLM error received.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum LlmErrorKind {
+    /// Rate limited
+    RateLimited { retry_after: Option<Duration> },
+    /// An error that is likely transient (5xx, etc)
+    Transient { status: Option<u16> }
 }
 
 #[derive(Error, Serialize, Deserialize, Debug, Clone)]

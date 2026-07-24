@@ -1,3 +1,4 @@
+use getset::Getters;
 use crate::types::Message;
 use crate::types::ToolDefinition;
 use serde::Deserialize;
@@ -43,7 +44,8 @@ impl ToolResult {
 
 /// A request to get a response from the clanker
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Getters)]
+#[get = "pub"]
 pub struct LlmRequest {
     /// Full conversation history and the new message the user asks
     ///
@@ -60,11 +62,4 @@ impl LlmRequest {
         Self { messages, tools }
     }
 
-    pub fn messages(&self) -> &[Message] {
-        &self.messages
-    }
-
-    pub fn tools(&self) -> &[ToolDefinition] {
-        &self.tools
-    }
 }
