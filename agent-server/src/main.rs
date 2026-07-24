@@ -199,19 +199,22 @@ async fn resolve_session_extensions(
         let _activation = state.activation_lock.lock().await;
         if let Some(entry) = state.sessions.read().await.get(&id).cloned() {
             Some(entry)
-        } else if let Some(disk) = state.disk_sessions.write().await.remove(&id) {
-            start_session(
-                &state,
-                SessionBuilder::restore(disk.record),
-                disk.model,
-                disk.path,
-                Some((disk.read_token, disk.write_token)),
-                Some(disk.events),
-            )
-            .await;
-            state.sessions.read().await.get(&id).cloned()
         } else {
-            None
+            let disk = state.disk_sessions.write().await.remove(&id);
+            if let Some(disk) = disk {
+                start_session(
+                    &state,
+                    SessionBuilder::restore(disk.record),
+                    disk.model,
+                    disk.path,
+                    Some((disk.read_token, disk.write_token)),
+                    Some(disk.events),
+                )
+                .await;
+                state.sessions.read().await.get(&id).cloned()
+            } else {
+                None
+            }
         }
     };
     let Some(entry) = entry else {
