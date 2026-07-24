@@ -1,4 +1,4 @@
-use agent_core::AutoApprovalPolicy;
+use auger_core::AutoApprovalPolicy;
 use provider::ToolCallRequest;
 use serde_json::Value;
 use std::path::Component;

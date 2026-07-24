@@ -6,7 +6,7 @@ tool written in rust. It is UI agnostic.
 
 ## auger backend
 
-- The main agent harness is in `agent-core`.
+- The main agent harness is in `auger-core`.
 - The agent server is in `agent-server` and provides an HTTP API for interacting with the agent.
 - The `provider` crate is an abstraction layer for language model providers.
 

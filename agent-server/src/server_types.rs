@@ -1,6 +1,6 @@
 //! Request and response types for the agent server API
-use agent_core::SessionEvent;
-use agent_core::SessionHandle;
+use auger_core::SessionEvent;
+use auger_core::SessionHandle;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;

@@ -195,7 +195,7 @@ components:
           properties:
             type: { const: text }
             text: { type: string }
-    # Externally tagged, as serialized by agent-core: the payload of a tool
+    # Externally tagged, as serialized by auger-core: the payload of a tool
     # call result on the event stream, e.g.
     #   {"success": {"content": [{"text": {"text": "..."}}]}}
     ToolOutcome:

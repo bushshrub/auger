@@ -17,5 +17,5 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 walkdir = "2.5.0"
 yash-syntax = "0.23.1"
-agent-core.workspace = true
+auger-core.workspace = true
 provider.workspace = true

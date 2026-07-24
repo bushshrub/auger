@@ -2,15 +2,15 @@ use crate::server_types::ApproveRequest;
 use crate::server_types::CreateSessionRequest;
 use crate::server_types::SessionEntry;
 use crate::server_types::UserInputRequest;
-use agent_core::AutoApprovalPolicies;
-use agent_core::SessionBuilder;
-use agent_core::SessionCommand;
-use agent_core::SessionEvent;
-use agent_core::SessionHandle;
-use agent_core::SessionId;
-use agent_core::SystemPrompt;
-use agent_core::TraceReader;
-use agent_core::TraceWriter;
+use auger_core::AutoApprovalPolicies;
+use auger_core::SessionBuilder;
+use auger_core::SessionCommand;
+use auger_core::SessionEvent;
+use auger_core::SessionHandle;
+use auger_core::SessionId;
+use auger_core::SystemPrompt;
+use auger_core::TraceReader;
+use auger_core::TraceWriter;
 use axum::Extension;
 use axum::Json;
 use axum::Router;
@@ -93,7 +93,7 @@ struct AppState {
 }
 
 struct DiskSession {
-    record: agent_core::SessionRecord,
+    record: auger_core::SessionRecord,
     model: String,
     path: PathBuf,
     read_token: Uuid,
@@ -525,7 +525,7 @@ async fn snapshot(State(state): State<AppState>, Path(id): Path<SessionId>) -> R
     }
 }
 
-fn snapshot_response(record: &agent_core::SessionRecord) -> Response {
+fn snapshot_response(record: &auger_core::SessionRecord) -> Response {
     let mut trace = Vec::new();
     let result = (|| {
         let mut writer = TraceWriter::new(&mut trace, record.data())?;
@@ -535,7 +535,7 @@ fn snapshot_response(record: &agent_core::SessionRecord) -> Response {
                 writer.write_event(turn.data().turn_id(), event)?;
             }
         }
-        Ok::<_, agent_core::TraceWriteError>(())
+        Ok::<_, auger_core::TraceWriteError>(())
     })();
     match result {
         Ok(()) => (

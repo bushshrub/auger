@@ -4,7 +4,7 @@
     <option name="command" value="run --package agent-server --bin agent-server" />
     <option name="workingDirectory" value="file://$PROJECT_DIR$" />
     <envs>
-      <env name="RUST_LOG" value="agent_server=debug,agent_core=debug" />
+      <env name="RUST_LOG" value="agent_server=debug,auger_core=debug" />
     </envs>
     <option name="emulateTerminal" value="true" />
     <option name="channel" value="DEFAULT" />

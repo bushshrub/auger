@@ -18,6 +18,7 @@
       <sourceFolder url="file://$MODULE_DIR$/auger-driver/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/auger-traces/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/auger-traces/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/auger-core/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

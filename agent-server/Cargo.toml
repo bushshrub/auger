@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-agent-core.workspace = true
+auger-core.workspace = true
 builtin-tools = { path = "../builtin-tools" }
 axum = { version = "0.8.9", features = ["macros"] }
 futures.workspace = true
