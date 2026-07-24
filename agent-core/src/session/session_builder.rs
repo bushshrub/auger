@@ -12,7 +12,7 @@ use crate::session::history::TurnRecord;
 use crate::session::recorder::EventCallback;
 use crate::session::recorder::SessionRecorder;
 use crate::session::recorder::TurnCallback;
-use crate::session::session::Session;
+use crate::session::runtime::Session;
 use agent_tools::Tool;
 use provider::LlmModel;
 use std::env::current_dir;
