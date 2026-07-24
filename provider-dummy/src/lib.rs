@@ -63,7 +63,10 @@ impl DummyProvider {
         let mut state = self.state.lock().expect("dummy provider mutex poisoned");
         state.requests.push(request);
         state.responses.pop_front().ok_or_else(|| LlmError {
+            kind: provider::LlmErrorKind::Fatal,
             message: "dummy provider has no queued response".to_string(),
+            status: None,
+            request_id: None,
         })
     }
 }
@@ -80,7 +83,10 @@ impl LlmProvider for DummyProvider {
             DummyResponse::Response(response) => Ok(response),
             DummyResponse::Error(error) => Err(error),
             DummyResponse::Stream(_) | DummyResponse::PendingStream(_) => Err(LlmError {
+                kind: provider::LlmErrorKind::Fatal,
                 message: "dummy provider queued a stream response for complete".to_string(),
+                status: None,
+                request_id: None,
             }),
         }
     }

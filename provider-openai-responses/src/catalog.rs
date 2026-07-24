@@ -13,21 +13,16 @@ impl OpenAiResponsesProvider {
             req = req.header("Authorization", auth);
         }
 
-        let resp = req.send().await.map_err(|e| LlmError {
-            message: e.to_string(),
-        })?;
+        let resp = req.send().await.map_err(crate::errors::from_transport)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError {
-                message: format!("HTTP {}: {}", status, text),
-            });
+            return Err(crate::errors::from_response(status, &headers, text));
         }
 
-        let data: Value = resp.json().await.map_err(|e| LlmError {
-            message: format!("parse error: {}", e),
-        })?;
+        let data: Value = resp.json().await.map_err(|e| crate::errors::parse_error(format!("parse error: {}", e)))?;
 
         Ok(data["data"].as_array().cloned().unwrap_or_default())
     }
@@ -52,9 +47,7 @@ impl ModelCatalog for OpenAiResponsesProvider {
         let entry = models
             .iter()
             .find(|m| m["id"].as_str() == Some(model))
-            .ok_or_else(|| LlmError {
-                message: format!("model '{model}' not found in provider catalog"),
-            })?;
+            .ok_or_else(|| crate::errors::parse_error(format!("model '{model}' not found in provider catalog")))?;
 
         let mut info = ModelInfo::new(ModelId::new(model));
         // llama.cpp reports the model's training context length in `meta`;

@@ -15,21 +15,16 @@ impl AnthropicProvider {
             .header("anthropic-version", API_VERSION)
             .send()
             .await
-            .map_err(|e| LlmError {
-                message: e.to_string(),
-            })?;
+            .map_err(crate::errors::from_transport)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError {
-                message: format!("HTTP {}: {}", status, text),
-            });
+            return Err(crate::errors::from_response(status, &headers, text));
         }
 
-        resp.json().await.map_err(|e| LlmError {
-            message: format!("parse error: {}", e),
-        })
+        resp.json().await.map_err(|e| crate::errors::parse_error(format!("parse error: {}", e)))
     }
 }
 

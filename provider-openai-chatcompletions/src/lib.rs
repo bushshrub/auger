@@ -16,6 +16,7 @@ use serde_json::json;
 const DEFAULT_USER_AGENT: &str = "auger-code/0.1.0";
 
 mod catalog;
+mod errors;
 
 pub struct OpenAiChatCompletionsProvider {
     client: Client<OpenAIConfig>,
@@ -190,9 +191,7 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
             .chat()
             .create_byot(body)
             .await
-            .map_err(|e| LlmError {
-                message: e.to_string(),
-            })?;
+            .map_err(errors::from_error)?;
 
         let msg = &resp["choices"][0]["message"];
         let tool_calls = extract_tool_calls(&msg["tool_calls"]);
@@ -223,9 +222,7 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
             .chat()
             .create_stream_byot::<Value, Value>(body)
             .await
-            .map_err(|e| LlmError {
-                message: e.to_string(),
-            })?;
+            .map_err(errors::from_error)?;
 
         struct TcAccum {
             id: String,
@@ -244,10 +241,16 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
             while let Some(result) = stream.next().await {
                 match result {
                     Err(e) => {
-                        yield Err(LlmError { message: e.to_string() });
+                        yield Err(errors::from_error(e));
                         return;
                     }
                     Ok(chunk) => {
+                        if let Some(error) = chunk["error"].as_object() {
+                            let message = error["message"].as_str().unwrap_or("stream error");
+                            let body_type = error["type"].as_str().or_else(|| error["code"].as_str());
+                            yield Err(errors::in_band_fields(message.to_string(), body_type, error["code"].as_str()));
+                            return;
+                        }
                         // Usage may arrive in the finish_reason chunk or in a trailing
                         // chunk with empty choices (OpenAI stream_options include_usage).
                         if let Some(u) = extract_usage(&chunk) {
@@ -297,6 +300,10 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
                             }
                         }
 
+                        if choice["finish_reason"].as_str() == Some("error") {
+                            yield Err(errors::in_band("stream finish_reason=error".to_string(), None));
+                            return;
+                        }
                         if choice["finish_reason"].is_string() && !tool_calls_completed {
                             tool_calls_completed = true;
                             for acc in accums.iter().flatten() {

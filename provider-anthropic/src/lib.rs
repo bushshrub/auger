@@ -14,6 +14,7 @@ use serde_json::Value;
 use serde_json::json;
 
 mod catalog;
+mod errors;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const API_VERSION: &str = "2023-06-01";
@@ -245,21 +246,16 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| LlmError {
-                message: e.to_string(),
-            })?;
+            .map_err(errors::from_transport)?;
 
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError {
-                message: format!("HTTP {}: {}", status, text),
-            });
+            return Err(errors::from_response(status, &headers, text));
         }
 
-        let data: Value = resp.json().await.map_err(|e| LlmError {
-            message: format!("parse error: {}", e),
-        })?;
+        let data: Value = resp.json().await.map_err(|e| errors::parse_error(format!("parse error: {}", e)))?;
 
         Ok(parse_response(&data))
     }
@@ -276,16 +272,14 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| LlmError {
-                message: e.to_string(),
-            })?;
+            .map_err(errors::from_transport)?;
+        let request_id = resp.headers().get("request-id").and_then(|v| v.to_str().ok()).map(str::to_string);
 
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError {
-                message: format!("HTTP {}: {}", status, text),
-            });
+            return Err(errors::from_response(status, &headers, text));
         }
 
         struct BlockState {
@@ -308,7 +302,7 @@ impl LlmProvider for AnthropicProvider {
             while let Some(chunk) = bytes.next().await {
                 match chunk {
                     Err(e) => {
-                        yield Err(LlmError { message: e.to_string() });
+                        yield Err(errors::stream_error(e.to_string(), request_id.clone(), None));
                         return;
                     }
                     Ok(raw) => {
@@ -327,6 +321,13 @@ impl LlmProvider for AnthropicProvider {
                                 Ok(v) => v,
                                 Err(_) => continue,
                             };
+
+                            if event["type"].as_str() == Some("error") {
+                                let message = event["error"]["message"].as_str().unwrap_or("Anthropic stream error");
+                                let body_type = event["error"]["type"].as_str();
+                                yield Err(errors::stream_error(message.to_string(), request_id.clone(), body_type));
+                                return;
+                            }
 
                             match event["type"].as_str() {
                                 Some("message_start") => {

@@ -16,6 +16,7 @@ use serde_json::Value;
 const DEFAULT_USER_AGENT: &str = "auger-code/0.1.0";
 
 mod catalog;
+mod errors;
 
 /// Reasoning effort level for models that support it (o3, o4-mini, etc.).
 /// When set, requests reasoning summaries via `reasoning.summary = "auto"`.
@@ -391,21 +392,15 @@ impl LlmProvider for OpenAiResponsesProvider {
             req = req.header("Authorization", auth);
         }
 
-        let resp = req.json(&body).send().await.map_err(|e| LlmError {
-            message: e.to_string(),
-        })?;
-
+        let resp = req.json(&body).send().await.map_err(errors::from_transport)?;
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError {
-                message: format!("HTTP {}: {}", status, text),
-            });
+            return Err(errors::from_response(status, &headers, text));
         }
 
-        let data: ResponsesResponse = resp.json().await.map_err(|e| LlmError {
-            message: format!("parse error: {}", e),
-        })?;
+        let data: ResponsesResponse = resp.json().await.map_err(|e| errors::parse_error(format!("parse error: {}", e)))?;
 
         let tool_calls = extract_tool_calls(&data.output);
         let has_tool_calls = tool_calls.is_some();
@@ -439,16 +434,14 @@ impl LlmProvider for OpenAiResponsesProvider {
             req = req.header("Authorization", auth);
         }
 
-        let resp = req.json(&body).send().await.map_err(|e| LlmError {
-            message: e.to_string(),
-        })?;
+        let resp = req.json(&body).send().await.map_err(errors::from_transport)?;
+        let request_id = resp.headers().get("x-request-id").and_then(|v| v.to_str().ok()).map(str::to_string);
 
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
-            return Err(LlmError {
-                message: format!("HTTP {}: {}", status, text),
-            });
+            return Err(errors::from_response(status, &headers, text));
         }
 
         struct FcAccum {
@@ -469,7 +462,7 @@ impl LlmProvider for OpenAiResponsesProvider {
             while let Some(chunk) = bytes.next().await {
                 match chunk {
                     Err(e) => {
-                        yield Err(LlmError { message: e.to_string() });
+                        yield Err(errors::stream_error(e.to_string(), request_id.clone()));
                         return;
                     }
                     Ok(raw) => {

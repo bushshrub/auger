@@ -7,9 +7,7 @@ use provider::ModelInfo;
 #[async_trait::async_trait]
 impl ModelCatalog for OpenAiChatCompletionsProvider {
     async fn list_models(&self) -> Result<Vec<ModelId>, LlmError> {
-        let resp = self.client.models().list().await.map_err(|e| LlmError {
-            message: e.to_string(),
-        })?;
+        let resp = self.client.models().list().await.map_err(crate::errors::from_error)?;
         Ok(resp.data.into_iter().map(|m| ModelId::new(m.id)).collect())
     }
 
@@ -17,16 +15,12 @@ impl ModelCatalog for OpenAiChatCompletionsProvider {
         // Some OpenAI-compatible servers (llama.cpp) don't implement
         // GET /models/{id}, so resolve against the list instead. The list
         // carries no capability metadata either way.
-        let resp = self.client.models().list().await.map_err(|e| LlmError {
-            message: e.to_string(),
-        })?;
+        let resp = self.client.models().list().await.map_err(crate::errors::from_error)?;
 
         if resp.data.iter().any(|m| m.id == model) {
             Ok(ModelInfo::new(ModelId::new(model)))
         } else {
-            Err(LlmError {
-                message: format!("model '{model}' not found in provider catalog"),
-            })
+            Err(crate::errors::in_band(format!("model '{model}' not found in provider catalog"), None))
         }
     }
 }
