@@ -280,12 +280,14 @@ impl Session {
                     SessionCommand::Interrupt => {
                         curr_state = match curr_state {
                             HarnessState::Streaming { cancel } => {
+                                info!(session_id = %self.id, "Interrupting LLM stream");
                                 cancel.cancel();
                                 HarnessState::InterruptingStream {
                                     pending_message: None,
                                 }
                             }
                             HarnessState::ToolCallsAreRunning { agent, cancel } => {
+                                info!(session_id = %self.id, "Interrupting tool execution");
                                 cancel.cancel();
                                 HarnessState::InterruptingToolExecution { agent }
                             }
@@ -388,7 +390,7 @@ impl Session {
                                     HarnessState::StreamingFailed { agent }
                                 }
                                 StreamResult::WaitingForToolResponses(agent) => {
-                                    debug!(session_id = %self.id, "agent has called tools");
+                                    info!(session_id = %self.id, "stream finished: agent has called tools");
 
                                     let turn_id = self
                                         .recorder
@@ -402,7 +404,6 @@ impl Session {
                                     let call_requests = agent.get_requested_tools();
                                     if self.auto_approval_policies.will_approve_all(&call_requests)
                                     {
-                                        info!(session_id=%self.id, "automatically running all tools");
                                         for call in &call_requests {
                                             self.recorder
                                                 .record_tool_decision(
@@ -415,6 +416,7 @@ impl Session {
                                                 .expect("turn to be assistant");
                                         }
                                         let batch = agent.get_batch();
+                                        info!(session_id=%self.id, "automatically running all {} tools", call_requests.len());
                                         let execution = ToolExecution::new(
                                             call_requests,
                                             ToolAuthorization::AllAutoApproved,
@@ -457,6 +459,7 @@ impl Session {
                                             .into_iter()
                                             .filter(|call| unapproved.contains(&call.id))
                                             .collect();
+                                        info!(session_id=%self.id, "User consent needed for {} tools", unapproved.len());
                                         let _ = self
                                             .event_tx
                                             .send(SessionEvent::ToolConsentRequired { tool_calls });
@@ -469,15 +472,14 @@ impl Session {
                                     }
                                 }
                                 StreamResult::WaitingForUserMessage(agent) => {
-                                    info!(session_id=%self.id, "No tools called");
+                                    info!(session_id=%self.id, "Stream has returned: No tools called");
                                     self.recorder
                                         .record_turn(RecordableTurn::AssistantMessage {
                                             outcome: AssistantTurnOutcome::Completed {
                                                 response: agent
                                                     .previous_message()
                                                     .expect("a previous message to exist")
-                                                    .clone()
-                                                    .into(),
+                                                    .clone(),
                                             },
                                         })
                                         .expect("last turn to be user");
@@ -508,6 +510,7 @@ impl Session {
                                     HarnessState::Streaming { cancel }
                                 }
                                 None => {
+                                    info!(session_id=%self.id, "Stream successfully interrupted (no user msg)");
                                     let _ = self.event_tx.send(SessionEvent::Interrupted);
                                     HarnessState::StreamingInterrupted { agent }
                                 }
@@ -570,6 +573,7 @@ impl Session {
                         })
                         .expect("previous turn to be assistant");
                     // TODO: allow steering message to ride along
+                    info!(session_id=%self.id, "Sending {} tool results back to the model", resolved_batch.results().len());
                     let new_agent = agent.add_all_tool_responses(None, resolved_batch);
                     let event_tx = self.event_tx.clone();
                     let stream_fut = new_agent.create_stream(move |event| {
