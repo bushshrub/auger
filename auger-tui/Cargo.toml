@@ -5,11 +5,15 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.103"
+comrak = { version = "0.36", default-features = false }
 crossterm = "0.29.0"
 futures.workspace = true
 ratatui = "0.30.2"
+unicode-width = "0.2"
 reqwest = { workspace = true, features = ["json", "stream"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["full"] }
 uuid = { workspace = true, features = ["v4"] }
+similar = { version = "3.1.1", default-features = false, features = ["text"] }
+syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }

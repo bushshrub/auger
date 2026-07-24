@@ -195,6 +195,44 @@ components:
           properties:
             type: { const: text }
             text: { type: string }
+    # Externally tagged, as serialized by agent-core: the payload of a tool
+    # call result on the event stream, e.g.
+    #   {"success": {"content": [{"text": {"text": "..."}}]}}
+    ToolOutcome:
+      oneOf:
+        - type: object
+          required: [success]
+          properties:
+            success:
+              type: object
+              required: [content]
+              properties:
+                content: { type: array, items: { $ref: "#/components/schemas/EventToolData" } }
+        - type: object
+          required: [error]
+          properties:
+            error:
+              type: object
+              required: [error]
+              properties:
+                error: { type: array, items: { $ref: "#/components/schemas/EventToolData" } }
+        - type: object
+          required: [denied]
+          properties:
+            denied:
+              type: object
+              properties:
+                reason: { type: [string, "null"] }
+        - const: interrupted
+    EventToolData:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: object
+          required: [text]
+          properties:
+            text: { type: string }
     InputContent:
       oneOf:
         - type: object
@@ -315,7 +353,12 @@ components:
           properties:
             type: { const: tool_call_result }
             id: { type: string }
-            result: { type: string }
+            result:
+              type: object
+              required: [tool_call_id, outcome]
+              properties:
+                tool_call_id: { type: string }
+                outcome: { $ref: "#/components/schemas/ToolOutcome" }
         - type: object
           required: [type, id, error]
           properties:
