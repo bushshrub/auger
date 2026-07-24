@@ -62,16 +62,14 @@ pub trait ModelCatalog: LlmProvider {
 /// provider exposes the `ModelCatalog` capability,
 /// to avoid runtime errors from selecting a
 /// model that doesn't exist.
-pub async fn resolve_model<C>(catalog: &Arc<C>, name: &str) -> Result<LlmModel, LlmError>
+pub async fn resolve_model<C>(catalog: &Arc<C>, name: &str) -> Option<LlmModel>
 where
     C: ModelCatalog + 'static,
 {
-    let models = catalog.list_models().await?;
+    let models = catalog.list_models().await.ok()?;
     if models.iter().any(|m| m.as_str() == name) {
-        Ok(LlmModel::new(catalog.clone(), name))
+        Some(LlmModel::new(catalog.clone(), name))
     } else {
-        Err(LlmError {
-            message: format!("model '{name}' not found in provider catalog"),
-        })
+        None
     }
 }

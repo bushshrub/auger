@@ -196,17 +196,26 @@ impl From<LlmResponse> for ClankerMessage {
 }
 
 /// The kind of LLM error received.
+/// There are 2 kinds really, one in which we can just retry the request unchanged
+/// and one in which we cannot.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum LlmErrorKind {
-    /// Rate limited
-    RateLimited { retry_after: Option<Duration> },
-    /// An error that is likely transient (5xx, etc)
-    Transient { status: Option<u16> }
+    /// Resending the request unchanged may work
+    Transient { retry_after: Option<Duration> },
+    /// Resending the request unchanged will not work
+    Fatal
 }
 
 #[derive(Error, Serialize, Deserialize, Debug, Clone)]
 pub struct LlmError {
+    /// What kind of error it is.
+    pub kind: LlmErrorKind,
+    /// The error message
     pub message: String,
+    /// HTTP status code, if any
+    pub status: Option<u16>,
+    /// Request ID if any
+    pub request_id: Option<String>
 }
 
 impl std::fmt::Display for LlmError {
