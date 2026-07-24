@@ -275,9 +275,9 @@ async fn create_session(
     let builder = SessionBuilder::new(model.clone());
     let session_id = builder.id();
     let (read_token, write_token) =
-        start_session(&state, builder, model, trace_path(session_id), None, None).await;
+        start_session(&state, builder, model.clone(), trace_path(session_id), None, None).await;
     Json(
-        json!({ "session_id": session_id, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
+        json!({ "session_id": session_id, "model": model, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
         "read": read_token,
         "write": write_token
     } }),
