@@ -475,7 +475,9 @@ async fn interrupt_session(State(state): State<AppState>, Path(id): Path<Session
 }
 
 /// Get a trace from its running session or, after archival, its JSONL file.
+#[tracing::instrument(skip(state), fields(session_id))]
 async fn snapshot(State(state): State<AppState>, Path(id): Path<SessionId>) -> Response {
+    info!("Getting snapshot");
     let entry = state.sessions.read().await.get(&id).cloned();
     if entry
         .as_ref()
@@ -549,8 +551,9 @@ fn snapshot_response(record: &agent_core::SessionRecord) -> Response {
 
 /// Get a stream of events for a session, including LLM responses and user
 /// events.
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip(state), fields(session_id))]
 async fn event_stream(State(state): State<AppState>, Path(id): Path<SessionId>) -> Response {
+    info!("Opening event stream");
     let event_tx = if let Some(events) = state
         .sessions
         .read()
