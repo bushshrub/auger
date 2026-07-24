@@ -64,37 +64,16 @@ pub enum AppEvent {
         read_token: String,
         context_window: u64,
     },
-    SnapshotLoaded(Vec<SnapshotMessage>),
+    /// Snapshot lines (NDJSON) — the app layer interprets them into ChatItems
+    SnapshotLines(Vec<String>),
     Sse(SseEvent),
     NetworkError(String),
 }
 
-// ── Snapshot types
-// ────────────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-pub struct SnapshotToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SnapshotMessage {
-    User {
-        text: String,
-    },
-    Assistant {
-        reasoning: Option<String>,
-        content: String,
-        tool_calls: Vec<SnapshotToolCall>,
-    },
-    Tool {
-        tool_call_id: String,
-        content: String,
-    },
-}
+// ── SSE event types ──────────────────────────────────────────────────────────
+// The server emits flat JSON with a "type" field, e.g.:
+//   { "type": "text_delta", "text": "..." }
+//   { "type": "tool_call", "id": "...", "name": "...", "arguments": "..." }
 
 #[derive(Debug)]
 pub enum SseEvent {
@@ -109,10 +88,8 @@ pub enum SseEvent {
         name: String,
         arguments: String,
     },
-    ToolCallAutoApproved {
+    ToolCallComplete {
         id: String,
-        name: String,
-        arguments: String,
     },
     ToolResult {
         id: String,
@@ -124,31 +101,29 @@ pub enum SseEvent {
         total_tokens: Option<u64>,
     },
     TurnComplete,
+    Interrupted,
+    StreamClosed,
     StreamError {
         message: String,
     },
 }
 
-// ── Raw server event deserialization ─────────────────────────────────────────
-// The agent-server emits externally-tagged Rust enums, e.g.:
-//   { "Clanker": { "ContentDelta": { "delta": "..." } } }
-
+/// Flat JSON event matching the server's session_event_json output.
 #[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum RawSessionEvent {
-    Clanker(RawClankerEvent),
-    ToolCall(RawToolCallEvent),
-    User(()),
-}
-
-#[derive(Debug, Deserialize)]
-pub enum RawClankerEvent {
-    ContentDelta {
-        delta: String,
+    TextDelta {
+        text: String,
     },
     ReasoningDelta {
-        delta: String,
+        text: String,
     },
-    ToolCallRequest {
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
+    ToolCallComplete {
         id: String,
         name: String,
         arguments: String,
@@ -156,21 +131,31 @@ pub enum RawClankerEvent {
     Done {
         usage: Option<RawUsage>,
         #[serde(rename = "stop_reason")]
-        _stop_reason: Option<String>,
+        stop_reason: Option<String>,
     },
-}
-
-#[derive(Debug, Deserialize)]
-pub enum RawToolCallEvent {
-    Result {
+    ToolConsentRequired {
+        tool_calls: Vec<RawToolCallEvent>,
+    },
+    ToolCallResult {
         id: String,
         result: String,
     },
-    Error {
-        id: String,
+    Interrupted,
+    StreamError {
         error: String,
     },
-    AutoApproved {
+    Closed,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RawToolCallEvent {
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
+    ToolCallComplete {
         id: String,
         name: String,
         arguments: String,
@@ -187,58 +172,62 @@ pub struct RawUsage {
 /// Transform a raw server event into one or more UI events.
 pub fn transform_raw_event(ev: RawSessionEvent) -> Vec<SseEvent> {
     match ev {
-        RawSessionEvent::Clanker(c) => match c {
-            RawClankerEvent::ContentDelta { delta } => vec![SseEvent::Content { text: delta }],
-            RawClankerEvent::ReasoningDelta { delta } => vec![SseEvent::Reasoning { text: delta }],
-            RawClankerEvent::ToolCallRequest {
-                id,
-                name,
-                arguments,
-            } => {
-                vec![SseEvent::ToolCall {
+        RawSessionEvent::TextDelta { text } => vec![SseEvent::Content { text }],
+        RawSessionEvent::ReasoningDelta { text } => vec![SseEvent::Reasoning { text }],
+        RawSessionEvent::ToolCall {
+            id,
+            name,
+            arguments,
+        } => vec![SseEvent::ToolCall {
+            id,
+            name,
+            arguments,
+        }],
+        RawSessionEvent::ToolCallComplete { id, .. } => {
+            vec![SseEvent::ToolCallComplete { id }]
+        }
+        RawSessionEvent::Done { usage, .. } => {
+            let mut out = Vec::new();
+            if let Some(u) = usage {
+                out.push(SseEvent::Metrics {
+                    prompt_tokens: u.prompt_tokens,
+                    completion_tokens: u.completion_tokens,
+                    total_tokens: u.total_tokens,
+                });
+            }
+            out.push(SseEvent::TurnComplete);
+            out
+        }
+        RawSessionEvent::ToolConsentRequired { tool_calls } => tool_calls
+            .into_iter()
+            .filter_map(|tc| match tc {
+                RawToolCallEvent::ToolCall {
                     id,
                     name,
                     arguments,
-                }]
-            }
-            RawClankerEvent::Done { usage, .. } => {
-                let mut out = Vec::new();
-                if let Some(u) = usage {
-                    out.push(SseEvent::Metrics {
-                        prompt_tokens: u.prompt_tokens,
-                        completion_tokens: u.completion_tokens,
-                        total_tokens: u.total_tokens,
-                    });
-                }
-                out.push(SseEvent::TurnComplete);
-                out
-            }
-        },
-        RawSessionEvent::ToolCall(t) => match t {
-            RawToolCallEvent::Result { id, result } => {
-                vec![SseEvent::ToolResult {
-                    id,
-                    content: result,
-                }]
-            }
-            RawToolCallEvent::Error { id, error } => {
-                vec![SseEvent::ToolResult {
-                    id,
-                    content: format!("error: {error}"),
-                }]
-            }
-            RawToolCallEvent::AutoApproved {
-                id,
-                name,
-                arguments,
-            } => {
-                vec![SseEvent::ToolCallAutoApproved {
+                } => Some(SseEvent::ToolCall {
                     id,
                     name,
                     arguments,
-                }]
-            }
-        },
-        RawSessionEvent::User(_) => vec![],
+                }),
+                _ => None,
+            })
+            .collect(),
+        RawSessionEvent::ToolCallResult { id, result } => {
+            let content = if result.starts_with('{') || result.starts_with('[') {
+                result
+            } else {
+                result
+            };
+            vec![SseEvent::ToolResult {
+                id,
+                content,
+            }]
+        }
+        RawSessionEvent::Interrupted => vec![SseEvent::Interrupted],
+        RawSessionEvent::StreamError { error } => {
+            vec![SseEvent::StreamError { message: error }]
+        }
+        RawSessionEvent::Closed => vec![SseEvent::StreamClosed],
     }
 }

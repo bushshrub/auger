@@ -1,11 +1,11 @@
 use crate::types::AppEvent;
 use crate::types::ChatItem;
 use crate::types::SessionInfo;
-use crate::types::SnapshotMessage;
 use crate::types::SseEvent;
 use crate::types::Status;
 use crate::types::ToolDecision;
 use ratatui::widgets::ListState;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -99,8 +99,8 @@ impl App {
                 self.view = View::Chat;
             }
 
-            AppEvent::SnapshotLoaded(msgs) => {
-                self.apply_snapshot(msgs);
+            AppEvent::SnapshotLines(lines) => {
+                self.apply_snapshot_lines(&lines);
                 // Only go idle if there's no pending tool waiting for approval.
                 if self.pending_tool_id.is_none() {
                     self.status = Status::Idle;
@@ -169,31 +169,23 @@ impl App {
                 self.status = Status::Running;
             }
 
-            SseEvent::ToolCallAutoApproved {
-                id,
-                name,
-                arguments,
+            SseEvent::ToolCallComplete {
+                id: _,
             } => {
+                // Tool finished executing; the result will arrive separately.
+                self.assistant_idx = None;
+            }
+
+            SseEvent::Interrupted => {
                 self.assistant_idx = None;
                 self.reasoning_idx = None;
-                if let Some(item) = self
-                    .items
-                    .iter_mut()
-                    .find(|i| matches!(i, ChatItem::Tool { id: tid, .. } if tid == &id))
-                {
-                    if let ChatItem::Tool { decision, .. } = item {
-                        *decision = Some(ToolDecision::Auto);
-                    }
-                } else {
-                    self.items.push(ChatItem::Tool {
-                        id,
-                        name,
-                        args: arguments,
-                        result: None,
-                        decision: Some(ToolDecision::Auto),
-                    });
-                }
-                self.status = Status::Running;
+                self.items
+                    .push(ChatItem::Error { text: "Interrupted".into() });
+                self.status = Status::Idle;
+            }
+
+            SseEvent::StreamClosed => {
+                self.status = Status::Idle;
             }
 
             SseEvent::ToolResult { id, content } => {
@@ -315,69 +307,216 @@ impl App {
         Some((session_id, write_token, text))
     }
 
-    /// Populate chat history from a snapshot. Mirrors the webui's
-    /// snapshotToItems logic.
-    pub fn apply_snapshot(&mut self, messages: Vec<SnapshotMessage>) {
+    /// Reconstruct chat items from NDJSON snapshot lines produced by the
+    /// server's TraceWriter.  The trace is flat JSONL — each line has a
+    /// `"kind"` discriminator (`"session"`, `"turn"`, `"event"`) with the
+    /// actual payload nested under `"turn"` or `"event"`.
+    pub fn apply_snapshot_lines(&mut self, lines: &[String]) {
         self.items.clear();
         self.assistant_idx = None;
         self.reasoning_idx = None;
 
         let mut tool_idx_map: HashMap<String, usize> = HashMap::new();
-        let mut last_block_ids: Vec<String> = vec![];
+        let mut last_block_ids: HashSet<String> = HashSet::new();
 
-        for msg in messages {
-            match msg {
-                SnapshotMessage::User { text } => {
-                    last_block_ids.clear();
-                    self.items.push(ChatItem::User { text });
-                }
-                SnapshotMessage::Assistant {
-                    reasoning,
-                    content,
-                    tool_calls,
-                } => {
-                    last_block_ids.clear();
-                    if let Some(r) = reasoning {
-                        if !r.is_empty() {
-                            self.items.push(ChatItem::Reasoning {
-                                text: r,
-                                collapsed: true,
-                            });
+        for line in lines {
+            let obj: Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            // ── Session header ─────────────────────────────────────────
+            if obj.get("kind").and_then(|k| k.as_str()) == Some("session") {
+                continue;
+            }
+
+            // ── Turn record ────────────────────────────────────────────
+            if obj.get("kind").and_then(|k| k.as_str()) == Some("turn") {
+                let turn = obj.get("turn");
+                if let Some(turn) = turn.and_then(|t| t.as_object()) {
+                    // User message turn: {"input_message": {"content": [...]}}
+                    // Content can contain "text" (user message) and "tool_result" (folded results)
+                    if let Some(input_msg) = turn.get("input_message").and_then(|m| m.as_object()) {
+                        last_block_ids.clear();
+                        if let Some(content) = input_msg.get("content").and_then(|c| c.as_array()) {
+                            for item in content {
+                                match item.get("type").and_then(|t| t.as_str()) {
+                                    Some("text") => {
+                                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                                            self.items.push(ChatItem::User {
+                                                text: text.to_string(),
+                                            });
+                                        }
+                                    }
+                                    Some("tool_result") => {
+                                        if let (Some(tool_call_id), Some(result_content)) = (
+                                            item.get("tool_call_id").and_then(|i| i.as_str()),
+                                            item.get("content").and_then(|c| c.as_array()),
+                                        ) {
+                                            let text = result_content.iter()
+                                                .filter_map(|c| {
+                                                    // Could be {"text": "..." } or {"text": {"text": "..."}}
+                                                    if let Some(inner) = c.get("text") {
+                                                        inner.as_str().or_else(|| {
+                                                            inner.get("text").and_then(|t| t.as_str())
+                                                        })
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
+                                                .collect::<Vec<_>>()
+                                                .join("");
+                                            if let Some(idx) = self.items.iter().position(|i| {
+                                                matches!(i, ChatItem::Tool { id, .. } if id == tool_call_id)
+                                            }) {
+                                                if let ChatItem::Tool { result, .. } = &mut self.items[idx] {
+                                                    *result = Some(text);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Assistant message turn: {"assistant_message": {"outcome": {...}}}
+                    if let Some(assist_msg) = turn.get("assistant_message").and_then(|m| m.as_object()) {
+                        last_block_ids.clear();
+                        if let Some(outcome) = assist_msg.get("outcome").and_then(|o| o.as_object()) {
+                            // outcome: {"completed": {"response": {...}}} or {"interrupted": {...}}
+                            if let Some(payload) = outcome
+                                .get("completed")
+                                .or_else(|| outcome.get("interrupted"))
+                                .and_then(|v| v.as_object())
+                            {
+                                let response = payload
+                                    .get("response")
+                                    .and_then(|r| r.as_object())
+                                    .unwrap_or(payload);
+
+                                // Reasoning
+                                if let Some(reasoning) =
+                                    response.get("reasoning").and_then(|r| r.as_str())
+                                {
+                                    if !reasoning.is_empty() {
+                                        self.items.push(ChatItem::Reasoning {
+                                            text: reasoning.to_string(),
+                                            collapsed: true,
+                                        });
+                                    }
+                                }
+                                // Content
+                                if let Some(content) =
+                                    response.get("content").and_then(|c| c.as_str())
+                                {
+                                    if !content.is_empty() {
+                                        self.items.push(ChatItem::Assistant {
+                                            text: content.to_string(),
+                                        });
+                                    }
+                                }
+                                // Tool calls
+                                if let Some(tool_calls) =
+                                    response.get("tool_calls").and_then(|t| t.as_array())
+                                {
+                                    for tc in tool_calls {
+                                        if let (Some(id), Some(name), Some(args)) = (
+                                            tc.get("id").and_then(|i| i.as_str()),
+                                            tc.get("name").and_then(|n| n.as_str()),
+                                            tc.get("arguments"),
+                                        ) {
+                                            let args_str = if args.is_string() {
+                                                args.as_str().unwrap_or("").to_string()
+                                            } else {
+                                                args.to_string()
+                                            };
+                                            let idx = self.items.len();
+                                            tool_idx_map.insert(id.to_string(), idx);
+                                            last_block_ids.insert(id.to_string());
+                                            self.items.push(ChatItem::Tool {
+                                                id: id.to_string(),
+                                                name: name.to_string(),
+                                                args: args_str,
+                                                result: None,
+                                                decision: None,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
-                    if !content.is_empty() {
-                        self.items.push(ChatItem::Assistant { text: content });
-                    }
-                    for tc in tool_calls {
-                        tool_idx_map.insert(tc.id.clone(), self.items.len());
-                        last_block_ids.push(tc.id.clone());
-                        self.items.push(ChatItem::Tool {
-                            id: tc.id,
-                            name: tc.name,
-                            args: tc.arguments,
-                            result: None,
-                            decision: None,
-                        });
-                    }
                 }
-                SnapshotMessage::Tool {
-                    tool_call_id,
-                    content,
-                } => {
-                    if let Some(&idx) = tool_idx_map.get(&tool_call_id) {
-                        if let Some(ChatItem::Tool { result, .. }) = self.items.get_mut(idx) {
-                            *result = Some(content);
+                continue;
+            }
+
+            // ── Event record ───────────────────────────────────────────
+            // Events have nested structure: {"event": {"tool_call_requested": {...}}}
+            // or {"event": {"tool_call_result": {...}}}
+            if obj.get("kind").and_then(|k| k.as_str()) == Some("event") {
+                let event = obj.get("event");
+                if let Some(event) = event.and_then(|e| e.as_object()) {
+                    // tool_call_result event
+                    if let Some(result_ev) = event.get("tool_call_result").and_then(|r| r.as_object()) {
+                        last_block_ids.clear();
+                        if let (Some(tool_call_id), Some(outcome)) = (
+                            result_ev.get("tool_call_id").and_then(|i| i.as_str()),
+                            result_ev.get("outcome").and_then(|o| o.as_object()),
+                        ) {
+                            let content = if let Some(contents) = outcome.get("content").and_then(|c| c.as_array()) {
+                                contents.iter()
+                                    .filter_map(|c| c.get("text").and_then(|t| t.as_str()))
+                                    .collect::<Vec<_>>()
+                                    .join("")
+                            } else if let Some(error_arr) = outcome.get("error").and_then(|e| e.as_array()) {
+                                error_arr.iter()
+                                    .filter_map(|e| e.get("text").and_then(|t| t.as_str()))
+                                    .collect::<Vec<_>>()
+                                    .join("")
+                            } else {
+                                String::new()
+                            };
+                            if let Some(item) = self.items.iter_mut().find(|i| {
+                                matches!(i, ChatItem::Tool { id, .. } if id == tool_call_id)
+                            }) {
+                                if let ChatItem::Tool { result, .. } = item {
+                                    *result = Some(content);
+                                }
+                            }
+                        }
+                    }
+                    // tool_authorization event
+                    else if let Some(auth_ev) = event.get("tool_authorization").and_then(|a| a.as_object()) {
+                        if let (Some(tool_call_id), Some(decision)) = (
+                            auth_ev.get("tool_call_id").and_then(|i| i.as_str()),
+                            auth_ev.get("decision").and_then(|d| d.as_str()),
+                        ) {
+                            if let Some(item) = self.items.iter_mut().find(|i| {
+                                matches!(i, ChatItem::Tool { id, .. } if id == tool_call_id)
+                            }) {
+                                if let ChatItem::Tool { decision: dec, .. } = item {
+                                    if dec.is_none() {
+                                        *dec = Some(if decision == "approved" {
+                                            ToolDecision::Approved
+                                        } else {
+                                            ToolDecision::Denied
+                                        });
+                                    }
+                                }
+                            }
                         }
                     }
                 }
+                continue;
             }
         }
 
-        // Tool calls from the last assistant block that have no follow-up are still
-        // pending.
-        let pending: HashSet<String> = last_block_ids.into_iter().collect();
+        // Mark pending tool calls (from the last assistant block with no result).
         for (id, idx) in &tool_idx_map {
-            if pending.contains(id) {
+            if last_block_ids.contains(id) {
                 self.pending_tool_id = Some(id.clone());
             } else if let Some(ChatItem::Tool { decision, .. }) = self.items.get_mut(*idx) {
                 if decision.is_none() {
@@ -413,3 +552,4 @@ impl App {
         Some((session_id, write_token, tool_id))
     }
 }
+
