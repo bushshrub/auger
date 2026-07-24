@@ -234,7 +234,9 @@ async fn openapi() -> impl IntoResponse {
 }
 
 /// List all sessions, including archived sessions.
+#[tracing::instrument(skip(state))]
 async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
+    info!("listing sessions");
     let sessions = state.sessions.read().await;
     let mut list: Vec<_> = sessions
         .values()
