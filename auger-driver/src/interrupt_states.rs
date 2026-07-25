@@ -4,93 +4,58 @@
 //! or by the stream failing midway.
 
 use crate::ToolBatch;
-use crate::agent::ReadyToStream;
+use crate::agent::{Prompt, ReadyToStream};
 use crate::agent::State;
 use crate::agent::TypedAgent;
 use getset::Getters;
-use provider::LlmResponse;
+use provider::{LlmResponse, PartialLlmResponse};
 use provider::Message;
 use provider::UserPrompt;
 
 /// The LLM stream was interrupted midway.
 #[derive(Getters)]
 pub struct LlmStreamingInterrupted {
-    #[getset(get = "pub")]
-    events: Vec<provider::StreamEvent>,
+    pub(super) partial: PartialLlmResponse
 }
 
 impl State for LlmStreamingInterrupted {}
 
-impl LlmStreamingInterrupted {
-    pub(crate) fn new(events: Vec<provider::StreamEvent>) -> Self {
-        Self { events }
-    }
-}
-
 impl TypedAgent<LlmStreamingInterrupted> {
-    /// Add a new user message.
-    /// Choose whether the stream should be left with the partial response or
-    /// not.
-    pub fn add_message_to_continue(
+
+    /// Leaves the assistant message in and continues with the given prompt
+    pub fn seal_and_continue(
         mut self,
-        msg: UserPrompt,
-        leave_partial_response: bool,
+        msg: Prompt,
     ) -> TypedAgent<ReadyToStream> {
-        let user_message = if leave_partial_response {
-            let response = LlmResponse::from_events(self.state.events);
-            // TODO: we need to deal with the response properly
-            let tool_call_results = Vec::new();
-            Message::User {
-                message: msg,
-                tool_call_results,
-            }
-        } else {
-            msg.into()
-        };
+        todo!()
+    }
 
-        self.messages.push(user_message);
-
-        TypedAgent {
-            model: self.model,
-            tools: self.tools,
-            messages: self.messages,
-            state: ReadyToStream {},
-        }
+    /// Amend the last prompt. Discards interrupted response.
+    pub fn amend(mut self, msg: Prompt) -> TypedAgent<ReadyToStream> {
+        todo!()
     }
 }
 
 /// The LLM stream failed midway.
-#[derive(Getters)]
 pub struct LlmStreamingFailed {
-    #[getset(get = "pub")]
-    events: Vec<provider::StreamEvent>,
-    #[getset(get = "pub")]
-    error: provider::LlmError,
+    /// A possible partial response
+    pub(super) partial: Option<PartialLlmResponse>,
+    pub(super) error: provider::LlmError,
 }
 
 impl State for LlmStreamingFailed {}
 
-impl LlmStreamingFailed {
-    pub(crate) fn new(events: Vec<provider::StreamEvent>, error: provider::LlmError) -> Self {
-        Self { events, error }
-    }
-}
+
 
 impl TypedAgent<LlmStreamingFailed> {
     /// The provider error that caused the stream to fail.
     pub fn error(&self) -> &provider::LlmError {
-        self.state.error()
+        &self.state.error
     }
 
-    /// Add a new user message after abandoning the failed partial response.
-    pub fn add_message_to_continue(mut self, msg: UserPrompt) -> TypedAgent<ReadyToStream> {
-        self.messages.push(msg.into());
-        TypedAgent {
-            model: self.model,
-            tools: self.tools,
-            messages: self.messages,
-            state: ReadyToStream {},
-        }
+    /// Amends the previous "user" message before continuing
+    pub fn amend(mut self, msg: Prompt) -> TypedAgent<ReadyToStream> {
+        todo!("get rid of last entry")
     }
 
     /// Retry the response without the partial response
@@ -98,7 +63,8 @@ impl TypedAgent<LlmStreamingFailed> {
         TypedAgent {
             model: self.model,
             tools: self.tools,
-            messages: self.messages,
+            entries: self.entries,
+            system_prompt: self.system_prompt,
             state: ReadyToStream {},
         }
     }

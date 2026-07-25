@@ -12,40 +12,28 @@ use provider::StreamEvent;
 use provider::ToolDefinition;
 use serde::Deserialize;
 use serde::Serialize;
+use crate::agent::Entry;
 
 /// Driver state reconstructed by the persistence owner.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub enum RestoreState {
     WaitingForUserMessage {
-        messages: Vec<Message>,
+        entries: Vec<Entry>,
     },
     WaitingForToolResponses {
-        messages: Vec<Message>,
+        entries: Vec<Entry>,
     },
     Interrupted {
-        messages: Vec<Message>,
+        entries: Vec<Entry>,
         events: Vec<StreamEvent>,
     },
     Failed {
-        messages: Vec<Message>,
+        entries: Vec<Entry>,
         events: Vec<StreamEvent>,
         error: LlmError,
     },
 }
 
-impl RestoreState {
-    pub fn from_messages(messages: Vec<Message>) -> Self {
-        let waiting_for_tools = matches!(
-            messages.last(),
-            Some(Message::Assistant { response }) if !response.tool_calls().is_empty()
-        );
-        if waiting_for_tools {
-            Self::WaitingForToolResponses { messages }
-        } else {
-            Self::WaitingForUserMessage { messages }
-        }
-    }
-}
 
 /// An agent restored from persistent state.
 pub enum RestoredAgent {
@@ -57,31 +45,5 @@ pub enum RestoredAgent {
 
 /// Restore an agent into the state selected by the persistence owner.
 pub fn restore(model: LlmModel, tools: Vec<ToolDefinition>, state: RestoreState) -> RestoredAgent {
-    macro_rules! agent {
-        ($messages:expr, $state:expr) => {
-            TypedAgent {
-                model,
-                messages: $messages,
-                tools,
-                state: $state,
-            }
-        };
-    }
-
-    match state {
-        RestoreState::WaitingForUserMessage { messages } => {
-            RestoredAgent::WaitingForUserMessage(agent!(messages, WaitingForUserMessage))
-        }
-        RestoreState::WaitingForToolResponses { messages } => {
-            RestoredAgent::WaitingForToolResponses(agent!(messages, WaitingForToolResponses))
-        }
-        RestoreState::Interrupted { messages, events } => {
-            RestoredAgent::Interrupted(agent!(messages, LlmStreamingInterrupted::new(events)))
-        }
-        RestoreState::Failed {
-            messages,
-            events,
-            error,
-        } => RestoredAgent::Failed(agent!(messages, LlmStreamingFailed::new(events, error))),
-    }
+    todo!()
 }

@@ -4,14 +4,14 @@ mod tool;
 
 pub use request::*;
 pub use response::*;
-use serde::Deserialize;
+use serde::{de, Deserialize, Deserializer};
 use serde::Serialize;
 pub use tool::*;
 
 /// Sink for events emitted during an LLM stream.
 pub type EventSink<'a> = &'a mut (dyn FnMut(StreamEvent) + Send + 'a);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub enum Message {
     /// The system prompt
     System(String),
@@ -29,17 +29,31 @@ pub enum Message {
 }
 
 /// auger's wire type for responses from the Assistant
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AssistantResponse {
-    pub blocks: Vec<Block>
+    blocks: Vec<Block>
 }
 
 impl AssistantResponse {
+    fn new(blocks: Vec<Block>) -> Option<Self> {
+        if blocks.is_empty() {
+            None
+        } else {
+            Some(Self { blocks })
+        }
+    }
     pub fn tool_calls(&self) -> Vec<ToolCallRequest> {
         self.blocks.iter().filter_map(|b| match b {
             Block::ToolCall(tc) => Some(tc.clone()),
             _ => None,
         }).collect()
+    }
+}
+
+impl<'de> Deserialize<'de> for AssistantResponse {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let blocks = Vec::<Block>::deserialize(d)?;
+        Self::new(blocks).ok_or_else(|| de::Error::custom("assistant response must be non-empty"))
     }
 }
 

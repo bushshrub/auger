@@ -1,4 +1,4 @@
-use crate::agent::ReadyToStream;
+use crate::agent::{Entry, HarnessEntry, Prompt, ReadyToStream};
 use crate::agent::State;
 use crate::agent::TypedAgent;
 use crate::tool_batch::Resolved;
@@ -17,9 +17,9 @@ impl State for WaitingForToolResponses {}
 
 impl TypedAgent<WaitingForToolResponses> {
     pub fn previous_message(&self) -> &AssistantResponse {
-        let assistant_message = self.messages().last().expect("there to be a last message");
+        let assistant_message = self.entries.last().expect("there to contain some message before this state");
         match assistant_message {
-            Message::Assistant { response } => response,
+            Entry::Assistant(response) => response,
             _ => panic!(
                 "auger driver state invariant violation: last message should be an assistant \
                  message when in WaitingForToolResponses state"
@@ -29,12 +29,12 @@ impl TypedAgent<WaitingForToolResponses> {
 
     fn get_tool_calls(&self) -> Vec<ToolCallRequest> {
         let last_message = self
-            .messages()
+            .entries()
             .last()
             .expect("there should be at least one message in the thread")
             .clone();
         match last_message {
-            Message::Assistant { response } => response.tool_calls(),
+            Entry::Assistant(response) => response.tool_calls(),
             _ => panic!(
                 "auger driver state invariant violation: last message should be an assistant \
                  message when in WaitingForToolResponses state"
@@ -59,20 +59,28 @@ impl TypedAgent<WaitingForToolResponses> {
         ToolBatch::new(self.get_tool_calls())
     }
 
+    /// Inject a prompt. This is useful for things like steering.
+    pub fn inject(mut self, prompt: Prompt) -> Self {
+        self.entries.push(prompt.into());
+        TypedAgent {
+            model: self.model,
+            entries: self.entries,
+            tools: self.tools,
+            system_prompt: self.system_prompt,
+            state: self.state,
+        }
+    }
+
     /// Submit a valid batch of tool responses.
     pub fn add_all_tool_responses(
         mut self,
-        steering_prompt: Option<UserPrompt>,
         responses: ToolBatch<Resolved>,
     ) -> TypedAgent<ReadyToStream> {
-        let prompt = steering_prompt.unwrap_or_else(|| UserPrompt::new(String::new()));
-        self.messages.push(Message::User {
-            message: prompt,
-            tool_call_results: responses.drain(),
-        });
+        self.entries.push(Entry::Harness(HarnessEntry::ToolResults(responses.drain())));
         TypedAgent {
             model: self.model,
-            messages: self.messages,
+            entries: self.entries,
+            system_prompt: self.system_prompt,
             tools: self.tools,
             state: ReadyToStream {},
         }

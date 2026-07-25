@@ -1,31 +1,76 @@
 use crate::streaming::LlmStreaming as LlmStreamingFuture;
 use getset::Getters;
-use provider::AssistantResponse;
+use serde::{Deserialize, Serialize};
+use provider::{AssistantResponse, ToolResult};
 use provider::LlmModel;
 use provider::Message;
 use provider::ToolDefinition;
 use provider::UserPrompt;
 use tokio_util::sync::CancellationToken;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum Entry {
+    User(UserPrompt),
+    Harness(HarnessEntry),
+    Assistant(AssistantResponse),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum HarnessEntry {
+    ToolResults(Vec<ToolResult>),
+    /// A harness level message.
+    Message(String)
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum Prompt {
+    User(UserPrompt),
+    Harness(String)
+}
+
+impl From<Prompt> for Entry {
+    fn from(value: Prompt) -> Self {
+        match value {
+            Prompt::User(user_prompt) => Entry::User(user_prompt),
+            Prompt::Harness(msg) => Entry::Harness(HarnessEntry::Message(msg)),
+        }
+    }
+}
+
 /// Synchronous state machine for the auger driver.
 /// This is the main state machine.
 /// State enforced through typestates.
 #[derive(Getters)]
 pub struct TypedAgent<S: State> {
     pub(crate) model: LlmModel,
-    /// The messages in the agent's current session so far.
-    /// Note that this crate guarantees the messages in here are aligned with
-    /// the state. It is a bug if that is untrue.
+    pub(crate) system_prompt: String,
+    /// The entries in this session. The order is as follows:
+    /// entries := (run Entry::Assistant)* run?
+    /// run := (Entry::User | Entry::Harness)+
     #[get = "pub"]
-    pub(crate) messages: Vec<Message>,
+    pub(crate) entries: Vec<Entry>,
     pub(crate) tools: Vec<ToolDefinition>,
     #[get = "pub"]
     pub(crate) state: S,
 }
 
+impl<S: State> TypedAgent<S> {
+    /// Retrieve the last assistant response that we've seen. May be None.
+    fn get_previous_assistant(&self) -> Option<&AssistantResponse> {
+        self.entries.iter().rev().find_map(|entry| {
+            match entry {
+                Entry::Assistant(assistant) => Some(assistant),
+                _ => None,
+            }
+        })
+    }
+}
+
 /// A state that the driver can be in.
 pub trait State {}
 
-/// The driver is waiting for a user message.
+/// The driver is waiting for a "user" message.
+/// Note that "user" here can also be the harness.
 /// Providing a message will begin the LLM stream and
 /// transition it to the [`LlmStreaming`] state.
 pub struct WaitingForUserMessage;
@@ -34,11 +79,11 @@ impl State for WaitingForUserMessage {}
 impl TypedAgent<WaitingForUserMessage> {
     /// Create a new agent with the given system prompt and model.
     pub fn new(model: LlmModel, system_prompt: String, tools: Vec<ToolDefinition>) -> Self {
-        let mut messages = Vec::new();
-        messages.push(Message::System(system_prompt));
+        let entries = Vec::new();
         let state = WaitingForUserMessage {};
         Self {
-            messages,
+            system_prompt,
+            entries,
             model,
             tools,
             state,
@@ -48,9 +93,9 @@ impl TypedAgent<WaitingForUserMessage> {
     /// Get the previous assistant message that occurred before this state.
     /// May be `None` if this is the first turn in the session.
     pub fn previous_message(&self) -> Option<&AssistantResponse> {
-        let assistant_message = self.messages().last()?;
-        match assistant_message {
-            Message::Assistant { response } => Some(response),
+        let last_entry = self.entries.last()?;
+        match last_entry {
+            Entry::Assistant(assistant) => Some(assistant),
             _ => panic!(
                 "auger driver state invariant violation: last message should be an assistant \
                  message when in WaitingForUserMessage state"
@@ -60,14 +105,15 @@ impl TypedAgent<WaitingForUserMessage> {
 
     /// Add a user message to the driver and transition it to the
     /// [`ReadyToStream`] state.
-    pub fn add_message(mut self, msg: UserPrompt) -> TypedAgent<ReadyToStream> {
-        self.messages.push(msg.into());
+    pub fn add_message(mut self, msg: Prompt) -> TypedAgent<ReadyToStream> {
+        self.entries.push(msg.into());
         let state = ReadyToStream {};
         TypedAgent {
             model: self.model,
+            system_prompt: self.system_prompt,
+            entries: self.entries,
             tools: self.tools,
             state,
-            messages: self.messages,
         }
     }
 }
@@ -87,10 +133,15 @@ impl TypedAgent<ReadyToStream> {
 
         LlmStreamingFuture::new(
             self.model,
+            self.system_prompt,
             self.tools,
-            self.messages,
+            self.entries,
             Box::new(cb),
             cancellation,
         )
     }
+}
+
+pub(crate) fn convert_entries_into_messages(entries: Vec<Entry>) -> Vec<Message> {
+    todo!()
 }
