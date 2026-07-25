@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["auger-core","agent-server","agent-tools","builtin-tools", "auger-tui","provider", "provider-anthropic","provider-openai-chatcompletions", "provider-openai-responses", "tool-call-healer", "auger-driver", "provider-dummy", "auger-traces"]
+members = ["auger-core","agent-server","agent-tools","builtin-tools", "auger-tui","provider", "provider-anthropic","provider-openai-chatcompletions", "provider-openai-responses", "auger-driver", "provider-dummy", "auger-traces"]
 
 [workspace.dependencies]
 auger-core = { version = "0.1.0", path = "auger-core" }

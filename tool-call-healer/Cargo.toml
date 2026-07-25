@@ -1,9 +1,0 @@
-[package]
-name = "tool-call-healer"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-provider.workspace = true
-serde_json.workspace = true
-uuid = { workspace = true, features = ["v4"] }
