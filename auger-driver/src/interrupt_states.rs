@@ -8,7 +8,6 @@ use crate::agent::ReadyToStream;
 use crate::agent::State;
 use crate::agent::TypedAgent;
 use getset::Getters;
-use provider::ClankerMessage;
 use provider::LlmResponse;
 use provider::Message;
 use provider::UserPrompt;
@@ -39,16 +38,8 @@ impl TypedAgent<LlmStreamingInterrupted> {
     ) -> TypedAgent<ReadyToStream> {
         let user_message = if leave_partial_response {
             let response = LlmResponse::from_events(self.state.events);
-            let reply = ClankerMessage::from(response);
-            // TODO: Should marking the remaining tool calls be the responsibility of the
-            // driver?
-            let tool_call_results = if !reply.tool_calls().is_empty() {
-                ToolBatch::new(reply.tool_calls().to_vec())
-                    .interrupt_remaining()
-                    .drain()
-            } else {
-                Vec::new()
-            };
+            // TODO: we need to deal with the response properly
+            let tool_call_results = Vec::new();
             Message::User {
                 message: msg,
                 tool_call_results,

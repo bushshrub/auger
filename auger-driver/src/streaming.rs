@@ -5,7 +5,7 @@ use crate::agent::WaitingForUserMessage;
 use crate::interrupt_states::LlmStreamingFailed;
 use crate::interrupt_states::LlmStreamingInterrupted;
 use crate::waiting_for_tools::WaitingForToolResponses;
-use provider::LlmModel;
+use provider::{LlmModel, LlmResponse, StreamEvent};
 use provider::LlmRequest;
 use provider::ToolDefinition;
 use std::future::Future;
@@ -66,10 +66,40 @@ pub(crate) async fn run_stream(
     cancellation: CancellationToken,
 ) -> StreamResult {
     let mut events = Vec::new();
+    let mut sink = |event: StreamEvent| {
+        event_callback(event.clone());
+        events.push(event);
+    };
     let request = LlmRequest::new(messages_so_far.clone(), tools.clone());
-    let mut stream = tokio::select! {
-        result = model.stream(request) => match result {
-            Ok(stream) => stream,
+    tokio::select! {
+        result = model.stream(request, &mut sink) => match result {
+            Ok(stream) => {
+                let resp = LlmResponse::from_events(events);
+                match resp {
+                    LlmResponse::Partial(_) => {panic!("seems like a bug")}
+                    LlmResponse::Completed(complete_response) => {
+                        let clanker_msg = complete_response.response;
+                        let has_tool_calls = !clanker_msg.tool_calls().is_empty();
+                        messages_so_far.push(clanker_msg.into());
+                        if !has_tool_calls {
+                            return StreamResult::WaitingForUserMessage(TypedAgent {
+                                model,
+                                tools,
+                                messages: messages_so_far,
+                                state: WaitingForUserMessage {},
+                            });
+                        } else {
+                            return StreamResult::WaitingForToolResponses(TypedAgent {
+                                model,
+                                tools,
+                                messages: messages_so_far,
+                                state: WaitingForToolResponses {},
+                            });
+                        }
+                    }
+                }
+                stream
+            },
             Err(error) => {
                 error!(model = %model.name(), error = %error, "failed to start provider stream");
                 return StreamResult::Failed(TypedAgent {
@@ -89,74 +119,6 @@ pub(crate) async fn run_stream(
             });
         },
     };
-
-    loop {
-        let event = tokio::select! {
-            event = futures::StreamExt::next(&mut stream) => event,
-            _ = cancellation.cancelled() => {
-                stream.abort();
-
-                return StreamResult::Interrupted(TypedAgent {
-                    model,
-                    tools,
-                    messages: messages_so_far,
-                    state: LlmStreamingInterrupted::new(events),
-                });
-            }
-        };
-
-        match event {
-            Some(Ok(event)) => {
-                event_callback(event.clone());
-                events.push(event);
-            }
-            Some(Err(error)) => {
-                error!(model = %model.name(), error = %error, "provider stream failed");
-                return StreamResult::Failed(TypedAgent {
-                    model,
-                    tools,
-                    messages: messages_so_far,
-                    state: LlmStreamingFailed::new(events, error),
-                });
-            }
-            None => break,
-        }
-    }
-
-    let response = match provider::LlmResponse::from_events(events.clone()) {
-        provider::LlmResponse::Completed(response) => response,
-        provider::LlmResponse::Partial(_) => {
-            return StreamResult::Failed(TypedAgent {
-                model,
-                tools,
-                messages: messages_so_far,
-                state: LlmStreamingFailed::new(
-                    events,
-                    provider::LlmError {
-                        message: "provider stream ended without a done event".to_string(),
-                    },
-                ),
-            });
-        }
-    };
-    let clanker_message = provider::ClankerMessage::from(response);
-    let has_tool_calls = !clanker_message.tool_calls().is_empty();
-    messages_so_far.push(clanker_message.into());
-    if !has_tool_calls {
-        StreamResult::WaitingForUserMessage(TypedAgent {
-            model,
-            tools,
-            messages: messages_so_far,
-            state: WaitingForUserMessage {},
-        })
-    } else {
-        StreamResult::WaitingForToolResponses(TypedAgent {
-            model,
-            tools,
-            messages: messages_so_far,
-            state: WaitingForToolResponses {},
-        })
-    }
 }
 
 /// The result of running the stream.

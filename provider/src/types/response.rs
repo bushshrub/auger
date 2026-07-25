@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashMap};
 use crate::AssistantResponse;
 use crate::Message;
 use crate::types::ToolCallRequest;
@@ -22,79 +23,56 @@ pub struct TokenUsage {
 }
 
 /// Events that can be emitted while streaming a response from the clanker.
+///
+/// Some clankers are more advanced and can interleave reasoning and yap.
+/// Example:
+/// <some reasoning>
+/// <text yap>
+/// <more reasoning>
+/// <text yap>
+/// <call a tool>
+/// <text yap>
+/// <call another tool>
+/// etc. etc.
+///
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum StreamEvent {
-    TextDelta(String),
-    /// Thinking output from clanker
-    ReasoningDelta(String),
-    /// Tool call delta from clanker.
-    ToolCall {
-        id: String,
-        name: String,
-        /// Incomplete arguments
-        arguments: String,
+    BlockStart { index: usize, kind: BlockKind },
+    BlockDelta { index: usize, delta: String },
+    BlockEnd { index: usize }
+}
+
+/// The type of block being emitted
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum BlockKind {
+    Reasoning,
+    Text,
+    ToolCall { id: String, name: String },
+}
+
+/// The LLM stream has successfully returned
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamEnd {
+    pub usage: Option<TokenUsage>,
+    pub stop_reason: Option<String>,
+}
+
+/// A block of response from the clanker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Block {
+    Text (String),
+    Reasoning {
+        text: String,
     },
-    ToolCallComplete {
-        id: String,
-        name: String,
-        /// Complete arguments
-        arguments: String,
-    },
-    /// Clanker is done clanking.
-    Done {
-        usage: Option<TokenUsage>,
-        stop_reason: Option<String>,
-    },
+    ToolCall(ToolCallRequest)
 }
 
-#[derive(Debug, Getters)]
-pub struct ClankerMessage {
-    reasoning: Option<String>,
-    #[get = "pub"]
-    pub(crate) tool_calls: Vec<ToolCallRequest>,
-    content: String,
-}
-
-impl From<CompletedLlmResponse> for ClankerMessage {
-    fn from(response: CompletedLlmResponse) -> Self {
-        Self {
-            reasoning: response.reasoning,
-            tool_calls: response.tool_calls.unwrap_or_default(),
-            content: response.content,
-        }
-    }
-}
-
-impl From<PartialLlmResponse> for ClankerMessage {
-    fn from(response: PartialLlmResponse) -> Self {
-        Self {
-            reasoning: response.reasoning,
-            tool_calls: response.tool_calls.unwrap_or_default(),
-            content: response.content,
-        }
-    }
-}
-
-impl From<ClankerMessage> for Message {
-    fn from(msg: ClankerMessage) -> Self {
-        Message::Assistant {
-            response: AssistantResponse {
-                reasoning: msg.reasoning,
-                tool_calls: msg.tool_calls,
-                content: msg.content,
-            },
-        }
-    }
-}
-
+/// A partial LLM response. Note that this may not have complete blocks since
+/// the user could have cut it off, or it could have failed midway.
 #[derive(Debug, Clone)]
 pub struct PartialLlmResponse {
-    pub content: String,
-    /// Optional reasoning output, if the model supports reasoning.
-    pub reasoning: Option<String>,
-    /// Tool calls requested by the model.
-    /// These are not guaranteed to be complete or valid.
-    pub tool_calls: Option<Vec<ToolCallRequest>>,
+    /// The raw events from the clanker provider.
+    pub raw_events: Vec<StreamEvent>,
     /// Token usage details after this response is complete.
     /// May be None if the provider doesn't expose token usage details
     pub usage: Option<TokenUsage>,
@@ -104,11 +82,8 @@ pub struct PartialLlmResponse {
 
 #[derive(Debug, Clone)]
 pub struct CompletedLlmResponse {
-    pub content: String,
-    /// Optional reasoning output, if the model supports reasoning.
-    pub reasoning: Option<String>,
-    /// Tool calls requested by the model.
-    pub tool_calls: Option<Vec<ToolCallRequest>>,
+    /// The final response from the clanker.
+    pub response: AssistantResponse,
     /// Token usage details after this response is complete.
     /// May be None if the provider doesn't expose token usage details
     pub usage: Option<TokenUsage>,
@@ -125,73 +100,7 @@ pub enum LlmResponse {
 impl LlmResponse {
     /// Collect stream events and select a partial or completed response.
     pub fn from_events(events: Vec<StreamEvent>) -> Self {
-        let mut content = String::new();
-        let mut reasoning = None;
-        let mut tool_calls = Vec::new();
-        let mut usage = None;
-        let mut stop_reason = None;
-        let mut completed = false;
-
-        for event in events {
-            match event {
-                StreamEvent::TextDelta(delta) => content.push_str(&delta),
-                StreamEvent::ReasoningDelta(delta) => {
-                    reasoning.get_or_insert(String::new()).push_str(&delta)
-                }
-                // discard tool call deltas.
-                StreamEvent::ToolCall { .. } => {}
-                StreamEvent::ToolCallComplete {
-                    id,
-                    name,
-                    arguments,
-                } => tool_calls.push(ToolCallRequest {
-                    id,
-                    name,
-                    arguments,
-                }),
-                StreamEvent::Done {
-                    usage: u,
-                    stop_reason: sr,
-                } => {
-                    usage = u;
-                    stop_reason = sr;
-                    completed = true;
-                }
-            }
-        }
-
-        let tool_calls = if tool_calls.is_empty() {
-            None
-        } else {
-            Some(tool_calls)
-        };
-
-        if completed {
-            Self::Completed(CompletedLlmResponse {
-                content,
-                reasoning,
-                tool_calls,
-                usage,
-                stop_reason,
-            })
-        } else {
-            Self::Partial(PartialLlmResponse {
-                content,
-                reasoning,
-                tool_calls,
-                usage,
-                stop_reason,
-            })
-        }
-    }
-}
-
-impl From<LlmResponse> for ClankerMessage {
-    fn from(response: LlmResponse) -> Self {
-        match response {
-            LlmResponse::Partial(response) => response.into(),
-            LlmResponse::Completed(response) => response.into(),
-        }
+        todo!()
     }
 }
 
@@ -224,53 +133,3 @@ impl std::fmt::Display for LlmError {
     }
 }
 
-/// Stream of events from the LLM. You can either get StreamEvents, or Errors.
-pub struct LlmStream {
-    inner: Option<Pin<Box<dyn Stream<Item = Result<StreamEvent, LlmError>> + Send>>>,
-}
-
-impl LlmStream {
-    pub fn new(stream: impl Stream<Item = Result<StreamEvent, LlmError>> + Send + 'static) -> Self {
-        Self {
-            inner: Some(Box::pin(stream)),
-        }
-    }
-
-    /// Abort the stream and release the provider's underlying stream.
-    pub fn abort(&mut self) {
-        self.inner = None;
-    }
-}
-
-impl Stream for LlmStream {
-    type Item = Result<StreamEvent, LlmError>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.inner.as_mut() {
-            Some(stream) => stream.as_mut().poll_next(cx),
-            None => Poll::Ready(None),
-        }
-    }
-}
-
-impl Unpin for LlmStream {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn response_without_done_is_partial() {
-        let response = LlmResponse::from_events(vec![StreamEvent::TextDelta("partial".into())]);
-        assert!(matches!(response, LlmResponse::Partial(_)));
-    }
-
-    #[test]
-    fn response_with_done_is_completed() {
-        let response = LlmResponse::from_events(vec![StreamEvent::Done {
-            usage: None,
-            stop_reason: None,
-        }]);
-        assert!(matches!(response, LlmResponse::Completed(_)));
-    }
-}

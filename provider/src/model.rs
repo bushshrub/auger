@@ -1,8 +1,7 @@
-use crate::CompletedLlmResponse;
+use crate::{CompletedLlmResponse, EventSink, StreamEnd};
 use crate::LlmError;
 use crate::LlmProvider;
 use crate::LlmRequest;
-use crate::LlmStream;
 use std::fmt;
 use std::sync::Arc;
 
@@ -40,7 +39,7 @@ impl LlmModel {
     }
 
     /// Let the clanker yap over a stream
-    pub async fn stream(&self, request: LlmRequest) -> Result<LlmStream, LlmError> {
-        self.provider.stream(&self.name, request).await
+    pub async fn stream(&self, request: LlmRequest, event_sink: EventSink<'_>) -> Result<StreamEnd, LlmError> {
+        self.provider.stream(&self.name, request, event_sink).await
     }
 }

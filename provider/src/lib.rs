@@ -20,6 +20,9 @@ pub trait LlmProvider: Send + Sync {
         model: &str,
         request: LlmRequest,
     ) -> Result<CompletedLlmResponse, LlmError>;
+
     /// Let the clanker yap over an abortable stream.
-    async fn stream(&self, model: &str, request: LlmRequest) -> Result<LlmStream, LlmError>;
+    ///
+    /// Downstream provider implementations should put each event into the sink.
+    async fn stream(&self, model: &str, request: LlmRequest, sink: EventSink<'_>) -> Result<StreamEnd, LlmError>;
 }

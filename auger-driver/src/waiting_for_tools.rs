@@ -34,7 +34,7 @@ impl TypedAgent<WaitingForToolResponses> {
             .expect("there should be at least one message in the thread")
             .clone();
         match last_message {
-            Message::Assistant { response } => response.tool_calls,
+            Message::Assistant { response } => response.tool_calls(),
             _ => panic!(
                 "auger driver state invariant violation: last message should be an assistant \
                  message when in WaitingForToolResponses state"

@@ -8,6 +8,9 @@ use serde::Deserialize;
 use serde::Serialize;
 pub use tool::*;
 
+/// Sink for events emitted during an LLM stream.
+pub type EventSink<'a> = &'a mut (dyn FnMut(StreamEvent) + Send + 'a);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
     /// The system prompt
@@ -24,29 +27,24 @@ pub enum Message {
     /// A message from the model.
     Assistant { response: AssistantResponse },
 }
-/// Response from the assistant.
+
+/// auger's wire type for responses from the Assistant
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantResponse {
-    pub reasoning: Option<String>,
-    pub content: String,
-    pub tool_calls: Vec<ToolCallRequest>,
+    pub blocks: Vec<Block>
+}
+
+impl AssistantResponse {
+    pub fn tool_calls(&self) -> Vec<ToolCallRequest> {
+        self.blocks.iter().filter_map(|b| match b {
+            Block::ToolCall(tc) => Some(tc.clone()),
+            _ => None,
+        }).collect()
+    }
 }
 
 impl From<AssistantResponse> for Message {
     fn from(response: AssistantResponse) -> Self {
-        Message::Assistant { response }
-    }
-}
-
-impl From<CompletedLlmResponse> for Message {
-    fn from(response: CompletedLlmResponse) -> Self {
-        let tool_calls = response.tool_calls.unwrap_or_default();
-        Message::Assistant {
-            response: AssistantResponse {
-                reasoning: response.reasoning,
-                content: response.content,
-                tool_calls,
-            },
-        }
+        Self::Assistant { response }
     }
 }
