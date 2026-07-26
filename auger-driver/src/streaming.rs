@@ -2,10 +2,9 @@
 
 use crate::agent::{convert_entries_into_messages, Entry, TypedAgent};
 use crate::agent::WaitingForUserMessage;
-use crate::interrupt_states::LlmStreamingFailed;
 use crate::interrupt_states::LlmStreamingInterrupted;
 use crate::waiting_for_tools::WaitingForToolResponses;
-use provider::{LlmModel, LlmResponse, PartialLlmResponse, StreamEvent};
+use provider::{LlmError, LlmModel, LlmResponse, PartialLlmResponse, StreamEvent};
 use provider::LlmRequest;
 use provider::ToolDefinition;
 use std::future::Future;
@@ -108,20 +107,22 @@ pub(crate) async fn run_stream(
             },
             Err(error) => {
                 error!(model = %model.name(), error = %error, "failed to start provider stream");
-                StreamResult::Failed(TypedAgent {
-                    model,
-                    tools,
-                    system_prompt,
-                    entries: entries_so_far,
-                    state: LlmStreamingFailed {
-                        partial: Some(PartialLlmResponse {
-                            raw_events: events,
-                            usage: None,
-                            stop_reason: None,
-                        }),
-                        error,
+                StreamResult::Failed {
+                    agent: TypedAgent {
+                        model,
+                        tools,
+                        system_prompt,
+                        entries: entries_so_far,
+                        state: LlmStreamingInterrupted {
+                            partial: Some(PartialLlmResponse {
+                                raw_events: events,
+                                usage: None,
+                                stop_reason: None,
+                            }),
+                        },
                     },
-                })
+                    error
+                }
             }
         },
         _ = cancellation.cancelled() => {
@@ -149,7 +150,10 @@ pub enum StreamResult {
     Interrupted(TypedAgent<LlmStreamingInterrupted>),
     /// An error occurred while trying to start the stream, or in the middle
     /// of streaming
-    Failed(TypedAgent<LlmStreamingFailed>),
+    Failed {
+        agent: TypedAgent<LlmStreamingInterrupted>,
+        error: LlmError,
+    },
     /// Stream completed successfully and the LLM has called tools
     WaitingForToolResponses(TypedAgent<WaitingForToolResponses>),
     /// Stream completed successfully and the LLM has not called any tools

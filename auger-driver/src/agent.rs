@@ -8,6 +8,7 @@ use provider::ToolDefinition;
 use provider::UserPrompt;
 use tokio_util::sync::CancellationToken;
 
+/// An item in the conversation.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Entry {
     User(UserPrompt),
@@ -143,5 +144,44 @@ impl TypedAgent<ReadyToStream> {
 }
 
 pub(crate) fn convert_entries_into_messages(entries: Vec<Entry>) -> Vec<Message> {
-    todo!()
+    let mut messages = Vec::new();
+    let mut user_message = String::new();
+    let mut tool_call_results = Vec::new();
+    let mut has_user_entry = false;
+
+    for entry in entries {
+        match entry {
+            Entry::User(prompt) => {
+                has_user_entry = true;
+                user_message.push_str(&prompt.message);
+            }
+            Entry::Harness(HarnessEntry::Message(message)) => {
+                has_user_entry = true;
+                user_message.push_str(&message);
+            }
+            Entry::Harness(HarnessEntry::ToolResults(mut results)) => {
+                has_user_entry = true;
+                tool_call_results.append(&mut results);
+            }
+            Entry::Assistant(response) => {
+                if has_user_entry {
+                    messages.push(Message::User {
+                        message: UserPrompt::new(std::mem::take(&mut user_message)),
+                        tool_call_results: std::mem::take(&mut tool_call_results),
+                    });
+                    has_user_entry = false;
+                }
+                messages.push(response.into());
+            }
+        }
+    }
+
+    if has_user_entry {
+        messages.push(Message::User {
+            message: UserPrompt::new(user_message),
+            tool_call_results,
+        });
+    }
+
+    messages
 }

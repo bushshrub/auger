@@ -13,9 +13,11 @@ use provider::Message;
 use provider::UserPrompt;
 
 /// The LLM stream was interrupted midway.
+/// This could be either caused by the user cancelling it,
+/// or by some kind of provider failure.
 #[derive(Getters)]
 pub struct LlmStreamingInterrupted {
-    pub(super) partial: PartialLlmResponse
+    pub(super) partial: Option<PartialLlmResponse>
 }
 
 impl State for LlmStreamingInterrupted {}
@@ -33,29 +35,6 @@ impl TypedAgent<LlmStreamingInterrupted> {
     /// Amend the last prompt. Discards interrupted response.
     pub fn amend(mut self, msg: Prompt) -> TypedAgent<ReadyToStream> {
         todo!()
-    }
-}
-
-/// The LLM stream failed midway.
-pub struct LlmStreamingFailed {
-    /// A possible partial response
-    pub(super) partial: Option<PartialLlmResponse>,
-    pub(super) error: provider::LlmError,
-}
-
-impl State for LlmStreamingFailed {}
-
-
-
-impl TypedAgent<LlmStreamingFailed> {
-    /// The provider error that caused the stream to fail.
-    pub fn error(&self) -> &provider::LlmError {
-        &self.state.error
-    }
-
-    /// Amends the previous "user" message before continuing
-    pub fn amend(mut self, msg: Prompt) -> TypedAgent<ReadyToStream> {
-        todo!("get rid of last entry")
     }
 
     /// Retry the response without the partial response

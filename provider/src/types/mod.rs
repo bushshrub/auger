@@ -2,6 +2,7 @@ mod request;
 mod response;
 mod tool;
 
+use getset::Getters;
 pub use request::*;
 pub use response::*;
 use serde::{de, Deserialize, Deserializer};
@@ -11,7 +12,7 @@ pub use tool::*;
 /// Sink for events emitted during an LLM stream.
 pub type EventSink<'a> = &'a mut (dyn FnMut(StreamEvent) + Send + 'a);
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
     /// The system prompt
     System(String),
@@ -29,13 +30,14 @@ pub enum Message {
 }
 
 /// auger's wire type for responses from the Assistant
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Getters)]
 pub struct AssistantResponse {
+    #[get = "pub"]
     blocks: Vec<Block>
 }
 
 impl AssistantResponse {
-    fn new(blocks: Vec<Block>) -> Option<Self> {
+    pub fn new(blocks: Vec<Block>) -> Option<Self> {
         if blocks.is_empty() {
             None
         } else {
