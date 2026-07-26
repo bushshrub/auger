@@ -4,7 +4,7 @@ use crate::agent::{convert_turns_into_messages, Turn, TypedAgent};
 use crate::agent::WaitingForUserMessage;
 use crate::interrupt_states::LlmStreamingInterrupted;
 use crate::waiting_for_tools::WaitingForToolResponses;
-use provider::{fold_events, AssistantResponse, CompletedLlmResponse, LlmError, LlmModel, StreamEvent};
+use provider::{fold_events, AssistantResponse, LlmError, LlmModel, StreamEnd, StreamEvent};
 use provider::LlmRequest;
 use provider::ToolDefinition;
 use std::future::Future;
@@ -78,29 +78,41 @@ pub(crate) async fn run_stream(
         result = model.stream(request, &mut sink) => match result {
             Ok(stream) => {
                 let (resp, token_usage) = fold_events(&events);
+                // The adapter reports usage if it can; otherwise fall back to
+                // whatever the stream itself carried.
+                let end = StreamEnd {
+                    usage: stream.usage.or(token_usage),
+                    stop_reason: stream.stop_reason,
+                };
                 let clanker_msg = AssistantResponse::new(resp).expect("there to be blocks");
                 let has_tool_calls = !clanker_msg.tool_calls().is_empty();
                 turns_so_far.push(Turn::Output(clanker_msg));
                 if !has_tool_calls {
-                    StreamResult::WaitingForUserMessage(TypedAgent {
-                        model,
-                        tools,
-                        system_prompt,
-                        turns: turns_so_far,
-                        state: WaitingForUserMessage {},
-                    })
+                    StreamResult::WaitingForUserMessage {
+                        agent: TypedAgent {
+                            model,
+                            tools,
+                            system_prompt,
+                            turns: turns_so_far,
+                            state: WaitingForUserMessage {},
+                        },
+                        end,
+                    }
                 } else {
-                    StreamResult::WaitingForToolResponses(TypedAgent {
-                        model,
-                        tools,
-                        system_prompt,
-                        turns: turns_so_far,
-                        state: WaitingForToolResponses {},
-                    })
+                    StreamResult::WaitingForToolResponses {
+                        agent: TypedAgent {
+                            model,
+                            tools,
+                            system_prompt,
+                            turns: turns_so_far,
+                            state: WaitingForToolResponses {},
+                        },
+                        end,
+                    }
                 }
             },
             Err(error) => {
-                let (resp, token_usage) = fold_events(&events);
+                let (resp, _) = fold_events(&events);
                 error!(model = %model.name(), error = %error, "failed to start provider stream");
                 StreamResult::Failed {
                     agent: TypedAgent {
@@ -117,7 +129,7 @@ pub(crate) async fn run_stream(
             }
         },
         _ = cancellation.cancelled() => {
-            let (resp, token_usage) = fold_events(&events);
+            let (resp, _) = fold_events(&events);
             StreamResult::Interrupted(TypedAgent {
                 model,
                 tools,
@@ -142,7 +154,13 @@ pub enum StreamResult {
         error: LlmError,
     },
     /// Stream completed successfully and the LLM has called tools
-    WaitingForToolResponses(TypedAgent<WaitingForToolResponses>),
+    WaitingForToolResponses {
+        agent: TypedAgent<WaitingForToolResponses>,
+        end: StreamEnd,
+    },
     /// Stream completed successfully and the LLM has not called any tools
-    WaitingForUserMessage(TypedAgent<WaitingForUserMessage>),
+    WaitingForUserMessage {
+        agent: TypedAgent<WaitingForUserMessage>,
+        end: StreamEnd,
+    },
 }
