@@ -32,7 +32,6 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use tokio::runtime::Handle;
-use tracing::debug;
 use tracing::info;
 use tracing::warn;
 
@@ -343,7 +342,7 @@ impl Session {
                                     });
                                     HarnessState::StreamingFailed { agent }
                                 }
-                                StreamResult::WaitingForToolResponses(agent) => {
+                                StreamResult::WaitingForToolResponses { agent, end } => {
                                     info!(session_id = %self.id, "stream finished: agent has called tools");
 
                                     let turn_id = self
@@ -352,6 +351,10 @@ impl Session {
                                             response: agent.previous_message().clone(),
                                         })
                                         .expect("last turn to be user");
+                                    let _ = self.event_tx.send(SessionEvent::TurnComplete {
+                                        usage: end.usage,
+                                        stop_reason: end.stop_reason,
+                                    });
 
                                     let call_requests = agent.get_requested_tools();
                                     if self.auto_approval_policies.will_approve_all(&call_requests)
@@ -423,7 +426,7 @@ impl Session {
                                         }
                                     }
                                 }
-                                StreamResult::WaitingForUserMessage(agent) => {
+                                StreamResult::WaitingForUserMessage { agent, end } => {
                                     info!(session_id=%self.id, "Stream has returned: No tools called");
                                     self.recorder
                                         .record_assistant(AssistantTurnOutcome::Completed {
@@ -433,6 +436,10 @@ impl Session {
                                                 .clone(),
                                         })
                                         .expect("last turn to be user");
+                                    let _ = self.event_tx.send(SessionEvent::TurnComplete {
+                                        usage: end.usage,
+                                        stop_reason: end.stop_reason,
+                                    });
                                     HarnessState::WaitingForUserMessage { agent }
                                 }
                             }
@@ -466,13 +473,13 @@ impl Session {
                             StreamResult::Failed { .. } => {
                                 panic!("stream failed while harness was interrupting the stream")
                             }
-                            StreamResult::WaitingForToolResponses(_) => {
+                            StreamResult::WaitingForToolResponses { .. } => {
                                 panic!(
                                     "stream requested tools while harness was interrupting the \
                                      stream"
                                 )
                             }
-                            StreamResult::WaitingForUserMessage(_) => {
+                            StreamResult::WaitingForUserMessage { .. } => {
                                 panic!("stream completed while harness was interrupting the stream")
                             }
                         },

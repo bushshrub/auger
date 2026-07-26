@@ -9,27 +9,6 @@ use auger_driver::WaitingForUserMessage;
 use auger_driver::Prompt;
 use tokio_util::sync::CancellationToken;
 
-/// States which a session can be restored from
-pub(crate) enum RestorableState {
-    /// The session is waiting for a user message
-    WaitingForUserMessage {
-        agent: TypedAgent<WaitingForUserMessage>,
-    },
-    /// Session is waiting for consent for tool calls
-    NeedToolConsent {
-        agent: TypedAgent<WaitingForToolResponses>,
-        user_tool_decisions: UserToolDecisions<Resolving>,
-    },
-    /// LLM streaming was interrupted, retaining the partial response.
-    StreamingInterrupted {
-        agent: TypedAgent<LlmStreamingInterrupted>,
-    },
-    /// LLM streaming failed, retaining the partial response.
-    StreamingFailed {
-        agent: TypedAgent<LlmStreamingInterrupted>,
-    },
-}
-
 /// The current state that the harness is in, with additional data as needed
 pub(crate) enum HarnessState {
     /// The session is waiting for a user message
@@ -73,8 +52,8 @@ impl From<StreamResult> for HarnessState {
         match result {
             StreamResult::Interrupted(agent) => Self::StreamingInterrupted { agent },
             StreamResult::Failed { agent, .. } => Self::StreamingFailed { agent },
-            StreamResult::WaitingForUserMessage(agent) => Self::WaitingForUserMessage { agent },
-            StreamResult::WaitingForToolResponses(agent) => Self::HasToolCalls { _agent: agent },
+            StreamResult::WaitingForUserMessage { agent, .. } => Self::WaitingForUserMessage { agent },
+            StreamResult::WaitingForToolResponses { agent, .. } => Self::HasToolCalls { _agent: agent },
         }
     }
 }

@@ -7,6 +7,7 @@ use auger_driver::Resolving;
 use auger_driver::StreamResult;
 use auger_driver::ToolBatch;
 use auger_driver::Prompt;
+use provider::TokenUsage;
 use std::sync::mpsc;
 
 /// User sent commands to the session
@@ -41,6 +42,12 @@ pub enum SessionEvent {
     },
     /// A tool call finished executing and produced a result.
     ToolCallResult(ToolCallResult),
+    /// The assistant turn settled. Fires whether or not the provider reported
+    /// usage, so a client can always tell that generation stopped.
+    TurnComplete {
+        usage: Option<TokenUsage>,
+        stop_reason: Option<String>,
+    },
     /// The in-flight LLM stream was interrupted; the session is waiting for
     /// user input with the partial response retained.
     Interrupted,

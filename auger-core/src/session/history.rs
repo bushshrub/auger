@@ -1,6 +1,6 @@
 use crate::SessionId;
 use crate::tools::tool_execution::ToolCallResult;
-use auger_driver::{HarnessEntry, InputEntry, Prompt, RestoreState, ToolCallId, Turn};
+use auger_driver::{HarnessEntry, InputEntry, RestoreState, ToolCallId, Turn};
 use chrono::DateTime;
 use chrono::Utc;
 use derive_more::From;
@@ -356,18 +356,6 @@ impl TurnRecord {
         }
     }
 
-    pub(super) fn get_tool_decision_event_id(&self, tool_call_id: &ToolCallId) -> Option<EventId> {
-        self.events.iter().find_map(|event| {
-            let record_type = &event.event;
-            match record_type {
-                RecordableEvent::ToolAuthorization {
-                    tool_call_id: id, ..
-                } if id == tool_call_id => Some(event.event_id),
-                _ => None,
-            }
-        })
-    }
-
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -403,18 +391,6 @@ pub enum RecordableTurn {
     Input { entries: Vec<RecordedInput> },
     /// Result emitted by the clanker.
     Assistant { outcome: AssistantTurnOutcome },
-}
-
-impl RecordableTurn {
-    pub(crate) fn prompt(prompt: Prompt) -> Self {
-        let entry = match prompt {
-            Prompt::User(user) => RecordedInput::User(user),
-            Prompt::Harness(message) => RecordedInput::Harness(message),
-        };
-        Self::Input {
-            entries: vec![entry],
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

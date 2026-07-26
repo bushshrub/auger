@@ -1,4 +1,5 @@
 use crate::server_types::ApproveRequest;
+use crate::stream_events::BlockTracker;
 use crate::server_types::CreateSessionRequest;
 use crate::server_types::SessionEntry;
 use crate::server_types::UserInputRequest;
@@ -53,6 +54,7 @@ use uuid::Uuid;
 mod config;
 mod provider_config;
 mod server_types;
+mod stream_events;
 
 fn trace_path(session_id: SessionId) -> PathBuf {
     let home = std::env::var_os("HOME").expect("HOME is not set");
@@ -578,61 +580,16 @@ async fn event_stream(State(state): State<AppState>, Path(id): Path<SessionId>) 
     let Some(event_tx) = event_tx else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let stream = BroadcastStream::new(event_tx.subscribe());
-    Sse::new(stream.filter_map(|result| async move {
-        let event = result.ok()?;
-        let json = serde_json::to_string(&session_event_json(event)).ok()?;
-        Some(Ok::<_, std::convert::Infallible>(
-            axum::response::sse::Event::default().data(json),
-        ))
-    }))
-    .into_response()
-}
-
-fn session_event_json(event: SessionEvent) -> serde_json::Value {
-    match event {
-        SessionEvent::StreamEvent(event) => match event {
-            provider::StreamEvent::TextDelta(text) => json!({ "type": "text_delta", "text": text }),
-            provider::StreamEvent::ReasoningDelta(text) => {
-                json!({ "type": "reasoning_delta", "text": text })
-            }
-            provider::StreamEvent::ToolCall {
-                id,
-                name,
-                arguments,
-            } => json!({
-                "type": "tool_call",
-                "id": id,
-                "name": name,
-                "arguments": arguments,
-            }),
-            provider::StreamEvent::ToolCallComplete {
-                id,
-                name,
-                arguments,
-            } => json!({
-                "type": "tool_call_complete",
-                "id": id,
-                "name": name,
-                "arguments": arguments,
-            }),
-            provider::StreamEvent::Done { usage, stop_reason } => json!({
-                "type": "done",
-                "usage": usage,
-                "stop_reason": stop_reason,
-            }),
-        },
-        SessionEvent::ToolConsentRequired { tool_calls } => json!({
-            "type": "tool_consent_required",
-            "tool_calls": tool_calls,
-        }),
-        SessionEvent::ToolCallResult(result) => json!({
-            "type": "tool_call_result",
-            "id": result.tool_call_id(),
-            "result": result,
-        }),
-        SessionEvent::Interrupted => json!({ "type": "interrupted" }),
-        SessionEvent::StreamError { error } => json!({ "type": "stream_error", "error": error }),
-        SessionEvent::Closed => json!({ "type": "closed" }),
-    }
+    let stream = BroadcastStream::new(event_tx.subscribe())
+        .scan(BlockTracker::default(), |tracker, result| {
+            let events = result.map(|event| tracker.translate(event)).unwrap_or_default();
+            futures::future::ready(Some(futures::stream::iter(events)))
+        })
+        .flatten()
+        .map(|event| {
+            Ok::<_, std::convert::Infallible>(
+                axum::response::sse::Event::default().data(event.to_string()),
+            )
+        });
+    Sse::new(stream).into_response()
 }
