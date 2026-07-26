@@ -1,6 +1,6 @@
 //! Restore support for auger-driver sessions.
 
-use crate::agent::Entry;
+use crate::agent::{Entry, HarnessEntry, InputEntry};
 use crate::LlmStreamingInterrupted;
 use crate::TypedAgent;
 use crate::WaitingForToolResponses;
@@ -40,7 +40,7 @@ pub enum RestoredAgent {
 
 /// Restore an agent into the state selected by the persistence owner.
 pub fn restore(model: LlmModel, system_prompt: String, tools: Vec<ToolDefinition>, state: RestoreState) -> RestoredAgent {
-    let RestoreState { entries, tail } = state;
+    let RestoreState { mut entries, tail } = state;
 
     if let Tail::Incomplete { partial } = tail {
         return RestoredAgent::Interrupted(TypedAgent {
@@ -52,10 +52,24 @@ pub fn restore(model: LlmModel, system_prompt: String, tools: Vec<ToolDefinition
         });
     }
 
-    let awaiting_tools = match entries.last() {
-        None => false,
+    let assistant = entries
+        .iter()
+        .rposition(|entry| matches!(entry, Entry::Assistant(_)));
+
+    // Prompts after the last assistant were never sent, so drop them.
+    // Tool results did run, so they stay.
+    let after = assistant.map_or(0, |index| index + 1);
+    let trailing = entries.split_off(after);
+    entries.extend(trailing.into_iter().filter(|entry| {
+        matches!(
+            entry,
+            Entry::Input(InputEntry::Harness(HarnessEntry::ToolResult(_)))
+        )
+    }));
+
+    let awaiting_tools = match assistant.map(|index| &entries[index]) {
         Some(Entry::Assistant(response)) => !response.tool_calls().is_empty(),
-        Some(_) => panic!("settled session must end on an assistant message"),
+        _ => false,
     };
 
     if awaiting_tools {

@@ -1,4 +1,5 @@
 use crate::agent::{Entry, HarnessEntry, Prompt, ReadyToStream};
+use std::collections::HashSet;
 use crate::agent::State;
 use crate::agent::TypedAgent;
 use crate::tool_batch::Resolved;
@@ -18,29 +19,34 @@ impl State for WaitingForToolResponses {}
 
 impl TypedAgent<WaitingForToolResponses> {
     pub fn previous_message(&self) -> &AssistantResponse {
-        let assistant_message = self.entries.last().expect("there to contain some message before this state");
-        match assistant_message {
-            Entry::Assistant(response) => response,
-            _ => panic!(
-                "auger driver state invariant violation: last message should be an assistant \
-                 message when in WaitingForToolResponses state"
-            ),
-        }
+        let (_, response) = self.previous_assistant_at().expect(
+            "auger driver state invariant violation: an assistant message must precede the \
+             WaitingForToolResponses state",
+        );
+        response
     }
 
     fn get_tool_calls(&self) -> Vec<ToolCallRequest> {
-        let last_message = self
-            .entries()
-            .last()
-            .expect("there should be at least one message in the thread")
-            .clone();
-        match last_message {
-            Entry::Assistant(response) => response.tool_calls(),
-            _ => panic!(
-                "auger driver state invariant violation: last message should be an assistant \
-                 message when in WaitingForToolResponses state"
-            ),
-        }
+        let (index, response) = self.previous_assistant_at().expect(
+            "auger driver state invariant violation: an assistant message must precede the \
+             WaitingForToolResponses state",
+        );
+
+        let answered: HashSet<&str> = self.entries[index + 1..]
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Input(InputEntry::Harness(HarnessEntry::ToolResult(result))) => {
+                    Some(result.tool_call_id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+
+        response
+            .tool_calls()
+            .into_iter()
+            .filter(|call| !answered.contains(call.id.as_str()))
+            .collect()
     }
 
     /// Get all the tool names from the tool calls that were requested.
@@ -77,7 +83,10 @@ impl TypedAgent<WaitingForToolResponses> {
         mut self,
         responses: ToolBatch<Resolved>,
     ) -> TypedAgent<ReadyToStream> {
-        self.entries.push(InputEntry::from(HarnessEntry::ToolResults(responses.drain())).into());
+        for result in responses.drain() {
+            self.entries
+                .push(InputEntry::from(HarnessEntry::ToolResult(result)).into());
+        }
         TypedAgent {
             model: self.model,
             entries: self.entries,

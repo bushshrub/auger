@@ -25,7 +25,7 @@ pub enum InputEntry {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum HarnessEntry {
-    ToolResults(Vec<ToolResult>),
+    ToolResult(ToolResult),
     /// A harness level message.
     Message(String)
 }
@@ -63,14 +63,17 @@ pub struct TypedAgent<S: State> {
 }
 
 impl<S: State> TypedAgent<S> {
-    /// Retrieve the last assistant response that we've seen. May be None.
-    fn get_previous_assistant(&self) -> Option<&AssistantResponse> {
-        self.entries.iter().rev().find_map(|entry| {
-            match entry {
-                Entry::Assistant(assistant) => Some(assistant),
-                _ => None,
-            }
-        })
+    /// Retrieve the last assistant response that we've seen, and its index.
+    /// May be None.
+    pub(crate) fn previous_assistant_at(&self) -> Option<(usize, &AssistantResponse)> {
+        let index = self
+            .entries
+            .iter()
+            .rposition(|entry| matches!(entry, Entry::Assistant(_)))?;
+        match &self.entries[index] {
+            Entry::Assistant(assistant) => Some((index, assistant)),
+            _ => None,
+        }
     }
 }
 
@@ -166,8 +169,8 @@ pub(crate) fn convert_entries_into_messages(entries: Vec<Entry>) -> Vec<Message>
                     }
                     InputEntry::Harness(harness_entry) => {
                         match harness_entry {
-                            HarnessEntry::ToolResults(mut results) => {
-                                tool_call_results.append(&mut results);
+                            HarnessEntry::ToolResult(result) => {
+                                tool_call_results.push(result);
                             }
                             HarnessEntry::Message(message) => {
                                 user_message.push_str(&message)
