@@ -55,7 +55,6 @@ pub use agent::WaitingForUserMessage;
 pub use interrupt_states::LlmStreamingInterrupted;
 pub use restore::RestoreState;
 pub use restore::RestoredAgent;
-pub use restore::Tail;
 pub use restore::restore;
 pub use streaming::LlmStreaming;
 pub use streaming::StreamResult;

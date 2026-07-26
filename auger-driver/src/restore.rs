@@ -1,6 +1,6 @@
 //! Restore support for auger-driver sessions.
 
-use crate::agent::{Entry, HarnessEntry, InputEntry};
+use crate::agent::Entry;
 use crate::LlmStreamingInterrupted;
 use crate::TypedAgent;
 use crate::WaitingForToolResponses;
@@ -15,19 +15,15 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreState {
     entries: Vec<Entry>,
-    tail: Tail,
+    /// Incomplete assistant turn. `None` both when the
+    /// last turn settled and when the stream died before producing anything.
+    partial: Option<AssistantResponse>,
 }
 
 impl RestoreState {
-    pub fn new(entries: Vec<Entry>, tail: Tail) -> Self {
-        Self { entries, tail }
+    pub fn new(entries: Vec<Entry>, partial: Option<AssistantResponse>) -> Self {
+        Self { entries, partial }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Tail {
-    Settled,
-    Incomplete { partial: Option<AssistantResponse> }
 }
 
 
@@ -38,34 +34,25 @@ pub enum RestoredAgent {
     Interrupted(TypedAgent<LlmStreamingInterrupted>),
 }
 
-/// Restore an agent into the state selected by the persistence owner.
+/// Restore an agent from persisted conversation entries.
+///
+/// The state is derived from the shape of `entries`, in order:
+/// 1. the last assistant requested tool calls -> [`WaitingForToolResponses`]
+/// 2. a partial is present, or the entries trail off in an input run that no
+///    assistant answered -> [`LlmStreamingInterrupted`]
+/// 3. otherwise -> [`WaitingForUserMessage`]
+///
+/// Rule 2 also covers a crash between recording a prompt and opening the
+/// stream: the prompt is kept rather than dropped, so `retry` resends it.
+/// Rule 1 outranks it deliberately, since sealing a partial while tool calls
+/// are unanswered would send a `tool_use` block that never gets a result.
 pub fn restore(model: LlmModel, system_prompt: String, tools: Vec<ToolDefinition>, state: RestoreState) -> RestoredAgent {
-    let RestoreState { mut entries, tail } = state;
-
-    if let Tail::Incomplete { partial } = tail {
-        return RestoredAgent::Interrupted(TypedAgent {
-            model,
-            system_prompt,
-            entries,
-            tools,
-            state: LlmStreamingInterrupted { partial },
-        });
-    }
+    let RestoreState { entries, partial } = state;
 
     let assistant = entries
         .iter()
         .rposition(|entry| matches!(entry, Entry::Assistant(_)));
-
-    // Prompts after the last assistant were never sent, so drop them.
-    // Tool results did run, so they stay.
     let after = assistant.map_or(0, |index| index + 1);
-    let trailing = entries.split_off(after);
-    entries.extend(trailing.into_iter().filter(|entry| {
-        matches!(
-            entry,
-            Entry::Input(InputEntry::Harness(HarnessEntry::ToolResult(_)))
-        )
-    }));
 
     let awaiting_tools = match assistant.map(|index| &entries[index]) {
         Some(Entry::Assistant(response)) => !response.tool_calls().is_empty(),
@@ -79,6 +66,14 @@ pub fn restore(model: LlmModel, system_prompt: String, tools: Vec<ToolDefinition
             entries,
             tools,
             state: WaitingForToolResponses {},
+        })
+    } else if partial.is_some() || entries.len() > after {
+        RestoredAgent::Interrupted(TypedAgent {
+            model,
+            system_prompt,
+            entries,
+            tools,
+            state: LlmStreamingInterrupted { partial },
         })
     } else {
         RestoredAgent::WaitingForUserMessage(TypedAgent {
