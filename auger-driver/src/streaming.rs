@@ -1,6 +1,6 @@
 //! State when LLM is streaming the response back.
 
-use crate::agent::{convert_entries_into_messages, Entry, TypedAgent};
+use crate::agent::{convert_turns_into_messages, Turn, TypedAgent};
 use crate::agent::WaitingForUserMessage;
 use crate::interrupt_states::LlmStreamingInterrupted;
 use crate::waiting_for_tools::WaitingForToolResponses;
@@ -27,7 +27,7 @@ impl LlmStreaming {
         model: LlmModel,
         system_prompt: String,
         tools: Vec<ToolDefinition>,
-        entries_so_far: Vec<Entry>,
+        turns_so_far: Vec<Turn>,
         event_callback: Box<dyn Fn(provider::StreamEvent) + Send + Sync>,
         cancellation: CancellationToken,
     ) -> Self {
@@ -35,7 +35,7 @@ impl LlmStreaming {
             model,
             tools,
             system_prompt,
-            entries_so_far,
+            turns_so_far,
             event_callback,
             cancellation.clone(),
         ));
@@ -63,7 +63,7 @@ pub(crate) async fn run_stream(
     model: LlmModel,
     tools: Vec<ToolDefinition>,
     system_prompt: String,
-    mut entries_so_far: Vec<Entry>,
+    mut turns_so_far: Vec<Turn>,
     event_callback: impl Fn(provider::StreamEvent) + Send + Sync + 'static,
     cancellation: CancellationToken,
 ) -> StreamResult {
@@ -72,7 +72,7 @@ pub(crate) async fn run_stream(
         event_callback(event.clone());
         events.push(event);
     };
-    let messages_so_far = convert_entries_into_messages(entries_so_far.clone());
+    let messages_so_far = convert_turns_into_messages(turns_so_far.clone());
     let request = LlmRequest::new(messages_so_far.clone(), tools.clone());
     tokio::select! {
         result = model.stream(request, &mut sink) => match result {
@@ -80,13 +80,13 @@ pub(crate) async fn run_stream(
                 let (resp, token_usage) = fold_events(&events);
                 let clanker_msg = AssistantResponse::new(resp).expect("there to be blocks");
                 let has_tool_calls = !clanker_msg.tool_calls().is_empty();
-                entries_so_far.push(Entry::Assistant(clanker_msg));
+                turns_so_far.push(Turn::Output(clanker_msg));
                 if !has_tool_calls {
                     StreamResult::WaitingForUserMessage(TypedAgent {
                         model,
                         tools,
                         system_prompt,
-                        entries: entries_so_far,
+                        turns: turns_so_far,
                         state: WaitingForUserMessage {},
                     })
                 } else {
@@ -94,7 +94,7 @@ pub(crate) async fn run_stream(
                         model,
                         tools,
                         system_prompt,
-                        entries: entries_so_far,
+                        turns: turns_so_far,
                         state: WaitingForToolResponses {},
                     })
                 }
@@ -107,7 +107,7 @@ pub(crate) async fn run_stream(
                         model,
                         tools,
                         system_prompt,
-                        entries: entries_so_far,
+                        turns: turns_so_far,
                         state: LlmStreamingInterrupted {
                             partial: AssistantResponse::from_interrupted(resp),
                         },
@@ -122,7 +122,7 @@ pub(crate) async fn run_stream(
                 model,
                 tools,
                 system_prompt,
-                entries: entries_so_far,
+                turns: turns_so_far,
                 state: LlmStreamingInterrupted {
                     partial: AssistantResponse::from_interrupted(resp),
                 }

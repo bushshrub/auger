@@ -44,7 +44,7 @@ pub(crate) mod streaming;
 pub(crate) mod tool_batch;
 pub(crate) mod waiting_for_tools;
 
-pub use agent::Entry;
+pub use agent::Turn;
 pub use agent::InputEntry;
 pub use agent::HarnessEntry;
 pub use agent::Prompt;

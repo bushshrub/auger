@@ -4,17 +4,21 @@ use serde::{Deserialize, Serialize};
 use provider::{AssistantResponse, ToolResult};
 use provider::LlmModel;
 use provider::Message;
+use provider::ToolCallRequest;
 use provider::ToolDefinition;
 use provider::UserPrompt;
+use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 
 use derive_more::From;
 
-/// An item in the conversation.
-#[derive(Serialize, Deserialize, Debug, Clone, From)]
-pub enum Entry {
-    Input(InputEntry),
-    Assistant(AssistantResponse),
+/// A turn in the conversation. An input turn is everything the harness or the
+/// user supplied before the model was asked to respond; an output turn is a
+/// single response from the model.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum Turn {
+    Input { entries: Vec<InputEntry> },
+    Output(AssistantResponse),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, From)]
@@ -52,27 +56,31 @@ impl From<Prompt> for InputEntry {
 pub struct TypedAgent<S: State> {
     pub(crate) model: LlmModel,
     pub(crate) system_prompt: String,
-    /// The entries in this session. The order is as follows:
-    /// entries := (run Entry::Assistant)* run?
-    /// run := (Entry::User | Entry::Harness)+
+    /// The turns in this session, alternating input and output.
     #[get = "pub"]
-    pub(crate) entries: Vec<Entry>,
+    pub(crate) turns: Vec<Turn>,
     pub(crate) tools: Vec<ToolDefinition>,
     #[get = "pub"]
     pub(crate) state: S,
 }
 
 impl<S: State> TypedAgent<S> {
-    /// Retrieve the last assistant response that we've seen, and its index.
-    /// May be None.
-    pub(crate) fn previous_assistant_at(&self) -> Option<(usize, &AssistantResponse)> {
-        let index = self
-            .entries
-            .iter()
-            .rposition(|entry| matches!(entry, Entry::Assistant(_)))?;
-        match &self.entries[index] {
-            Entry::Assistant(assistant) => Some((index, assistant)),
+    /// The most recent output turn. May be None before the model has responded.
+    pub(crate) fn last_output(&self) -> Option<&AssistantResponse> {
+        self.turns.iter().rev().find_map(|turn| match turn {
+            Turn::Output(response) => Some(response),
             _ => None,
+        })
+    }
+
+    /// Add an input entry, extending the pending input turn or opening a new
+    /// one if the last turn was the model's.
+    pub(crate) fn push_input(&mut self, entry: InputEntry) {
+        match self.turns.last_mut() {
+            Some(Turn::Input { entries }) => entries.push(entry),
+            _ => self.turns.push(Turn::Input {
+                entries: vec![entry],
+            }),
         }
     }
 }
@@ -90,11 +98,11 @@ impl State for WaitingForUserMessage {}
 impl TypedAgent<WaitingForUserMessage> {
     /// Create a new agent with the given system prompt and model.
     pub fn new(model: LlmModel, system_prompt: String, tools: Vec<ToolDefinition>) -> Self {
-        let entries = Vec::new();
+        let turns = Vec::new();
         let state = WaitingForUserMessage {};
         Self {
             system_prompt,
-            entries,
+            turns,
             model,
             tools,
             state,
@@ -104,12 +112,12 @@ impl TypedAgent<WaitingForUserMessage> {
     /// Get the previous assistant message that occurred before this state.
     /// May be `None` if this is the first turn in the session.
     pub fn previous_message(&self) -> Option<&AssistantResponse> {
-        let last_entry = self.entries.last()?;
-        match last_entry {
-            Entry::Assistant(assistant) => Some(assistant),
+        let last_turn = self.turns.last()?;
+        match last_turn {
+            Turn::Output(response) => Some(response),
             _ => panic!(
-                "auger driver state invariant violation: last message should be an assistant \
-                 message when in WaitingForUserMessage state"
+                "auger driver state invariant violation: last turn should be an output turn when \
+                 in WaitingForUserMessage state"
             ),
         }
     }
@@ -117,12 +125,12 @@ impl TypedAgent<WaitingForUserMessage> {
     /// Add a user message to the driver and transition it to the
     /// [`ReadyToStream`] state.
     pub fn add_message(mut self, msg: Prompt) -> TypedAgent<ReadyToStream> {
-        self.entries.push(Entry::Input(msg.into()));
+        self.push_input(msg.into());
         let state = ReadyToStream {};
         TypedAgent {
             model: self.model,
             system_prompt: self.system_prompt,
-            entries: self.entries,
+            turns: self.turns,
             tools: self.tools,
             state,
         }
@@ -146,58 +154,68 @@ impl TypedAgent<ReadyToStream> {
             self.model,
             self.system_prompt,
             self.tools,
-            self.entries,
+            self.turns,
             Box::new(cb),
             cancellation,
         )
     }
 }
 
-pub(crate) fn convert_entries_into_messages(entries: Vec<Entry>) -> Vec<Message> {
-    let mut messages = Vec::new();
-    let mut user_message = String::new();
-    let mut tool_call_results = Vec::new();
-    let mut has_user_entry = false;
-
-    for entry in entries {
-        match entry {
-            Entry::Input(input) => {
-                has_user_entry = true;
-                match input {
-                    InputEntry::User(prompt) => {
-                        user_message.push_str(&prompt.message);
-                    }
-                    InputEntry::Harness(harness_entry) => {
-                        match harness_entry {
-                            HarnessEntry::ToolResult(result) => {
-                                tool_call_results.push(result);
-                            }
-                            HarnessEntry::Message(message) => {
-                                user_message.push_str(&message)
-                            }
+pub(crate) fn convert_turns_into_messages(turns: Vec<Turn>) -> Vec<Message> {
+    turns
+        .into_iter()
+        .map(|turn| match turn {
+            Turn::Input { entries } => {
+                let mut message = String::new();
+                let mut tool_call_results = Vec::new();
+                for entry in entries {
+                    match entry {
+                        InputEntry::User(prompt) => message.push_str(&prompt.message),
+                        InputEntry::Harness(HarnessEntry::Message(text)) => {
+                            message.push_str(&text)
+                        }
+                        InputEntry::Harness(HarnessEntry::ToolResult(result)) => {
+                            tool_call_results.push(result)
                         }
                     }
                 }
-            }
-            Entry::Assistant(response) => {
-                if has_user_entry {
-                    messages.push(Message::User {
-                        message: UserPrompt::new(std::mem::take(&mut user_message)),
-                        tool_call_results: std::mem::take(&mut tool_call_results),
-                    });
-                    has_user_entry = false;
+                Message::User {
+                    message: UserPrompt::new(message),
+                    tool_call_results,
                 }
-                messages.push(response.into());
+            }
+            Turn::Output(response) => response.into(),
+        })
+        .collect()
+}
+
+/// Get the tool calls from the most recent output turn that are still waiting
+/// for a result. Only the most recent output turn can have these.
+pub(crate) fn pending_tool_calls(turns: &[Turn]) -> Vec<ToolCallRequest> {
+    let mut iter = turns.iter().rev();
+    let (answered, response) = match iter.next() {
+        Some(Turn::Input { entries }) => {
+            let answered: HashSet<&str> = entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    InputEntry::Harness(HarnessEntry::ToolResult(result)) => {
+                        Some(result.tool_call_id.as_str())
+                    }
+                    _ => None,
+                })
+                .collect();
+            match iter.next() {
+                Some(Turn::Output(response)) => (answered, response),
+                _ => return Vec::new(),
             }
         }
-    }
+        Some(Turn::Output(response)) => (HashSet::new(), response),
+        None => return Vec::new(),
+    };
 
-    if has_user_entry {
-        messages.push(Message::User {
-            message: UserPrompt::new(user_message),
-            tool_call_results,
-        });
-    }
-
-    messages
+    response
+        .tool_calls()
+        .into_iter()
+        .filter(|call| !answered.contains(call.id.as_str()))
+        .collect()
 }

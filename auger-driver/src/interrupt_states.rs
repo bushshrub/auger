@@ -3,9 +3,9 @@
 //! Interruption can either be caused by the user
 //! or by the stream failing midway.
 
-use crate::agent::{InputEntry, State};
+use crate::agent::State;
 use crate::agent::TypedAgent;
-use crate::agent::{Entry, HarnessEntry, Prompt, ReadyToStream};
+use crate::agent::{Prompt, ReadyToStream, Turn};
 use getset::Getters;
 use provider::AssistantResponse;
 
@@ -26,14 +26,14 @@ impl TypedAgent<LlmStreamingInterrupted> {
         mut self,
         msg: Prompt,
     ) -> TypedAgent<ReadyToStream> {
-        if let Some(partial) = self.state.partial {
-            self.entries.push(Entry::Assistant(partial));
+        if let Some(partial) = self.state.partial.take() {
+            self.turns.push(Turn::Output(partial));
         }
-        self.entries.push(Entry::Input(msg.into()));
+        self.push_input(msg.into());
         TypedAgent {
             model: self.model,
             tools: self.tools,
-            entries: self.entries,
+            turns: self.turns,
             system_prompt: self.system_prompt,
             state: ReadyToStream {},
         }
@@ -41,17 +41,16 @@ impl TypedAgent<LlmStreamingInterrupted> {
 
     /// Amend the last prompt. Discards interrupted response.
     pub fn amend(mut self, msg: Prompt) -> TypedAgent<ReadyToStream> {
-        while matches!(
-            self.entries.last(),
-            Some(Entry::Input(entry)) if matches!(entry, InputEntry::User(_) | InputEntry::Harness(_))
-        ) {
-            self.entries.pop();
+        if matches!(self.turns.last(), Some(Turn::Input { .. })) {
+            self.turns.pop();
         }
-        self.entries.push(Entry::Input(msg.into()));
+        self.turns.push(Turn::Input {
+            entries: vec![msg.into()],
+        });
         TypedAgent {
             model: self.model,
             tools: self.tools,
-            entries: self.entries,
+            turns: self.turns,
             system_prompt: self.system_prompt,
             state: ReadyToStream {},
         }
@@ -62,7 +61,7 @@ impl TypedAgent<LlmStreamingInterrupted> {
         TypedAgent {
             model: self.model,
             tools: self.tools,
-            entries: self.entries,
+            turns: self.turns,
             system_prompt: self.system_prompt,
             state: ReadyToStream {},
         }
