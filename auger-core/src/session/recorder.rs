@@ -7,11 +7,12 @@ use crate::session::history::AuthorizationSource;
 use crate::session::history::EventId;
 use crate::session::history::EventRecord;
 use crate::session::history::RecordableEvent;
-use crate::session::history::RecordableTurn;
+use crate::session::history::RecordedInput;
 use crate::session::history::ToolDecision;
 use crate::session::history::TurnId;
 use crate::session::history::TurnRecord;
 use crate::tools::tool_execution::ToolCallResult;
+use auger_driver::Prompt;
 use auger_driver::ToolCallId;
 use getset::Getters;
 use std::sync::Arc;
@@ -52,40 +53,31 @@ impl SessionRecorder {
             .map(|tr| tr.data().turn_id())
     }
 
-    pub fn record_turn(&mut self, turn: RecordableTurn) -> Result<TurnId, ()> {
-        let tool_calls = match &turn {
-            RecordableTurn::InputMessage { content: _ } => Vec::new(),
-            RecordableTurn::AssistantMessage { outcome } => {
-                match outcome {
-                    AssistantTurnOutcome::Completed { response } => response.tool_calls.clone(),
-                    // do not record interrupted or failed assistant messages' tool calls.
-                    _ => Vec::new(),
-                }
-            }
-        };
-
-        let turn_record = self.record.add_turn(turn)?;
+    /// Record an input against the open input turn, opening one if needed.
+    pub fn record_input(&mut self, entry: RecordedInput) -> TurnId {
+        let turn_record = self.record.add_input(entry);
         let turn_id = turn_record.data().turn_id();
         if let Some(on_turn) = self.on_turn.0.clone() {
             on_turn(turn_id, &turn_record);
         }
-        let events = tool_calls
-            .into_iter()
-            .map(RecordableEvent::from)
-            .collect::<Vec<_>>();
-        for event in events {
-            let record = self
-                .record
-                .get_turn_mut(&turn_id)
-                .expect("turn to have been added")
-                .add_event(event, None)
-                .expect("event to record event");
+        turn_id
+    }
 
-            if let Some(on_event) = self.on_event.0.clone() {
-                on_event(turn_id, &record);
-            }
+    /// Record a prompt from the user or the harness.
+    pub fn record_prompt(&mut self, prompt: Prompt) -> TurnId {
+        let entry = match prompt {
+            Prompt::User(user) => RecordedInput::User(user),
+            Prompt::Harness(message) => RecordedInput::Harness(message),
+        };
+        self.record_input(entry)
+    }
+
+    pub fn record_assistant(&mut self, outcome: AssistantTurnOutcome) -> Result<TurnId, ()> {
+        let turn_record = self.record.add_assistant(outcome)?;
+        let turn_id = turn_record.data().turn_id();
+        if let Some(on_turn) = self.on_turn.0.clone() {
+            on_turn(turn_id, &turn_record);
         }
-
         Ok(turn_id)
     }
 
@@ -103,15 +95,8 @@ impl SessionRecorder {
         Ok(er.event_id())
     }
 
-    pub(crate) fn record_tool_result(
-        &mut self,
-        turn_id: TurnId,
-        tool_result: ToolCallResult,
-    ) -> Result<EventId, ()> {
-        let tr = self.record.get_turn_mut(&turn_id).ok_or(())?;
-        let tool_call_id: ToolCallId = tool_result.tool_call_id();
-        let tool_decision_event_id = tr.get_tool_decision_event_id(&tool_call_id).ok_or(())?;
-        self.record_event(turn_id, tool_result.into(), Some(tool_decision_event_id))
+    pub(crate) fn record_tool_result(&mut self, tool_result: ToolCallResult) -> TurnId {
+        self.record_input(RecordedInput::ToolResult(tool_result))
     }
 
     pub(crate) fn record_tool_decision(
@@ -122,21 +107,19 @@ impl SessionRecorder {
         source: AuthorizationSource,
         reason: Option<String>,
     ) -> Result<EventId, ()> {
-        let tr = self.record.get_turn_mut(&turn_id).ok_or(())?;
         let decision = if decision {
             ToolDecision::Approved
         } else {
             ToolDecision::Denied
         };
 
-        let tool_call_request_event_id = tr.get_tool_call_event_id(&tool_call_id).ok_or(())?;
         let event = RecordableEvent::ToolAuthorization {
             tool_call_id,
             decision,
             source,
             reason,
         };
-        self.record_event(turn_id, event, Some(tool_call_request_event_id))
+        self.record_event(turn_id, event, None)
     }
 }
 

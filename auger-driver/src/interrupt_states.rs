@@ -14,6 +14,7 @@ use provider::AssistantResponse;
 /// or by some kind of provider failure.
 #[derive(Getters)]
 pub struct LlmStreamingInterrupted {
+    #[get = "pub"]
     pub(super) partial: Option<AssistantResponse>
 }
 

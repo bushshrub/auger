@@ -23,6 +23,7 @@ uuid = { workspace = true, features = ["serde", "v4"] }
 agent-tools.workspace = true
 toml = "1.1.2"
 auger-traces.workspace = true
+auger-driver.workspace = true
 
 [dev-dependencies]
 tower = "0.5.3"

@@ -1,13 +1,13 @@
 use crate::SessionId;
 use crate::tools::tool_execution::ToolCallResult;
-use crate::tools::tool_execution::ToolData;
-use auger_driver::ToolCallId;
+use auger_driver::{HarnessEntry, InputEntry, Prompt, RestoreState, ToolCallId, Turn};
 use chrono::DateTime;
 use chrono::Utc;
+use derive_more::From;
 use getset::CopyGetters;
 use getset::Getters;
 use provider::AssistantResponse;
-use provider::ToolResult;
+use provider::LlmError;
 use provider::UserPrompt;
 use serde::Deserialize;
 use serde::Serialize;
@@ -112,94 +112,80 @@ impl SessionRecord {
         self.turns.last_mut()
     }
 
-    pub(crate) fn add_turn(&mut self, turn: RecordableTurn) -> Result<TurnRecord, ()> {
-        let previous_turn = self.turns.last();
-        match previous_turn {
-            Some(prev_turn) => {
-                match (&turn, &prev_turn.data.turn) {
-                    (
-                        RecordableTurn::InputMessage { .. },
-                        RecordableTurn::AssistantMessage { .. },
-                    )
-                    | (
-                        RecordableTurn::AssistantMessage { .. },
-                        RecordableTurn::InputMessage { .. },
-                    ) => {
-                        let tr = TurnRecord::new(turn, Some(prev_turn.data.turn_id()));
-                        self.turns.push(tr.clone());
-                        Ok(tr)
-                    }
-                    // TODO: better error information about mismatch.
-                    _ => Err(()),
-                }
-            }
-            None => {
-                // This should only happen if the session just started and this is the first
-                // turn.
-                match &turn {
-                    RecordableTurn::InputMessage { .. } => {
-                        let tr = TurnRecord::new(turn, None);
-                        self.turns.push(tr.clone());
-                        Ok(tr)
-                    }
-                    _ => Err(()),
-                }
-            }
+    /// Record an input against the open input turn, opening a new one if the
+    /// last turn was the assistant's.
+    pub(crate) fn add_input(&mut self, entry: RecordedInput) -> TurnRecord {
+        if let Some(RecordableTurn::Input { entries }) = self
+            .turns
+            .last_mut()
+            .map(|turn| &mut turn.data.turn)
+        {
+            entries.push(entry);
+            return self.turns.last().cloned().expect("turn to exist");
         }
+        let parent_id = self.turns.last().map(|turn| turn.data.turn_id());
+        let tr = TurnRecord::new(
+            RecordableTurn::Input {
+                entries: vec![entry],
+            },
+            parent_id,
+        );
+        self.turns.push(tr.clone());
+        tr
     }
 
-    pub fn as_messages(&self) -> Vec<provider::Message> {
-        let mut messages = Vec::new();
+    /// Record an assistant turn. Only valid if the last turn was an input.
+    pub(crate) fn add_assistant(
+        &mut self,
+        outcome: AssistantTurnOutcome,
+    ) -> Result<TurnRecord, ()> {
+        let previous_turn = self.turns.last().ok_or(())?;
+        if !matches!(previous_turn.data.turn, RecordableTurn::Input { .. }) {
+            return Err(());
+        }
+        let tr = TurnRecord::new(
+            RecordableTurn::Assistant { outcome },
+            Some(previous_turn.data.turn_id()),
+        );
+        self.turns.push(tr.clone());
+        Ok(tr)
+    }
+
+    /// Fold the recorded turns into the driver's view of the conversation.
+    /// An unsettled assistant turn only survives as the partial if nothing
+    /// follows it; anything later means it was already resolved.
+    pub fn restore_state(&self) -> RestoreState {
+        let mut turns = Vec::new();
+        let mut partial = None;
         for turn in &self.turns {
+            partial = None;
             match turn.data.turn() {
-                RecordableTurn::InputMessage { content } => {
-                    let mut msg = String::new();
-                    let tool_calls = content
+                RecordableTurn::Input { entries } => turns.push(Turn::Input {
+                    entries: entries
                         .iter()
-                        .filter_map(|c| {
-                            match c {
-                                InputContent::Text { text } => {
-                                    msg.push_str(text.as_str());
-                                    None
-                                }
-                                InputContent::ToolResult {
-                                    tool_call_id,
-                                    content,
-                                } => {
-                                    // TODO: Folding into a string is messy. Ideally the provider
-                                    // should support it natively somehow.
-                                    let tool_result_content =
-                                        content.iter().fold(String::new(), |mut acc, c| {
-                                            match c {
-                                                ToolData::Text { text } => {
-                                                    acc.push_str(text.as_str());
-                                                }
-                                            }
-                                            acc
-                                        });
-                                    Some(ToolResult::new(
-                                        tool_call_id.clone().into(),
-                                        tool_result_content,
-                                    ))
-                                }
+                        .cloned()
+                        .map(|entry| match entry {
+                            RecordedInput::User(user) => InputEntry::User(user),
+                            RecordedInput::Harness(message) => {
+                                HarnessEntry::Message(message).into()
+                            }
+                            RecordedInput::ToolResult(result) => {
+                                HarnessEntry::ToolResult(result.into()).into()
                             }
                         })
-                        .collect();
-                    messages.push(provider::Message::User {
-                        message: UserPrompt::new(msg),
-                        tool_call_results: tool_calls,
-                    })
-                }
-                RecordableTurn::AssistantMessage {
-                    outcome: AssistantTurnOutcome::Completed { response },
-                } => {
-                    messages.push(response.clone().into());
-                }
-                // TODO: This completely discards any sort of interrupted partial messages
-                RecordableTurn::AssistantMessage { .. } => {}
+                        .collect(),
+                }),
+                RecordableTurn::Assistant { outcome } => match outcome {
+                    AssistantTurnOutcome::Completed { response } => {
+                        turns.push(Turn::Output(response.clone()))
+                    }
+                    AssistantTurnOutcome::Incomplete {
+                        partial_response, ..
+                    } => partial = partial_response.clone(),
+                },
             }
         }
-        messages
+        RestoreState::new(turns, partial)
     }
 }
 
@@ -357,11 +343,9 @@ impl TurnRecord {
         parent_id: Option<EventId>,
     ) -> Result<EventRecord, ()> {
         match &self.data.turn {
-            RecordableTurn::InputMessage { .. } => Err(()),
-            RecordableTurn::AssistantMessage {
-                outcome: status, ..
-            } => match status {
-                AssistantTurnOutcome::Completed { response: _ } => {
+            RecordableTurn::Input { .. } => Err(()),
+            RecordableTurn::Assistant { outcome } => match outcome {
+                AssistantTurnOutcome::Completed { .. } => {
                     let ts = Utc::now();
                     let record = EventRecord::new(parent_id, ts, event);
                     self.events.push(record.clone());
@@ -384,28 +368,6 @@ impl TurnRecord {
         })
     }
 
-    pub(super) fn get_tool_call_event_id(&self, tool_call_id: &ToolCallId) -> Option<EventId> {
-        self.events.iter().find_map(|event| {
-            let record_type = &event.event;
-            match record_type {
-                RecordableEvent::ToolCallRequested {
-                    tool_call_id: id, ..
-                } if id == tool_call_id => Some(event.event_id),
-                _ => None,
-            }
-        })
-    }
-
-    pub(crate) fn record_tool_result(
-        &mut self,
-        tool_result: ToolCallResult,
-    ) -> Result<EventRecord, ()> {
-        let tool_call_id = tool_result.tool_call_id();
-        match self.get_tool_call_event_id(&tool_call_id) {
-            Some(id) => self.add_event(tool_result.into(), Some(id)),
-            None => Err(()),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -422,16 +384,15 @@ pub enum AuthorizationSource {
     Policy,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// An input recorded against a turn. Mirrors the driver's `InputEntry`, but
+/// keeps the whole tool call result rather than the flattened form the model
+/// gets.
+#[derive(Serialize, Deserialize, Debug, Clone, From)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum InputContent {
-    Text {
-        text: String,
-    },
-    ToolResult {
-        tool_call_id: ToolCallId,
-        content: Vec<ToolData>,
-    },
+pub enum RecordedInput {
+    User(UserPrompt),
+    Harness(String),
+    ToolResult(ToolCallResult),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -439,33 +400,19 @@ pub enum InputContent {
 pub enum RecordableTurn {
     /// Input message from the harness. May be due to automatic - returning tool
     /// results, or just user sending message.
-    InputMessage { content: Vec<InputContent> },
+    Input { entries: Vec<RecordedInput> },
     /// Result emitted by the clanker.
-    AssistantMessage { outcome: AssistantTurnOutcome },
+    Assistant { outcome: AssistantTurnOutcome },
 }
 
 impl RecordableTurn {
-    pub(crate) fn user_prompt(prompt: UserPrompt) -> Self {
-        Self::InputMessage {
-            content: vec![InputContent::Text {
-                text: prompt.message.to_string(),
-            }],
-        }
-    }
-}
-
-impl TryFrom<RecordableTurn> for provider::Message {
-    type Error = ();
-
-    fn try_from(value: RecordableTurn) -> Result<Self, Self::Error> {
-        match value {
-            RecordableTurn::AssistantMessage { outcome, .. } => {
-                match outcome {
-                    AssistantTurnOutcome::Completed { response } => Ok(response.into()),
-                    _ => Err(()), // TODO: Improve error handling.
-                }
-            }
-            RecordableTurn::InputMessage { .. } => Err(()),
+    pub(crate) fn prompt(prompt: Prompt) -> Self {
+        let entry = match prompt {
+            Prompt::User(user) => RecordedInput::User(user),
+            Prompt::Harness(message) => RecordedInput::Harness(message),
+        };
+        Self::Input {
+            entries: vec![entry],
         }
     }
 }
@@ -473,34 +420,12 @@ impl TryFrom<RecordableTurn> for provider::Message {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordableEvent {
-    ToolCallRequested {
-        tool_call_id: ToolCallId,
-        tool_name: String,
-        arguments: String,
-    },
     ToolAuthorization {
         tool_call_id: ToolCallId,
         decision: ToolDecision,
         source: AuthorizationSource,
         reason: Option<String>,
     },
-    ToolCallResult(ToolCallResult),
-}
-
-impl From<provider::ToolCallRequest> for RecordableEvent {
-    fn from(request: provider::ToolCallRequest) -> Self {
-        Self::ToolCallRequested {
-            tool_call_id: request.id.into(),
-            tool_name: request.name,
-            arguments: request.arguments,
-        }
-    }
-}
-
-impl From<ToolCallResult> for RecordableEvent {
-    fn from(result: ToolCallResult) -> Self {
-        Self::ToolCallResult(result)
-    }
 }
 
 /// Outcome of an assistant turn
@@ -510,13 +435,21 @@ pub enum AssistantTurnOutcome {
     /// The assistant turn completed successfully, and the response is
     /// available.
     Completed { response: AssistantResponse },
-    /// The assistant turn was interrupted by the user. There may be a partial
-    /// response
-    Interrupted {
+    /// The assistant turn never settled. There may be a partial response.
+    Incomplete {
         partial_response: Option<AssistantResponse>,
+        reason: StopReason,
     },
-    /// The assistant turn failed midway.
-    Failed, // TODO: Take error reason
+}
+
+/// Why an assistant turn did not settle.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    /// The user interrupted it.
+    Interrupted,
+    /// The stream failed midway, or never started.
+    Failed(LlmError),
 }
 
 fn uuid_v7_from(dt: DateTime<Utc>) -> Uuid {

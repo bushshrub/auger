@@ -4,7 +4,7 @@ use crate::events::SessionCommand;
 use crate::events::SessionEvent;
 use crate::session::history::AssistantTurnOutcome;
 use crate::session::history::AuthorizationSource;
-use crate::session::history::RecordableTurn;
+use crate::session::history::StopReason;
 use crate::session::history::SessionRecord;
 use crate::session::recorder::SessionRecorder;
 use crate::session::states::HarnessState;
@@ -15,7 +15,6 @@ use crate::tools::tool_execution::ToolExecution;
 use crate::tools::tool_execution::ToolExecutionCompleted;
 use crate::tools::tool_registry::ToolRegistry;
 use agent_tools::Tool;
-use auger_driver::RestoreState;
 use auger_driver::RestoredAgent;
 use auger_driver::StreamResult;
 use auger_driver::restore;
@@ -24,7 +23,6 @@ use chrono::Utc;
 use either::Either;
 use getset::CopyGetters;
 use mpsc::Receiver;
-use provider::LlmError;
 use provider::LlmModel;
 use provider::ToolDefinition;
 use serde::Deserialize;
@@ -118,51 +116,7 @@ impl Session {
         model: LlmModel,
         tools: Vec<ToolDefinition>,
     ) -> RestoredAgent {
-        let last_turn = record.get_previous_turn();
-        let restore_state = match last_turn {
-            Some(turn) => {
-                match turn.data().turn() {
-                    RecordableTurn::InputMessage { content: _ } => {
-                        panic!("Can't start on a user turn")
-                    }
-                    RecordableTurn::AssistantMessage { outcome: status } => {
-                        match status {
-                            AssistantTurnOutcome::Completed { .. } => {
-                                let mut messages = record.as_messages();
-                                messages.insert(0, system_prompt.into());
-                                RestoreState::from_messages(messages)
-                            }
-                            AssistantTurnOutcome::Interrupted {
-                                partial_response: _,
-                            } => {
-                                let mut messages = record.as_messages();
-                                messages.insert(0, system_prompt.into());
-                                RestoreState::Interrupted {
-                                    messages,
-                                    events: Vec::new(), /* TODO: insert actual interrupted
-                                                         * partial message */
-                                }
-                            }
-                            AssistantTurnOutcome::Failed => {
-                                let mut messages = record.as_messages();
-                                messages.insert(0, system_prompt.into());
-                                RestoreState::Failed {
-                                    messages,
-                                    events: Vec::new(),
-                                    error: LlmError {
-                                        message: "fake error".to_string(),
-                                    }, // TODO: real error
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            None => RestoreState::WaitingForUserMessage {
-                messages: vec![system_prompt.into()],
-            },
-        };
-        restore(model, tools, restore_state)
+        restore(model, system_prompt.into(), tools, record.restore_state())
     }
 
     pub(super) fn spawn(
@@ -236,11 +190,12 @@ impl Session {
                             HarnessState::WaitingForUserMessage { agent } => {
                                 agent.add_message(prompt.clone())
                             }
-                            HarnessState::StreamingInterrupted { agent } => {
-                                agent.add_message_to_continue(prompt.clone(), true)
-                            }
-                            HarnessState::StreamingFailed { agent } => {
-                                agent.add_message_to_continue(prompt.clone())
+                            // Keep whatever was streamed and carry on. A failed
+                            // stream usually has no partial, so this just adds
+                            // the message to the turn that never got answered.
+                            HarnessState::StreamingInterrupted { agent }
+                            | HarnessState::StreamingFailed { agent } => {
+                                agent.seal_and_continue(prompt.clone())
                             }
                             HarnessState::InterruptingStream {
                                 pending_message: None,
@@ -248,12 +203,12 @@ impl Session {
                                 curr_state = HarnessState::InterruptingStream {
                                     pending_message: Some(prompt),
                                 };
-                                return;
+                                continue 'session_loop;
                             }
                             other => {
                                 warn!(session_id = %self.id, command = "send_message", "Ignoring command in invalid harness state");
                                 curr_state = other;
-                                return;
+                                continue 'session_loop;
                             }
                         };
 
@@ -265,9 +220,7 @@ impl Session {
                         let cancel = stream_fut.interrupt_handle();
                         let sess_id = self.id;
 
-                        self.recorder
-                            .record_turn(RecordableTurn::user_prompt(prompt.into()))
-                            .expect("previous turn to have been assistant/session start");
+                        self.recorder.record_prompt(prompt);
                         rt.spawn(async move {
                             info!(session_id=%sess_id, "Starting stream");
                             let res = stream_fut.await;
@@ -373,19 +326,20 @@ impl Session {
                                          streaming"
                                     )
                                 }
-                                StreamResult::Failed(agent) => {
+                                StreamResult::Failed { agent, error } => {
                                     warn!(
                                         session_id = %self.id,
-                                        error = %agent.error(),
+                                        error = %error,
                                         "LLM stream failed; waiting for a new user message"
                                     );
                                     self.recorder
-                                        .record_turn(RecordableTurn::AssistantMessage {
-                                            outcome: AssistantTurnOutcome::Failed,
+                                        .record_assistant(AssistantTurnOutcome::Incomplete {
+                                            partial_response: agent.state().partial().clone(),
+                                            reason: StopReason::Failed(error.clone()),
                                         })
                                         .expect("previous turn was user");
                                     let _ = self.event_tx.send(SessionEvent::StreamError {
-                                        error: agent.error().to_string(),
+                                        error: error.to_string(),
                                     });
                                     HarnessState::StreamingFailed { agent }
                                 }
@@ -394,10 +348,8 @@ impl Session {
 
                                     let turn_id = self
                                         .recorder
-                                        .record_turn(RecordableTurn::AssistantMessage {
-                                            outcome: AssistantTurnOutcome::Completed {
-                                                response: agent.previous_message().clone(),
-                                            },
+                                        .record_assistant(AssistantTurnOutcome::Completed {
+                                            response: agent.previous_message().clone(),
                                         })
                                         .expect("last turn to be user");
 
@@ -474,13 +426,11 @@ impl Session {
                                 StreamResult::WaitingForUserMessage(agent) => {
                                     info!(session_id=%self.id, "Stream has returned: No tools called");
                                     self.recorder
-                                        .record_turn(RecordableTurn::AssistantMessage {
-                                            outcome: AssistantTurnOutcome::Completed {
-                                                response: agent
-                                                    .previous_message()
-                                                    .expect("a previous message to exist")
-                                                    .clone(),
-                                            },
+                                        .record_assistant(AssistantTurnOutcome::Completed {
+                                            response: agent
+                                                .previous_message()
+                                                .expect("a previous message to exist")
+                                                .clone(),
                                         })
                                         .expect("last turn to be user");
                                     HarnessState::WaitingForUserMessage { agent }
@@ -491,16 +441,13 @@ impl Session {
                             StreamResult::Interrupted(agent) => match pending_message {
                                 Some(prompt) => {
                                     let event_tx = self.event_tx.clone();
-                                    let new_agent =
-                                        agent.add_message_to_continue(prompt.clone(), true);
+                                    let new_agent = agent.seal_and_continue(prompt.clone());
                                     let inbox_tx = self.harness_internal_event_tx.clone();
                                     let stream_fut = new_agent.create_stream(move |event| {
                                         let _ = event_tx.send(SessionEvent::StreamEvent(event));
                                     });
                                     let cancel = stream_fut.interrupt_handle();
-                                    self.recorder
-                                        .record_turn(RecordableTurn::user_prompt(prompt.into()))
-                                        .expect("last turn was assistant");
+                                    self.recorder.record_prompt(prompt);
                                     rt.spawn(async move {
                                         let res = stream_fut.await;
                                         inbox_tx
@@ -516,7 +463,7 @@ impl Session {
                                 }
                             },
                             // TODO: we must handle these
-                            StreamResult::Failed(_) => {
+                            StreamResult::Failed { .. } => {
                                 panic!("stream failed while harness was interrupting the stream")
                             }
                             StreamResult::WaitingForToolResponses(_) => {
@@ -542,14 +489,10 @@ impl Session {
                         HarnessState::InterruptingToolExecution { agent } => agent,
                         other => {
                             curr_state = other;
-                            return;
+                            continue 'session_loop;
                         }
                     };
 
-                    let prev_turn_id = self
-                        .recorder
-                        .previous_turn_id()
-                        .expect("there to be a previous turn");
                     // TODO: That enum is useless if we are just going to mark everything as
                     // interrupted?
                     let tool_results = match results {
@@ -558,23 +501,16 @@ impl Session {
                             interrupted_results
                         }
                     };
-                    let mut tool_result_content = Vec::new();
                     for result in tool_results {
-                        self.recorder
-                            .record_tool_result(prev_turn_id, result.clone())
-                            .expect("previous turn to be assistant");
-                        tool_result_content.push(result.clone().into());
-                        batch.add_result(result.tool_call_id(), result.into());
+                        self.recorder.record_tool_result(result.clone());
+                        batch
+                            .add_result(result.tool_call_id(), result.into())
+                            .expect("result to be for a requested call");
                     }
                     let resolved_batch = batch.into_resolved().expect_right("there is a bug");
-                    self.recorder
-                        .record_turn(RecordableTurn::InputMessage {
-                            content: tool_result_content,
-                        })
-                        .expect("previous turn to be assistant");
                     // TODO: allow steering message to ride along
                     info!(session_id=%self.id, "Sending {} tool results back to the model", resolved_batch.results().len());
-                    let new_agent = agent.add_all_tool_responses(None, resolved_batch);
+                    let new_agent = agent.add_all_tool_responses(resolved_batch);
                     let event_tx = self.event_tx.clone();
                     let stream_fut = new_agent.create_stream(move |event| {
                         let _ = event_tx.send(SessionEvent::StreamEvent(event));

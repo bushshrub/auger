@@ -30,9 +30,9 @@ pub(crate) struct UserInputRequest {
     pub(crate) input: String,
 }
 
-impl From<UserInputRequest> for provider::UserPrompt {
+impl From<UserInputRequest> for auger_driver::Prompt {
     fn from(req: UserInputRequest) -> Self {
-        provider::UserPrompt::new(req.input)
+        auger_driver::Prompt::User(provider::UserPrompt::new(req.input))
     }
 }
 

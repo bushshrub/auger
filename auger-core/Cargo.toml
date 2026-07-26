@@ -20,6 +20,7 @@ chrono = { version = "0.4.45", features = ["serde"] }
 auger-driver.workspace = true
 tokio-util.workspace = true
 getset.workspace = true
+derive_more = { workspace = true, features = ["from"] }
 
 [dev-dependencies]
 async-trait.workspace = true

@@ -1,13 +1,12 @@
 use crate::tools::tool_decisions::Resolving;
 use crate::tools::tool_decisions::UserToolDecisions;
-use auger_driver::LlmStreamingFailed;
 use auger_driver::LlmStreamingInterrupted;
 use auger_driver::RestoredAgent;
 use auger_driver::StreamResult;
 use auger_driver::TypedAgent;
 use auger_driver::WaitingForToolResponses;
 use auger_driver::WaitingForUserMessage;
-use provider::UserPrompt;
+use auger_driver::Prompt;
 use tokio_util::sync::CancellationToken;
 
 /// States which a session can be restored from
@@ -27,7 +26,7 @@ pub(crate) enum RestorableState {
     },
     /// LLM streaming failed, retaining the partial response.
     StreamingFailed {
-        agent: TypedAgent<LlmStreamingFailed>,
+        agent: TypedAgent<LlmStreamingInterrupted>,
     },
 }
 
@@ -40,14 +39,14 @@ pub(crate) enum HarnessState {
     /// LLM streaming is in progress
     Streaming { cancel: CancellationToken },
     /// Trying to interrupt the stream.
-    InterruptingStream { pending_message: Option<UserPrompt> },
+    InterruptingStream { pending_message: Option<Prompt> },
     /// LLM streaming was interrupted, retaining the partial response.
     StreamingInterrupted {
         agent: TypedAgent<LlmStreamingInterrupted>,
     },
     /// LLM streaming failed, retaining the partial response.
     StreamingFailed {
-        agent: TypedAgent<LlmStreamingFailed>,
+        agent: TypedAgent<LlmStreamingInterrupted>,
     },
     /// LLM streaming came back and there are tool calls
     HasToolCalls {
@@ -73,7 +72,7 @@ impl From<StreamResult> for HarnessState {
     fn from(result: StreamResult) -> Self {
         match result {
             StreamResult::Interrupted(agent) => Self::StreamingInterrupted { agent },
-            StreamResult::Failed(agent) => Self::StreamingFailed { agent },
+            StreamResult::Failed { agent, .. } => Self::StreamingFailed { agent },
             StreamResult::WaitingForUserMessage(agent) => Self::WaitingForUserMessage { agent },
             StreamResult::WaitingForToolResponses(agent) => Self::HasToolCalls { _agent: agent },
         }
@@ -90,7 +89,6 @@ impl From<RestoredAgent> for HarnessState {
                 HarnessState::HasToolCalls { _agent: agent }
             }
             RestoredAgent::Interrupted(agent) => HarnessState::StreamingInterrupted { agent },
-            RestoredAgent::Failed(agent) => HarnessState::StreamingFailed { agent },
         }
     }
 }

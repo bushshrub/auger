@@ -6,14 +6,14 @@ use crate::tools::tool_execution::ToolExecutionCompleted;
 use auger_driver::Resolving;
 use auger_driver::StreamResult;
 use auger_driver::ToolBatch;
-use provider::UserPrompt;
+use auger_driver::Prompt;
 use std::sync::mpsc;
 
 /// User sent commands to the session
 #[derive(Clone, Debug)]
 pub enum SessionCommand {
     /// Send a message
-    SendMessage(UserPrompt),
+    SendMessage(Prompt),
     /// Stop the session.
     Stop { reply_tx: mpsc::Sender<()> },
     /// Clone the recorded session trace without changing session state.

@@ -1,7 +1,6 @@
 use super::tool_decisions::ToolAuthorization;
 use super::tool_registry::ToolRegistry;
 use crate::events::SessionEvent;
-use crate::session::history::InputContent;
 use auger_driver::ToolCallId;
 use futures::future::join_all;
 use getset::CloneGetters;
@@ -165,33 +164,6 @@ impl From<ToolCallResult> for provider::ToolResult {
                 })
                 .collect::<Vec<_>>()
                 .join(" "),
-        }
-    }
-}
-
-impl From<ToolCallResult> for InputContent {
-    fn from(result: ToolCallResult) -> Self {
-        let content = match result.outcome {
-            ToolOutcome::Success { content } => content,
-            ToolOutcome::Error { error } => error,
-            ToolOutcome::Denied { reason } => match reason {
-                Some(r) => vec![ToolData::Text {
-                    text: format!("Tool call was denied: {}", r),
-                }],
-                None => vec![ToolData::Text {
-                    text: "Tool call was denied. Do not attempt to make the same tool call.".into(),
-                }],
-            },
-            ToolOutcome::Interrupted => {
-                vec![ToolData::Text {
-                    text: "Tool call was interrupted. Do not attempt to make the same tool call."
-                        .into(),
-                }]
-            }
-        };
-        InputContent::ToolResult {
-            tool_call_id: result.tool_call_id,
-            content,
         }
     }
 }
