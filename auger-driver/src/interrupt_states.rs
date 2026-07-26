@@ -3,7 +3,7 @@
 //! Interruption can either be caused by the user
 //! or by the stream failing midway.
 
-use crate::agent::State;
+use crate::agent::{InputEntry, State};
 use crate::agent::TypedAgent;
 use crate::agent::{Entry, HarnessEntry, Prompt, ReadyToStream};
 use getset::Getters;
@@ -29,7 +29,7 @@ impl TypedAgent<LlmStreamingInterrupted> {
         if let Some(partial) = self.state.partial {
             self.entries.push(Entry::Assistant(partial));
         }
-        self.entries.push(msg.into());
+        self.entries.push(Entry::Input(msg.into()));
         TypedAgent {
             model: self.model,
             tools: self.tools,
@@ -43,11 +43,11 @@ impl TypedAgent<LlmStreamingInterrupted> {
     pub fn amend(mut self, msg: Prompt) -> TypedAgent<ReadyToStream> {
         while matches!(
             self.entries.last(),
-            Some(Entry::User(_) | Entry::Harness(HarnessEntry::Message(_)))
+            Some(Entry::Input(entry)) if matches!(entry, InputEntry::User(_) | InputEntry::Harness(_))
         ) {
             self.entries.pop();
         }
-        self.entries.push(msg.into());
+        self.entries.push(Entry::Input(msg.into()));
         TypedAgent {
             model: self.model,
             tools: self.tools,

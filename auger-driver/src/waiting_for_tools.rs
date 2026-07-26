@@ -61,7 +61,7 @@ impl TypedAgent<WaitingForToolResponses> {
 
     /// Inject a prompt. This is useful for things like steering.
     pub fn inject(mut self, prompt: Prompt) -> Self {
-        self.entries.push(prompt.into());
+        self.entries.push(Entry::Input(prompt.into()));
         TypedAgent {
             model: self.model,
             entries: self.entries,
@@ -76,7 +76,7 @@ impl TypedAgent<WaitingForToolResponses> {
         mut self,
         responses: ToolBatch<Resolved>,
     ) -> TypedAgent<ReadyToStream> {
-        self.entries.push(Entry::Harness(HarnessEntry::ToolResults(responses.drain())));
+        self.entries.push(Entry::Input(HarnessEntry::ToolResults(responses.drain()).into()));
         TypedAgent {
             model: self.model,
             entries: self.entries,

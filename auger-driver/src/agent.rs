@@ -11,9 +11,14 @@ use tokio_util::sync::CancellationToken;
 /// An item in the conversation.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Entry {
+    Input(InputEntry),
+    Assistant(AssistantResponse),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum InputEntry {
     User(UserPrompt),
     Harness(HarnessEntry),
-    Assistant(AssistantResponse),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -29,12 +34,18 @@ pub enum Prompt {
     Harness(String)
 }
 
-impl From<Prompt> for Entry {
-    fn from(value: Prompt) -> Self {
-        match value {
-            Prompt::User(user_prompt) => Entry::User(user_prompt),
-            Prompt::Harness(msg) => Entry::Harness(HarnessEntry::Message(msg)),
+impl From<Prompt> for InputEntry {
+    fn from(prompt: Prompt) -> Self {
+        match prompt {
+            Prompt::User(user_prompt) => Self::User(user_prompt),
+            Prompt::Harness(msg) => Self::Harness(HarnessEntry::Message(msg)),
         }
+    }
+}
+
+impl From<HarnessEntry> for InputEntry {
+    fn from(harness_entry: HarnessEntry) -> Self {
+        Self::Harness(harness_entry)
     }
 }
 
@@ -107,7 +118,7 @@ impl TypedAgent<WaitingForUserMessage> {
     /// Add a user message to the driver and transition it to the
     /// [`ReadyToStream`] state.
     pub fn add_message(mut self, msg: Prompt) -> TypedAgent<ReadyToStream> {
-        self.entries.push(msg.into());
+        self.entries.push(Entry::Input(msg.into()));
         let state = ReadyToStream {};
         TypedAgent {
             model: self.model,
@@ -151,17 +162,23 @@ pub(crate) fn convert_entries_into_messages(entries: Vec<Entry>) -> Vec<Message>
 
     for entry in entries {
         match entry {
-            Entry::User(prompt) => {
+            Entry::Input(input) => {
                 has_user_entry = true;
-                user_message.push_str(&prompt.message);
-            }
-            Entry::Harness(HarnessEntry::Message(message)) => {
-                has_user_entry = true;
-                user_message.push_str(&message);
-            }
-            Entry::Harness(HarnessEntry::ToolResults(mut results)) => {
-                has_user_entry = true;
-                tool_call_results.append(&mut results);
+                match input {
+                    InputEntry::User(prompt) => {
+                        user_message.push_str(&prompt.message);
+                    }
+                    InputEntry::Harness(harness_entry) => {
+                        match harness_entry {
+                            HarnessEntry::ToolResults(mut results) => {
+                                tool_call_results.append(&mut results);
+                            }
+                            HarnessEntry::Message(message) => {
+                                user_message.push_str(&message)
+                            }
+                        }
+                    }
+                }
             }
             Entry::Assistant(response) => {
                 if has_user_entry {

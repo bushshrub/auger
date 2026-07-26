@@ -44,6 +44,7 @@ pub(crate) mod streaming;
 pub(crate) mod tool_batch;
 pub(crate) mod waiting_for_tools;
 
+pub use agent::Entry;
 pub use agent::ReadyToStream;
 pub use agent::State;
 pub use agent::TypedAgent;
