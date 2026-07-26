@@ -3,14 +3,11 @@
 //! Interruption can either be caused by the user
 //! or by the stream failing midway.
 
-use crate::ToolBatch;
-use crate::agent::{Prompt, ReadyToStream};
 use crate::agent::State;
 use crate::agent::TypedAgent;
+use crate::agent::{Entry, HarnessEntry, Prompt, ReadyToStream};
 use getset::Getters;
-use provider::{AssistantResponse};
-use provider::Message;
-use provider::UserPrompt;
+use provider::AssistantResponse;
 
 /// The LLM stream was interrupted midway.
 /// This could be either caused by the user cancelling it,
@@ -29,12 +26,35 @@ impl TypedAgent<LlmStreamingInterrupted> {
         mut self,
         msg: Prompt,
     ) -> TypedAgent<ReadyToStream> {
-        todo!()
+        if let Some(partial) = self.state.partial {
+            self.entries.push(Entry::Assistant(partial));
+        }
+        self.entries.push(msg.into());
+        TypedAgent {
+            model: self.model,
+            tools: self.tools,
+            entries: self.entries,
+            system_prompt: self.system_prompt,
+            state: ReadyToStream {},
+        }
     }
 
     /// Amend the last prompt. Discards interrupted response.
     pub fn amend(mut self, msg: Prompt) -> TypedAgent<ReadyToStream> {
-        todo!()
+        while matches!(
+            self.entries.last(),
+            Some(Entry::User(_) | Entry::Harness(HarnessEntry::Message(_)))
+        ) {
+            self.entries.pop();
+        }
+        self.entries.push(msg.into());
+        TypedAgent {
+            model: self.model,
+            tools: self.tools,
+            entries: self.entries,
+            system_prompt: self.system_prompt,
+            state: ReadyToStream {},
+        }
     }
 
     /// Retry the response without the partial response
