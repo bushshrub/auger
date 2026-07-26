@@ -8,14 +8,16 @@ use provider::ToolDefinition;
 use provider::UserPrompt;
 use tokio_util::sync::CancellationToken;
 
+use derive_more::From;
+
 /// An item in the conversation.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, From)]
 pub enum Entry {
     Input(InputEntry),
     Assistant(AssistantResponse),
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, From)]
 pub enum InputEntry {
     User(UserPrompt),
     Harness(HarnessEntry),
@@ -37,15 +39,9 @@ pub enum Prompt {
 impl From<Prompt> for InputEntry {
     fn from(prompt: Prompt) -> Self {
         match prompt {
-            Prompt::User(user_prompt) => Self::User(user_prompt),
-            Prompt::Harness(msg) => Self::Harness(HarnessEntry::Message(msg)),
+            Prompt::User(user) => InputEntry::User(user),
+            Prompt::Harness(msg) => InputEntry::Harness(HarnessEntry::Message(msg))
         }
-    }
-}
-
-impl From<HarnessEntry> for InputEntry {
-    fn from(harness_entry: HarnessEntry) -> Self {
-        Self::Harness(harness_entry)
     }
 }
 

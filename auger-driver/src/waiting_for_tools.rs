@@ -8,6 +8,7 @@ use provider::AssistantResponse;
 use provider::Message;
 use provider::ToolCallRequest;
 use provider::UserPrompt;
+use crate::InputEntry;
 
 /// The LLM has requested tool calls and the driver
 /// is waiting for the tool call's results to be provided back.
@@ -76,7 +77,7 @@ impl TypedAgent<WaitingForToolResponses> {
         mut self,
         responses: ToolBatch<Resolved>,
     ) -> TypedAgent<ReadyToStream> {
-        self.entries.push(Entry::Input(HarnessEntry::ToolResults(responses.drain()).into()));
+        self.entries.push(InputEntry::from(HarnessEntry::ToolResults(responses.drain())).into());
         TypedAgent {
             model: self.model,
             entries: self.entries,

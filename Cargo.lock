@@ -215,6 +215,7 @@ dependencies = [
 name = "auger-driver"
 version = "0.1.0"
 dependencies = [
+ "derive_more",
  "either",
  "futures",
  "getset",
