@@ -65,31 +65,35 @@ const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
  * ordered list of TraceRecords, each discriminated by `kind`. It arrives as
  * newline-delimited JSON (one record per line), parsed by getSnapshot into an
  * array. The session record is always first, followed by turns (which carry the
- * conversation) and events (`tool_call_requested`, `tool_authorization`,
- * `tool_call_result`) that occurred during the owning assistant turn. Nested
- * enums are externally tagged, matching the Rust serialization. `arguments` on
- * a tool call is a JSON-encoded string.
+ * conversation) and `tool_authorization` events that occurred during the owning
+ * assistant turn. Nested enums are externally tagged, matching the Rust
+ * serialization. `arguments` on a tool call is a JSON-encoded string.
  *
- * @typedef {{ type: 'text', text: string } | { type: 'tool_result', tool_call_id: string,
- *             content: ToolData[] }} InputContent
+ * An input turn accumulates entries as they happen, so a single turn holds the
+ * prompt plus every tool result answering the preceding assistant turn. Tool
+ * results carry the full ToolCallResult, so a snapshot shows failed and denied
+ * calls the same way the live stream does.
+ * @typedef {(
+ *   | { user: { message: string } }
+ *   | { harness: string }
+ *   | { tool_result: ToolCallResult }
+ * )} RecordedInput
  * @typedef {{ reasoning: string | null, content: string, tool_calls: ToolCall[] }} AssistantResponse
+ * @typedef {'interrupted' | { failed: { kind: unknown, message: string } }} StopReason
  * @typedef {(
  *   | { completed: { response: AssistantResponse } }
- *   | { interrupted: { partial_response: AssistantResponse | null } }
- *   | 'failed'
+ *   | { incomplete: { partial_response: AssistantResponse | null, reason: StopReason } }
  * )} AssistantTurnOutcome
  * @typedef {(
  *   | { kind: 'session', version: number, session_id: string, created_at: string,
  *       cwd: string, model_info: { provider: string, id: string } }
  *   | { kind: 'turn', turn_id: string, timestamp: string, parent_id: string | null,
- *       turn: { input_message: { content: InputContent[] } }
- *           | { assistant_message: { outcome: AssistantTurnOutcome } } }
+ *       turn: { input: { entries: RecordedInput[] } }
+ *           | { assistant: { outcome: AssistantTurnOutcome } } }
  *   | { kind: 'event', turn_id: string, parent_id: string | null, timestamp: string,
  *       event_id: string, event:
- *         | { tool_call_requested: { tool_call_id: string, tool_name: string, arguments: string } }
- *         | { tool_authorization: { tool_call_id: string, decision: 'approved' | 'denied',
- *             source: 'user' | 'policy', reason: string | null } }
- *         | { tool_call_result: ToolCallResult } }
+ *         { tool_authorization: { tool_call_id: string, decision: 'approved' | 'denied',
+ *           source: 'user' | 'policy', reason: string | null } } }
  * )} TraceRecord
  */
 

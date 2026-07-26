@@ -376,7 +376,7 @@ pub enum AuthorizationSource {
 /// keeps the whole tool call result rather than the flattened form the model
 /// gets.
 #[derive(Serialize, Deserialize, Debug, Clone, From)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum RecordedInput {
     User(UserPrompt),
     Harness(String),
@@ -432,4 +432,25 @@ fn uuid_v7_from(dt: DateTime<Utc>) -> Uuid {
     let secs = dt.timestamp() as u64;
     let nanos = dt.timestamp_subsec_nanos();
     Uuid::new_v7(Timestamp::from_unix(NoContext, secs, nanos))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Externally tagged: serde cannot internally tag a newtype variant that
+    /// wraps a string, so `Harness` would fail to serialize at runtime.
+    #[test]
+    fn recorded_input_is_externally_tagged() {
+        let user = RecordedInput::User(UserPrompt::new("hi".to_string()));
+        assert_eq!(
+            serde_json::to_string(&user).unwrap(),
+            r#"{"user":{"message":"hi"}}"#
+        );
+        let harness = RecordedInput::Harness("steer".to_string());
+        assert_eq!(
+            serde_json::to_string(&harness).unwrap(),
+            r#"{"harness":"steer"}"#
+        );
+    }
 }

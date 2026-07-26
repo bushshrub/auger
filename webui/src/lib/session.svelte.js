@@ -385,10 +385,9 @@ export class AugerSession {
  * The snapshot is the persisted record stream (see FE.md): a leading session
  * record, then turns (which carry the conversation), then the tool events that
  * occurred during an assistant turn. Turns and their enum payloads are
- * externally tagged (`turn.input_message`, `turn.assistant_message.outcome`,
- * `event.tool_authorization`, ...). Assistant turns also emit a
- * `tool_call_requested` event, but the card is already created from the turn's
- * response `tool_calls`, so that event is ignored here.
+ * externally tagged (`turn.input`, `turn.assistant.outcome`,
+ * `event.tool_authorization`, ...). Tool results live in the input turn that
+ * answers the assistant, not in a separate event.
  * @param {TraceRecord[]} records
  * @returns {UiItem[]}
  */
@@ -401,27 +400,26 @@ function buildItems(records) {
 	for (const record of records) {
 		if (record.kind === 'session') continue;
 
-		if (record.kind === 'turn' && 'input_message' in record.turn) {
-			for (const content of record.turn.input_message.content) {
-				if (content.type === 'text' && content.text.trim().length > 0) {
-					items.push({ kind: 'user', id: nextId(), text: content.text });
-				} else if (content.type === 'tool_result') {
-					const call = calls.get(content.tool_call_id);
-					if (call && call.status !== 'denied') {
-						call.status = 'done';
-						call.result = toolText(content.content);
-					}
+		if (record.kind === 'turn' && 'input' in record.turn) {
+			for (const entry of record.turn.input.entries) {
+				if ('user' in entry && entry.user.message.trim().length > 0) {
+					items.push({ kind: 'user', id: nextId(), text: entry.user.message });
+				} else if ('tool_result' in entry) {
+					const result = entry.tool_result;
+					const call = calls.get(result.tool_call_id);
+					// Denial wins over a result (a denied call still records its
+					// reason as a result), so don't overwrite that status.
+					if (call && call.status !== 'denied') applyOutcome(call, result.outcome);
 				}
+				// Harness messages are internal steering; nothing to show.
 			}
-		} else if (record.kind === 'turn' && 'assistant_message' in record.turn) {
-			// Only completed / interrupted outcomes carry a response; failed has none.
-			const outcome = record.turn.assistant_message.outcome;
+		} else if (record.kind === 'turn' && 'assistant' in record.turn) {
+			// An incomplete turn may still carry whatever was streamed first.
+			const outcome = record.turn.assistant.outcome;
 			const response =
-				outcome === 'failed'
-					? null
-					: 'completed' in outcome
-						? outcome.completed.response
-						: outcome.interrupted.partial_response;
+				'completed' in outcome
+					? outcome.completed.response
+					: outcome.incomplete.partial_response;
 			if (!response) continue;
 
 			const reasoning = response.reasoning ?? '';
@@ -458,12 +456,6 @@ function buildItems(records) {
 				if (auth.decision === 'denied') call.status = 'denied';
 				else if (call.status === 'pending_approval') call.status = 'running';
 			}
-		} else if (record.kind === 'event' && 'tool_call_result' in record.event) {
-			const result = record.event.tool_call_result;
-			const call = calls.get(result.tool_call_id);
-			// Denial wins over a result (a denied call still records its reason
-			// as a result), so don't overwrite that status.
-			if (call && call.status !== 'denied') applyOutcome(call, result.outcome);
 		}
 	}
 
