@@ -13,7 +13,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 /// Token usage details
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TokenUsage {
     pub prompt_tokens: Option<i32>,
     pub completion_tokens: Option<i32>,
@@ -39,7 +39,8 @@ pub struct TokenUsage {
 pub enum StreamEvent {
     BlockStart { index: usize, kind: BlockKind },
     BlockDelta { index: usize, delta: String },
-    BlockEnd { index: usize }
+    BlockEnd { index: usize },
+    Usage(TokenUsage),
 }
 
 /// The type of block being emitted
@@ -67,19 +68,6 @@ pub enum Block {
     ToolCall(ToolCallRequest)
 }
 
-/// A partial LLM response. Note that this may not have complete blocks since
-/// the user could have cut it off, or it could have failed midway.
-#[derive(Debug, Clone)]
-pub struct PartialLlmResponse {
-    /// The raw events from the clanker provider.
-    pub raw_events: Vec<StreamEvent>,
-    /// Token usage details after this response is complete.
-    /// May be None if the provider doesn't expose token usage details
-    pub usage: Option<TokenUsage>,
-    /// The reason why the model stopped generating output.
-    pub stop_reason: Option<String>,
-}
-
 #[derive(Debug, Clone)]
 pub struct CompletedLlmResponse {
     /// The final response from the clanker.
@@ -91,17 +79,50 @@ pub struct CompletedLlmResponse {
     pub stop_reason: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub enum LlmResponse {
-    Partial(PartialLlmResponse),
-    Completed(CompletedLlmResponse),
-}
+/// Fold stream events into blocks, in index order, plus any reported usage.
+/// Truncated blocks just come out shorter; the caller decides what that means.
+pub fn fold_events(events: &[StreamEvent]) -> (Vec<Block>, Option<TokenUsage>) {
+    let mut open: BTreeMap<usize, (BlockKind, String)> = BTreeMap::new();
+    let mut usage: Option<TokenUsage> = None;
 
-impl LlmResponse {
-    /// Collect stream events and select a partial or completed response.
-    pub fn from_events(events: Vec<StreamEvent>) -> Self {
-        todo!()
+    for event in events {
+        match event {
+            StreamEvent::BlockStart { index, kind } => {
+                open.insert(*index, (kind.clone(), String::new()));
+            }
+            StreamEvent::BlockDelta { index, delta } => {
+                if let Some((_, text)) = open.get_mut(index) {
+                    text.push_str(delta);
+                }
+            }
+            StreamEvent::BlockEnd { .. } => {}
+            StreamEvent::Usage(reported) => {
+                // Usage arrives in pieces, so merge per field rather than replacing.
+                let acc = usage.get_or_insert_with(TokenUsage::default);
+                acc.prompt_tokens = reported.prompt_tokens.or(acc.prompt_tokens);
+                acc.completion_tokens = reported.completion_tokens.or(acc.completion_tokens);
+                acc.total_tokens = reported.total_tokens.or(acc.total_tokens);
+                acc.cached_tokens = reported.cached_tokens.or(acc.cached_tokens);
+                acc.cache_creation_tokens =
+                    reported.cache_creation_tokens.or(acc.cache_creation_tokens);
+            }
+        }
     }
+
+    let blocks = open
+        .into_values()
+        .filter_map(|(kind, text)| match kind {
+            BlockKind::Text => (!text.is_empty()).then(|| Block::Text(text)),
+            BlockKind::Reasoning => (!text.is_empty()).then(|| Block::Reasoning { text }),
+            BlockKind::ToolCall { id, name } => Some(Block::ToolCall(ToolCallRequest {
+                id,
+                name,
+                arguments: text,
+            })),
+        })
+        .collect();
+
+    (blocks, usage)
 }
 
 /// The kind of LLM error received.

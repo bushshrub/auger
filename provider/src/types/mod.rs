@@ -50,6 +50,18 @@ impl AssistantResponse {
             _ => None,
         }).collect()
     }
+
+    pub fn from_interrupted(blocks: Vec<Block>) -> Option<Self> {
+        let blocks: Vec<Block> = blocks
+            .into_iter()
+            .filter(|b| !matches!(b, Block::ToolCall(_)))
+            .collect();
+        // Reasoning alone isn't worth sealing.
+        if blocks.iter().all(|b| matches!(b, Block::Reasoning { .. })) {
+            return None;
+        }
+        Self::new(blocks)
+    }
 }
 
 impl<'de> Deserialize<'de> for AssistantResponse {
