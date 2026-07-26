@@ -204,12 +204,15 @@ struct SseEvent {
     item_id: Option<String>,
     item: Option<Value>,
     response: Option<CompletedResponse>,
+    // Set on a top level `error` event.
+    message: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct CompletedResponse {
     status: Option<String>,
     usage: Option<ResponseUsage>,
+    error: Option<Value>,
 }
 
 // --- Helpers ---
@@ -486,12 +489,7 @@ impl LlmProvider for OpenAiResponsesProvider {
 
         while let Some(chunk) = bytes.next().await {
             match chunk {
-                Err(e) => {
-                    return Ok(StreamEnd {
-                        usage: None,
-                        stop_reason: Some(format!("stream error: {}", e)),
-                    });
-                }
+                Err(e) => return Err(errors::from_transport(e)),
                 Ok(raw) => {
                     let mut buf = String::from(String::from_utf8_lossy(&raw));
                     while let Some(nl) = buf.find('\n') {
@@ -594,6 +592,22 @@ impl LlmProvider for OpenAiResponsesProvider {
                                     None => (None, None),
                                 };
                                 return Ok(StreamEnd { usage, stop_reason: sr });
+                            }
+                            "error" => {
+                                let message = event
+                                    .message
+                                    .unwrap_or_else(|| "OpenAI stream error".to_string());
+                                return Err(errors::stream_error(message, None));
+                            }
+                            "response.failed" => {
+                                let message = event
+                                    .response
+                                    .as_ref()
+                                    .and_then(|response| response.error.as_ref())
+                                    .and_then(|error| error["message"].as_str())
+                                    .unwrap_or("OpenAI response failed")
+                                    .to_string();
+                                return Err(errors::stream_error(message, None));
                             }
                             _ => {}
                         }

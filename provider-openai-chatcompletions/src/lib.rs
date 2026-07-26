@@ -271,19 +271,15 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
         let mut stream = sse_stream;
         while let Some(result) = stream.next().await {
             match result {
-                Err(e) => {
-                    return Ok(StreamEnd {
-                        usage: None,
-                        stop_reason: Some(format!("stream error: {}", e)),
-                    });
-                }
+                Err(e) => return Err(errors::from_error(e)),
                 Ok(chunk) => {
                     if let Some(error) = chunk["error"].as_object() {
                         let message = error["message"].as_str().unwrap_or("stream error");
-                        return Ok(StreamEnd {
-                            usage: None,
-                            stop_reason: Some(format!("error: {}", message)),
-                        });
+                        return Err(errors::in_band_fields(
+                            message.to_string(),
+                            error.get("type").and_then(|v| v.as_str()),
+                            error.get("code").and_then(|v| v.as_str()),
+                        ));
                     }
                     if let Some(u) = extract_usage(&chunk) {
                         final_usage = Some(u);

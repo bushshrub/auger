@@ -313,12 +313,7 @@ impl LlmProvider for AnthropicProvider {
 
         while let Some(chunk) = bytes.next().await {
             match chunk {
-                Err(e) => {
-                    return Ok(StreamEnd {
-                        usage: None,
-                        stop_reason: Some(format!("stream error: {}", e)),
-                    });
-                }
+                Err(e) => return Err(errors::from_transport(e)),
                 Ok(raw) => {
                     let mut buf = String::from(String::from_utf8_lossy(&raw));
                     while let Some(nl) = buf.find('\n') {
@@ -340,10 +335,11 @@ impl LlmProvider for AnthropicProvider {
                                 .as_str()
                                 .unwrap_or("Anthropic stream error")
                                 .to_string();
-                            return Ok(StreamEnd {
-                                usage: None,
-                                stop_reason: Some(format!("error: {}", message)),
-                            });
+                            return Err(errors::stream_error(
+                                message,
+                                None,
+                                event["error"]["type"].as_str(),
+                            ));
                         }
 
                         match event["type"].as_str() {
