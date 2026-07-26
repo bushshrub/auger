@@ -48,7 +48,6 @@ pub use agent::ReadyToStream;
 pub use agent::State;
 pub use agent::TypedAgent;
 pub use agent::WaitingForUserMessage;
-pub use interrupt_states::LlmStreamingFailed;
 pub use interrupt_states::LlmStreamingInterrupted;
 pub use restore::RestoreState;
 pub use restore::RestoredAgent;

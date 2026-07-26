@@ -4,7 +4,7 @@ use crate::agent::{convert_entries_into_messages, Entry, TypedAgent};
 use crate::agent::WaitingForUserMessage;
 use crate::interrupt_states::LlmStreamingInterrupted;
 use crate::waiting_for_tools::WaitingForToolResponses;
-use provider::{LlmError, LlmModel, LlmResponse, PartialLlmResponse, StreamEvent};
+use provider::{fold_events, AssistantResponse, CompletedLlmResponse, LlmError, LlmModel, StreamEvent};
 use provider::LlmRequest;
 use provider::ToolDefinition;
 use std::future::Future;
@@ -78,34 +78,30 @@ pub(crate) async fn run_stream(
     tokio::select! {
         result = model.stream(request, &mut sink) => match result {
             Ok(stream) => {
-                let resp = LlmResponse::from_events(events);
-                match resp {
-                    LlmResponse::Partial(_) => {panic!("seems like a bug")}
-                    LlmResponse::Completed(complete_response) => {
-                        let clanker_msg = complete_response.response;
-                        let has_tool_calls = !clanker_msg.tool_calls().is_empty();
-                        entries_so_far.push(Entry::Assistant(clanker_msg));
-                        if !has_tool_calls {
-                            StreamResult::WaitingForUserMessage(TypedAgent {
-                                model,
-                                tools,
-                                system_prompt,
-                                entries: entries_so_far,
-                                state: WaitingForUserMessage {},
-                            })
-                        } else {
-                            StreamResult::WaitingForToolResponses(TypedAgent {
-                                model,
-                                tools,
-                                system_prompt,
-                                entries: entries_so_far,
-                                state: WaitingForToolResponses {},
-                            })
-                        }
-                    }
+                let (resp, token_usage) = fold_events(&events);
+                let clanker_msg = AssistantResponse::new(resp).expect("there to be blocks");
+                let has_tool_calls = !clanker_msg.tool_calls().is_empty();
+                entries_so_far.push(Entry::Assistant(clanker_msg));
+                if !has_tool_calls {
+                    StreamResult::WaitingForUserMessage(TypedAgent {
+                        model,
+                        tools,
+                        system_prompt,
+                        entries: entries_so_far,
+                        state: WaitingForUserMessage {},
+                    })
+                } else {
+                    StreamResult::WaitingForToolResponses(TypedAgent {
+                        model,
+                        tools,
+                        system_prompt,
+                        entries: entries_so_far,
+                        state: WaitingForToolResponses {},
+                    })
                 }
             },
             Err(error) => {
+                let (resp, token_usage) = fold_events(&events);
                 error!(model = %model.name(), error = %error, "failed to start provider stream");
                 StreamResult::Failed {
                     agent: TypedAgent {
@@ -114,11 +110,7 @@ pub(crate) async fn run_stream(
                         system_prompt,
                         entries: entries_so_far,
                         state: LlmStreamingInterrupted {
-                            partial: Some(PartialLlmResponse {
-                                raw_events: events,
-                                usage: None,
-                                stop_reason: None,
-                            }),
+                            partial: AssistantResponse::from_interrupted(resp),
                         },
                     },
                     error
@@ -126,19 +118,15 @@ pub(crate) async fn run_stream(
             }
         },
         _ = cancellation.cancelled() => {
+            let (resp, token_usage) = fold_events(&events);
             StreamResult::Interrupted(TypedAgent {
                 model,
                 tools,
                 system_prompt,
                 entries: entries_so_far,
                 state: LlmStreamingInterrupted {
-
-                partial: PartialLlmResponse {
-                    raw_events: events,
-                    usage: None,
-                    stop_reason: None,
-                },
-                },
+                    partial: AssistantResponse::from_interrupted(resp),
+                }
             })
         },
     }

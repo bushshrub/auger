@@ -8,7 +8,7 @@ use crate::agent::{Prompt, ReadyToStream};
 use crate::agent::State;
 use crate::agent::TypedAgent;
 use getset::Getters;
-use provider::{LlmResponse, PartialLlmResponse};
+use provider::{AssistantResponse};
 use provider::Message;
 use provider::UserPrompt;
 
@@ -17,7 +17,7 @@ use provider::UserPrompt;
 /// or by some kind of provider failure.
 #[derive(Getters)]
 pub struct LlmStreamingInterrupted {
-    pub(super) partial: Option<PartialLlmResponse>
+    pub(super) partial: Option<AssistantResponse>
 }
 
 impl State for LlmStreamingInterrupted {}

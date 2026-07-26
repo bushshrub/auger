@@ -5,7 +5,7 @@ use crate::LlmStreamingInterrupted;
 use crate::TypedAgent;
 use crate::WaitingForToolResponses;
 use crate::WaitingForUserMessage;
-use provider::{AssistantResponse, LlmError, PartialLlmResponse};
+use provider::{AssistantResponse};
 use provider::LlmModel;
 use provider::Message;
 use provider::StreamEvent;
