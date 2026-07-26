@@ -18,6 +18,12 @@ pub struct RestoreState {
     tail: Tail,
 }
 
+impl RestoreState {
+    pub fn new(entries: Vec<Entry>, tail: Tail) -> Self {
+        Self { entries, tail }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Tail {
     Settled,

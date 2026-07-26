@@ -13,7 +13,6 @@ use std::task::Context;
 use std::task::Poll;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
-use crate::ReadyToStream;
 
 /// Future which when awaited, streams the LLM response.
 /// Once done, returns a StreamResult which gives the result state after
