@@ -1,12 +1,13 @@
-use futures::StreamExt;
 use futures::stream;
+use futures::StreamExt;
+use provider::Block;
+use provider::BlockKind;
 use provider::CompletedLlmResponse;
 use provider::LlmError;
 use provider::LlmProvider;
 use provider::LlmRequest;
-use provider::LlmStream;
+use provider::StreamEnd;
 use provider::StreamEvent;
-use provider::ToolCallRequest;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -91,69 +92,72 @@ impl LlmProvider for DummyProvider {
         }
     }
 
-    async fn stream(&self, model: &str, request: LlmRequest) -> Result<LlmStream, LlmError> {
+    async fn stream(
+        &self,
+        model: &str,
+        request: LlmRequest,
+        sink: provider::EventSink<'_>,
+    ) -> Result<StreamEnd, LlmError> {
         debug!(model, "dummy provider stream called");
         match self.next_response(request)? {
-            DummyResponse::Response(response) => Ok(LlmStream::new(finite_stream(
-                response_to_stream_events(response),
-                model,
-            ))),
+            DummyResponse::Response(response) => {
+                for event in response_to_stream_events(&response) {
+                    sink(event);
+                }
+                Ok(StreamEnd {
+                    usage: response.usage,
+                    stop_reason: response.stop_reason,
+                })
+            }
             DummyResponse::Error(error) => Err(error),
-            DummyResponse::Stream(events) => Ok(LlmStream::new(finite_stream(events, model))),
-            DummyResponse::PendingStream(events) => Ok(LlmStream::new(
-                stream::iter(events).chain(stream::pending()),
-            )),
+            DummyResponse::Stream(events) => {
+                for event in events {
+                    sink(event?);
+                }
+                Ok(StreamEnd { usage: None, stop_reason: None })
+            }
+            DummyResponse::PendingStream(events) => {
+                let s = stream::iter(events);
+                futures::pin_mut!(s);
+                while let Some(event) = s.next().await {
+                    sink(event?);
+                }
+                Ok(StreamEnd { usage: None, stop_reason: None })
+            }
         }
     }
 }
 
-fn finite_stream(
-    events: Vec<Result<StreamEvent, LlmError>>,
-    model: &str,
-) -> impl futures::Stream<Item = Result<StreamEvent, LlmError>> + Send + 'static {
-    let model = model.to_string();
-    stream::unfold(
-        (VecDeque::from(events), model),
-        |(mut events, model)| async move {
-            match events.pop_front() {
-                Some(event) => Some((event, (events, model))),
-                None => {
-                    debug!(model = %model, "dummy provider stream ended");
-                    None
-                }
-            }
-        },
-    )
-}
-
-fn response_to_stream_events(response: CompletedLlmResponse) -> Vec<Result<StreamEvent, LlmError>> {
+fn response_to_stream_events(response: &CompletedLlmResponse) -> Vec<StreamEvent> {
     let mut events = Vec::new();
 
-    if !response.content.is_empty() {
-        events.push(Ok(StreamEvent::TextDelta(response.content)));
+    for block in response.response.blocks() {
+        match block {
+            Block::Text(text) => {
+                if !text.is_empty() {
+                    events.push(StreamEvent::BlockStart { index: 0, kind: BlockKind::Text });
+                    events.push(StreamEvent::BlockDelta { index: 0, delta: text.clone() });
+                }
+            }
+            Block::Reasoning { text } => {
+                if !text.is_empty() {
+                    events.push(StreamEvent::BlockStart { index: 0, kind: BlockKind::Reasoning });
+                    events.push(StreamEvent::BlockDelta { index: 0, delta: text.clone() });
+                }
+            }
+            Block::ToolCall(tc) => {
+                events.push(StreamEvent::BlockStart {
+                    index: 0,
+                    kind: BlockKind::ToolCall {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                    },
+                });
+                events.push(StreamEvent::BlockDelta { index: 0, delta: tc.arguments.clone() });
+                events.push(StreamEvent::BlockEnd { index: 0 });
+            }
+        }
     }
-
-    if let Some(reasoning) = response.reasoning {
-        events.push(Ok(StreamEvent::ReasoningDelta(reasoning)));
-    }
-
-    for ToolCallRequest {
-        id,
-        name,
-        arguments,
-    } in response.tool_calls.unwrap_or_default()
-    {
-        events.push(Ok(StreamEvent::ToolCallComplete {
-            id,
-            name,
-            arguments,
-        }));
-    }
-
-    events.push(Ok(StreamEvent::Done {
-        usage: response.usage,
-        stop_reason: response.stop_reason,
-    }));
 
     events
 }

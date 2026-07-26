@@ -1,11 +1,13 @@
 use async_openai::Client;
 use async_openai::config::OpenAIConfig;
 use futures::StreamExt;
+use provider::Block;
+use provider::BlockKind;
 use provider::CompletedLlmResponse;
 use provider::LlmError;
 use provider::LlmProvider;
 use provider::LlmRequest;
-use provider::LlmStream;
+use provider::StreamEnd;
 use provider::StreamEvent;
 use provider::TokenUsage;
 use provider::ToolCallRequest;
@@ -90,29 +92,42 @@ fn messages_to_json(messages: &[provider::Message]) -> Vec<Value> {
                 }
             }
             provider::Message::Assistant { response } => {
-                let provider::AssistantResponse {
-                    reasoning,
-                    content,
-                    tool_calls,
-                } = response;
+                let blocks = response.blocks();
                 let mut msg = json!({"role": "assistant"});
-                if !content.is_empty() {
-                    msg["content"] = json!(content);
-                }
-                if let Some(rc) = reasoning {
-                    msg["reasoning_content"] = json!(rc);
-                }
-                if !tool_calls.is_empty() {
-                    msg["tool_calls"] = json!(
-                        tool_calls
-                            .iter()
-                            .map(|tc| json!({
+                let mut has_content = false;
+                let mut tool_call_arr: Vec<Value> = Vec::new();
+                for block in blocks {
+                    match block {
+                        Block::Text(text) => {
+                            if !text.is_empty() {
+                                msg["content"] = json!(text);
+                                has_content = true;
+                            }
+                        }
+                        Block::Reasoning { text } => {
+                            if !text.is_empty() {
+                                msg["reasoning_content"] = json!(text);
+                                has_content = true;
+                            }
+                        }
+                        Block::ToolCall(tc) => {
+                            if !has_content {
+                                msg["content"] = json!("");
+                                has_content = true;
+                            }
+                            tool_call_arr.push(json!({
                                 "id": tc.id,
                                 "type": "function",
                                 "function": {"name": tc.name, "arguments": tc.arguments}
-                            }))
-                            .collect::<Vec<_>>()
-                    );
+                            }));
+                        }
+                    }
+                }
+                if !tool_call_arr.is_empty() {
+                    msg["tool_calls"] = json!(tool_call_arr);
+                }
+                if !has_content {
+                    msg["content"] = json!("");
                 }
                 out.push(msg);
             }
@@ -199,16 +214,33 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
             .as_str()
             .map(str::to_string);
 
+        let mut blocks: Vec<Block> = Vec::new();
+        let content = msg["content"].as_str().unwrap_or("");
+        if !content.is_empty() {
+            blocks.push(Block::Text(content.to_string()));
+        }
+        if let Some(rc) = extract_reasoning(msg) {
+            blocks.push(Block::Reasoning { text: rc });
+        }
+        if let Some(tcs) = tool_calls {
+            for tc in tcs {
+                blocks.push(Block::ToolCall(tc));
+            }
+        }
+
         Ok(CompletedLlmResponse {
-            content: msg["content"].as_str().unwrap_or("").to_string(),
-            reasoning: extract_reasoning(msg),
-            tool_calls,
+            response: provider::AssistantResponse::new(blocks).unwrap(),
             usage: extract_usage(&resp),
             stop_reason: finish_reason,
         })
     }
 
-    async fn stream(&self, model: &str, request: LlmRequest) -> Result<LlmStream, LlmError> {
+    async fn stream(
+        &self,
+        model: &str,
+        request: LlmRequest,
+        sink: provider::EventSink<'_>,
+    ) -> Result<StreamEnd, LlmError> {
         let body = json!({
             "model": model,
             "messages": messages_to_json(request.messages()),
@@ -231,99 +263,107 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
         }
 
         let mut accums: Vec<Option<TcAccum>> = Vec::new();
+        let mut next_block_idx: usize = 0;
+        let mut stop_reason: Option<String> = None;
+        let mut final_usage: Option<TokenUsage> = None;
+        let mut tool_calls_completed = false;
 
-        let stream = async_stream::stream! {
-            let mut stream = sse_stream;
-            let mut stop_reason: Option<String> = None;
-            let mut final_usage: Option<TokenUsage> = None;
-            let mut tool_calls_completed = false;
-
-            while let Some(result) = stream.next().await {
-                match result {
-                    Err(e) => {
-                        yield Err(errors::from_error(e));
-                        return;
+        let mut stream = sse_stream;
+        while let Some(result) = stream.next().await {
+            match result {
+                Err(e) => {
+                    return Ok(StreamEnd {
+                        usage: None,
+                        stop_reason: Some(format!("stream error: {}", e)),
+                    });
+                }
+                Ok(chunk) => {
+                    if let Some(error) = chunk["error"].as_object() {
+                        let message = error["message"].as_str().unwrap_or("stream error");
+                        return Ok(StreamEnd {
+                            usage: None,
+                            stop_reason: Some(format!("error: {}", message)),
+                        });
                     }
-                    Ok(chunk) => {
-                        if let Some(error) = chunk["error"].as_object() {
-                            let message = error["message"].as_str().unwrap_or("stream error");
-                            let body_type = error["type"].as_str().or_else(|| error["code"].as_str());
-                            yield Err(errors::in_band_fields(message.to_string(), body_type, error["code"].as_str()));
-                            return;
-                        }
-                        // Usage may arrive in the finish_reason chunk or in a trailing
-                        // chunk with empty choices (OpenAI stream_options include_usage).
-                        if let Some(u) = extract_usage(&chunk) {
-                            final_usage = Some(u);
-                        }
+                    if let Some(u) = extract_usage(&chunk) {
+                        final_usage = Some(u);
+                    }
 
-                        let choice = &chunk["choices"][0];
-                        let delta = &choice["delta"];
+                    let choice = &chunk["choices"][0];
+                    let delta = &choice["delta"];
 
-                        if let Some(reasoning) = extract_reasoning(delta) {
-                            yield Ok(StreamEvent::ReasoningDelta(reasoning));
+                    if let Some(reasoning) = extract_reasoning(delta) {
+                        let idx = next_block_idx;
+                        next_block_idx += 1;
+                        sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Reasoning });
+                        sink(StreamEvent::BlockDelta { index: idx, delta: reasoning });
+                    }
+
+                    if let Some(content) = delta["content"].as_str() {
+                        if !content.is_empty() {
+                            let idx = next_block_idx;
+                            next_block_idx += 1;
+                            sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Text });
+                            sink(StreamEvent::BlockDelta { index: idx, delta: content.to_string() });
                         }
+                    }
 
-                        if let Some(content) = delta["content"].as_str() {
-                            if !content.is_empty() {
-                                yield Ok(StreamEvent::TextDelta(content.to_string()));
+                    if let Some(tcs) = delta["tool_calls"].as_array() {
+                        for tc in tcs {
+                            let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                            while accums.len() <= idx {
+                                accums.push(None);
                             }
-                        }
-
-                        if let Some(tcs) = delta["tool_calls"].as_array() {
-                            for tc in tcs {
-                                let idx = tc["index"].as_u64().unwrap_or(0) as usize;
-                                while accums.len() <= idx {
-                                    accums.push(None);
-                                }
-                                let acc = accums[idx].get_or_insert_with(|| TcAccum {
-                                    id: String::new(),
-                                    name: String::new(),
-                                    arguments: String::new(),
-                                });
-                                if let Some(id) = tc["id"].as_str() {
-                                    acc.id = id.to_string();
-                                }
-                                if let Some(name) = tc["function"]["name"].as_str() {
-                                    acc.name = name.to_string();
-                                }
-                                let mut arg_delta = "";
-                                if let Some(args) = tc["function"]["arguments"].as_str() {
-                                    acc.arguments.push_str(args);
-                                    arg_delta = args;
-                                }
-                                yield Ok(StreamEvent::ToolCall {
+                            let acc = accums[idx].get_or_insert_with(|| TcAccum {
+                                id: String::new(),
+                                name: String::new(),
+                                arguments: String::new(),
+                            });
+                            if let Some(id) = tc["id"].as_str() {
+                                acc.id = id.to_string();
+                            }
+                            if let Some(name) = tc["function"]["name"].as_str() {
+                                acc.name = name.to_string();
+                            }
+                            let mut arg_delta = "";
+                            if let Some(args) = tc["function"]["arguments"].as_str() {
+                                acc.arguments.push_str(args);
+                                arg_delta = args;
+                            }
+                            let tc_idx = next_block_idx;
+                            next_block_idx += 1;
+                            sink(StreamEvent::BlockStart {
+                                index: tc_idx,
+                                kind: BlockKind::ToolCall {
                                     id: acc.id.clone(),
                                     name: acc.name.clone(),
-                                    arguments: arg_delta.to_string(),
-                                });
-                            }
+                                },
+                            });
+                            sink(StreamEvent::BlockDelta { index: tc_idx, delta: arg_delta.to_string() });
                         }
+                    }
 
-                        if choice["finish_reason"].as_str() == Some("error") {
-                            yield Err(errors::in_band("stream finish_reason=error".to_string(), None));
-                            return;
+                    if choice["finish_reason"].as_str() == Some("error") {
+                        return Ok(StreamEnd {
+                            usage: None,
+                            stop_reason: Some("stream finish_reason=error".to_string()),
+                        });
+                    }
+                    if choice["finish_reason"].is_string() && !tool_calls_completed {
+                        tool_calls_completed = true;
+                        for _acc in accums.iter().flatten() {
+                            sink(StreamEvent::BlockEnd { index: next_block_idx - 1 });
                         }
-                        if choice["finish_reason"].is_string() && !tool_calls_completed {
-                            tool_calls_completed = true;
-                            for acc in accums.iter().flatten() {
-                                yield Ok(StreamEvent::ToolCallComplete {
-                                    id: acc.id.clone(),
-                                    name: acc.name.clone(),
-                                    arguments: acc.arguments.clone(),
-                                });
-                            }
-                            stop_reason = choice["finish_reason"].as_str().map(str::to_string);
-                        }
+                        stop_reason = choice["finish_reason"].as_str().map(str::to_string);
                     }
                 }
             }
-
-            yield Ok(StreamEvent::Done { usage: final_usage, stop_reason });
         }
-        .boxed();
 
-        Ok(LlmStream::new(stream))
+        Ok(StreamEnd {
+            usage: final_usage,
+            stop_reason,
+        })
     }
 }
 

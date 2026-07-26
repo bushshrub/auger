@@ -1,10 +1,11 @@
-use async_stream::stream;
 use futures::StreamExt;
+use provider::Block;
+use provider::BlockKind;
 use provider::CompletedLlmResponse;
 use provider::LlmError;
 use provider::LlmProvider;
 use provider::LlmRequest;
-use provider::LlmStream;
+use provider::StreamEnd;
 use provider::StreamEvent;
 use provider::TokenUsage;
 use provider::ToolCallRequest;
@@ -97,29 +98,36 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
                 out.push(json!({"role": "user", "content": blocks}));
             }
             Message::Assistant { response } => {
-                let provider::AssistantResponse {
-                    reasoning: _,
-                    content,
-                    tool_calls,
-                } = response;
-                let mut blocks: Vec<Value> = Vec::new();
-                if !content.is_empty() {
-                    blocks.push(json!({"type": "text", "text": content}));
+                let blocks = response.blocks();
+                let mut msg_blocks: Vec<Value> = Vec::new();
+                for block in blocks {
+                    match block {
+                        Block::Text(text) => {
+                            if !text.is_empty() {
+                                msg_blocks.push(json!({"type": "text", "text": text}));
+                            }
+                        }
+                        Block::Reasoning { text } => {
+                            if !text.is_empty() {
+                                msg_blocks.push(json!({"type": "thinking", "thinking": text}));
+                            }
+                        }
+                        Block::ToolCall(tc) => {
+                            let input: Value = serde_json::from_str(&tc.arguments)
+                                .unwrap_or(Value::Object(Default::default()));
+                            msg_blocks.push(json!({
+                                "type": "tool_use",
+                                "id": tc.id,
+                                "name": tc.name,
+                                "input": input,
+                            }));
+                        }
+                    }
                 }
-                for tc in tool_calls {
-                    let input: Value = serde_json::from_str(&tc.arguments)
-                        .unwrap_or(Value::Object(Default::default()));
-                    blocks.push(json!({
-                        "type": "tool_use",
-                        "id": tc.id,
-                        "name": tc.name,
-                        "input": input,
-                    }));
+                if msg_blocks.is_empty() {
+                    msg_blocks.push(json!({"type": "text", "text": ""}));
                 }
-                if blocks.is_empty() {
-                    blocks.push(json!({"type": "text", "text": ""}));
-                }
-                out.push(json!({"role": "assistant", "content": blocks}));
+                out.push(json!({"role": "assistant", "content": msg_blocks}));
             }
         }
     }
@@ -211,18 +219,19 @@ fn parse_response(data: &Value) -> CompletedLlmResponse {
         }
     }
 
+    let mut blocks: Vec<Block> = Vec::new();
+    if !text.is_empty() {
+        blocks.push(Block::Text(text));
+    }
+    if !reasoning.is_empty() {
+        blocks.push(Block::Reasoning { text: reasoning });
+    }
+    for tc in tool_calls {
+        blocks.push(Block::ToolCall(tc));
+    }
+
     CompletedLlmResponse {
-        content: text,
-        reasoning: if reasoning.is_empty() {
-            None
-        } else {
-            Some(reasoning)
-        },
-        tool_calls: if tool_calls.is_empty() {
-            None
-        } else {
-            Some(tool_calls)
-        },
+        response: provider::AssistantResponse::new(blocks).unwrap(),
         usage: parse_usage(&data["usage"]),
         stop_reason: data["stop_reason"].as_str().map(str::to_string),
     }
@@ -260,7 +269,12 @@ impl LlmProvider for AnthropicProvider {
         Ok(parse_response(&data))
     }
 
-    async fn stream(&self, model: &str, request: LlmRequest) -> Result<LlmStream, LlmError> {
+    async fn stream(
+        &self,
+        model: &str,
+        request: LlmRequest,
+        sink: provider::EventSink<'_>,
+    ) -> Result<StreamEnd, LlmError> {
         let body = build_body(model, request, true);
 
         let resp = self
@@ -273,7 +287,6 @@ impl LlmProvider for AnthropicProvider {
             .send()
             .await
             .map_err(errors::from_transport)?;
-        let request_id = resp.headers().get("request-id").and_then(|v| v.to_str().ok()).map(str::to_string);
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -283,142 +296,140 @@ impl LlmProvider for AnthropicProvider {
         }
 
         struct BlockState {
-            kind: String,
-            id: Option<String>,
-            name: Option<String>,
-            args: String,
+            kind: BlockKind,
+            idx: usize,
         }
 
-        let s = stream! {
-            let mut bytes = resp.bytes_stream();
-            let mut buf = String::new();
-            let mut current_block: Option<BlockState> = None;
-            let mut input_tokens: Option<i32> = None;
-            let mut output_tokens: Option<i32> = None;
-            let mut cached_tokens: Option<i32> = None;
-            let mut cache_creation_tokens: Option<i32> = None;
-            let mut stop_reason: Option<String> = None;
+        let mut next_block_idx: usize = 0;
+        let mut current_block: Option<BlockState> = None;
+        let mut input_tokens: Option<i32> = None;
+        let mut output_tokens: Option<i32> = None;
+        let mut cached_tokens: Option<i32> = None;
+        let mut cache_creation_tokens: Option<i32> = None;
+        let mut stop_reason: Option<String> = None;
 
-            while let Some(chunk) = bytes.next().await {
-                match chunk {
-                    Err(e) => {
-                        yield Err(errors::stream_error(e.to_string(), request_id.clone(), None));
-                        return;
-                    }
-                    Ok(raw) => {
-                        buf.push_str(&String::from_utf8_lossy(&raw));
-                        loop {
-                            let Some(nl) = buf.find('\n') else { break };
-                            let line = buf[..nl].trim_end_matches('\r').to_string();
-                            buf = buf[nl + 1..].to_string();
+        let bytes = resp.bytes_stream();
+        futures::pin_mut!(bytes);
 
-                            let Some(data_str) = line.strip_prefix("data: ") else { continue };
-                            if data_str == "[DONE]" {
-                                return;
+        while let Some(chunk) = bytes.next().await {
+            match chunk {
+                Err(e) => {
+                    return Ok(StreamEnd {
+                        usage: None,
+                        stop_reason: Some(format!("stream error: {}", e)),
+                    });
+                }
+                Ok(raw) => {
+                    let mut buf = String::from(String::from_utf8_lossy(&raw));
+                    while let Some(nl) = buf.find('\n') {
+                        let line = buf[..nl].trim_end_matches('\r').to_string();
+                        buf = buf[nl + 1..].to_string();
+
+                        let Some(data_str) = line.strip_prefix("data: ") else { continue };
+                        if data_str == "[DONE]" {
+                            return Ok(StreamEnd { usage: None, stop_reason: None });
+                        }
+
+                        let event: Value = match serde_json::from_str(data_str) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+
+                        if event["type"].as_str() == Some("error") {
+                            let message = event["error"]["message"]
+                                .as_str()
+                                .unwrap_or("Anthropic stream error")
+                                .to_string();
+                            return Ok(StreamEnd {
+                                usage: None,
+                                stop_reason: Some(format!("error: {}", message)),
+                            });
+                        }
+
+                        match event["type"].as_str() {
+                            Some("message_start") => {
+                                let usage = &event["message"]["usage"];
+                                input_tokens = usage["input_tokens"].as_i64().map(|n| n as i32);
+                                cached_tokens = usage["cache_read_input_tokens"].as_i64().map(|n| n as i32);
+                                cache_creation_tokens = usage["cache_creation_input_tokens"].as_i64().map(|n| n as i32);
                             }
-
-                            let event: Value = match serde_json::from_str(data_str) {
-                                Ok(v) => v,
-                                Err(_) => continue,
-                            };
-
-                            if event["type"].as_str() == Some("error") {
-                                let message = event["error"]["message"].as_str().unwrap_or("Anthropic stream error");
-                                let body_type = event["error"]["type"].as_str();
-                                yield Err(errors::stream_error(message.to_string(), request_id.clone(), body_type));
-                                return;
+                            Some("content_block_start") => {
+                                let block = &event["content_block"];
+                                let kind = match block["type"].as_str() {
+                                    Some("text") => BlockKind::Text,
+                                    Some("thinking") => BlockKind::Reasoning,
+                                    Some("tool_use") => BlockKind::ToolCall {
+                                        id: block["id"].as_str().unwrap_or("").to_string(),
+                                        name: block["name"].as_str().unwrap_or("").to_string(),
+                                    },
+                                    _ => continue,
+                                };
+                                // Close previous block of same type
+                                if let Some(ref cur) = current_block {
+                                    if std::mem::discriminant(&cur.kind) == std::mem::discriminant(&kind) {
+                                        sink(StreamEvent::BlockEnd { index: next_block_idx - 1 });
+                                    }
+                                }
+                                let idx = next_block_idx;
+                                next_block_idx += 1;
+                                current_block = Some(BlockState { idx, kind: kind.clone() });
+                                sink(StreamEvent::BlockStart { index: idx, kind });
                             }
-
-                            match event["type"].as_str() {
-                                Some("message_start") => {
-                                    let usage = &event["message"]["usage"];
-                                    input_tokens = usage["input_tokens"].as_i64().map(|n| n as i32);
-                                    cached_tokens = usage["cache_read_input_tokens"].as_i64().map(|n| n as i32);
-                                    cache_creation_tokens = usage["cache_creation_input_tokens"].as_i64().map(|n| n as i32);
-                                }
-                                Some("content_block_start") => {
-                                    let block = &event["content_block"];
-                                    current_block = Some(BlockState {
-                                        kind: block["type"].as_str().unwrap_or("").to_string(),
-                                        id: block["id"].as_str().map(str::to_string),
-                                        name: block["name"].as_str().map(str::to_string),
-                                        args: String::new(),
-                                    });
-                                }
-                                Some("content_block_delta") => {
-                                    let delta = &event["delta"];
-                                    let ev = if let Some(block) = current_block.as_mut() {
-                                        match block.kind.as_str() {
-                                            "text" => delta["text"]
-                                                .as_str()
-                                                .filter(|t| !t.is_empty())
-                                                .map(|t| Ok(StreamEvent::TextDelta(t.to_string()))),
-                                            "thinking" => delta["thinking"]
-                                                .as_str()
-                                                .filter(|t| !t.is_empty())
-                                                .map(|t| Ok(StreamEvent::ReasoningDelta(t.to_string()))),
-                                            "tool_use" => {
-                                                let partial = delta["partial_json"].as_str().unwrap_or("");
-                                                block.args.push_str(partial);
-                                                Some(Ok(StreamEvent::ToolCall {
-                                                    id: block.id.clone().unwrap_or_default(),
-                                                    name: block.name.clone().unwrap_or_default(),
-                                                    arguments: partial.to_string(),
-                                                }))
+                            Some("content_block_delta") => {
+                                let delta = &event["delta"];
+                                if let Some(block) = current_block.as_mut() {
+                                    match &block.kind {
+                                        BlockKind::Text => {
+                                            if let Some(t) = delta["text"].as_str().filter(|t| !t.is_empty()) {
+                                                sink(StreamEvent::BlockDelta { index: block.idx, delta: t.to_string() });
                                             }
-                                            _ => None,
                                         }
-                                    } else {
-                                        None
-                                    };
-                                    if let Some(e) = ev {
-                                        yield e;
-                                    }
-                                }
-                                Some("content_block_stop") => {
-                                    if let Some(block) = current_block.take() {
-                                        if block.kind == "tool_use" {
-                                            yield Ok(StreamEvent::ToolCallComplete {
-                                                id: block.id.unwrap_or_default(),
-                                                name: block.name.unwrap_or_default(),
-                                                arguments: block.args,
-                                            });
+                                        BlockKind::Reasoning => {
+                                            if let Some(t) = delta["thinking"].as_str().filter(|t| !t.is_empty()) {
+                                                sink(StreamEvent::BlockDelta { index: block.idx, delta: t.to_string() });
+                                            }
+                                        }
+                                        BlockKind::ToolCall { .. } => {
+                                            let partial = delta["partial_json"].as_str().unwrap_or("");
+                                            sink(StreamEvent::BlockDelta { index: block.idx, delta: partial.to_string() });
                                         }
                                     }
                                 }
-                                Some("message_delta") => {
-                                    stop_reason = event["delta"]["stop_reason"]
-                                        .as_str()
-                                        .map(str::to_string);
-                                    output_tokens = event["usage"]["output_tokens"]
-                                        .as_i64()
-                                        .map(|n| n as i32);
-                                }
-                                Some("message_stop") => {
-                                    let usage = Some(TokenUsage {
-                                        prompt_tokens: input_tokens,
-                                        completion_tokens: output_tokens,
-                                        total_tokens: input_tokens
-                                            .zip(output_tokens)
-                                            .map(|(i, o)| i + o),
-                                        cached_tokens,
-                                        cache_creation_tokens,
-                                    });
-                                    yield Ok(StreamEvent::Done {
-                                        usage,
-                                        stop_reason: stop_reason.take(),
-                                    });
-                                    return;
-                                }
-                                _ => {}
                             }
+                            Some("content_block_stop") => {
+                                if let Some(block) = current_block.take() {
+                                    sink(StreamEvent::BlockEnd { index: block.idx });
+                                }
+                            }
+                            Some("message_delta") => {
+                                stop_reason = event["delta"]["stop_reason"].as_str().map(str::to_string);
+                                output_tokens = event["usage"]["output_tokens"].as_i64().map(|n| n as i32);
+                            }
+                            Some("message_stop") => {
+                                let usage = Some(TokenUsage {
+                                    prompt_tokens: input_tokens,
+                                    completion_tokens: output_tokens,
+                                    total_tokens: input_tokens.zip(output_tokens).map(|(i, o)| i + o),
+                                    cached_tokens,
+                                    cache_creation_tokens,
+                                });
+                                return Ok(StreamEnd { usage, stop_reason });
+                            }
+                            _ => {}
                         }
                     }
                 }
             }
         }
-        .boxed();
 
-        Ok(LlmStream::new(s))
+        // Stream ended without message_stop
+        let usage = Some(TokenUsage {
+            prompt_tokens: input_tokens,
+            completion_tokens: output_tokens,
+            total_tokens: input_tokens.zip(output_tokens).map(|(i, o)| i + o),
+            cached_tokens,
+            cache_creation_tokens,
+        });
+        Ok(StreamEnd { usage, stop_reason })
     }
 }

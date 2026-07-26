@@ -1,10 +1,11 @@
-use async_stream::stream;
 use futures::StreamExt;
+use provider::Block;
+use provider::BlockKind;
 use provider::CompletedLlmResponse;
 use provider::LlmError;
 use provider::LlmProvider;
 use provider::LlmRequest;
-use provider::LlmStream;
+use provider::StreamEnd;
 use provider::StreamEvent;
 use provider::TokenUsage;
 use provider::ToolCallRequest;
@@ -241,14 +242,24 @@ fn messages_to_input(messages: &[provider::Message]) -> Vec<Value> {
                 }
             }
             provider::Message::Assistant { response } => {
-                let provider::AssistantResponse {
-                    reasoning: _,
-                    content,
-                    tool_calls,
-                } = response;
+                let blocks = response.blocks();
+                let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
+                for block in blocks {
+                    if let Block::ToolCall(tc) = block {
+                        tool_calls.push(tc.clone());
+                    }
+                }
                 if tool_calls.is_empty() {
-                    if !content.is_empty() {
-                        items.push(serde_json::json!({"type": "message", "role": "assistant", "content": content}));
+                    let has_text = blocks.iter().any(|b| matches!(b, Block::Text(_)));
+                    if has_text {
+                        let text = blocks.iter()
+                            .filter_map(|b| match b {
+                                Block::Text(t) => Some(t.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("");
+                        items.push(serde_json::json!({"type": "message", "role": "assistant", "content": text}));
                     }
                 } else {
                     for tc in tool_calls {
@@ -405,16 +416,33 @@ impl LlmProvider for OpenAiResponsesProvider {
         let tool_calls = extract_tool_calls(&data.output);
         let has_tool_calls = tool_calls.is_some();
 
+        let mut blocks: Vec<Block> = Vec::new();
+        let text = extract_text(&data.output);
+        if !text.is_empty() {
+            blocks.push(Block::Text(text));
+        }
+        if let Some(rc) = extract_reasoning(&data.output) {
+            blocks.push(Block::Reasoning { text: rc });
+        }
+        if let Some(tcs) = tool_calls {
+            for tc in tcs {
+                blocks.push(Block::ToolCall(tc));
+            }
+        }
+
         Ok(CompletedLlmResponse {
-            content: extract_text(&data.output),
-            reasoning: extract_reasoning(&data.output),
-            tool_calls,
+            response: provider::AssistantResponse::new(blocks).unwrap(),
             usage: data.usage.map(map_usage),
             stop_reason: stop_reason(data.status.as_deref(), has_tool_calls),
         })
     }
 
-    async fn stream(&self, model: &str, request: LlmRequest) -> Result<LlmStream, LlmError> {
+    async fn stream(
+        &self,
+        model: &str,
+        request: LlmRequest,
+        sink: provider::EventSink<'_>,
+    ) -> Result<StreamEnd, LlmError> {
         let body = ResponsesRequest {
             model: model.to_string(),
             input: messages_to_input(request.messages()),
@@ -435,7 +463,6 @@ impl LlmProvider for OpenAiResponsesProvider {
         }
 
         let resp = req.json(&body).send().await.map_err(errors::from_transport)?;
-        let request_id = resp.headers().get("x-request-id").and_then(|v| v.to_str().ok()).map(str::to_string);
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -450,133 +477,131 @@ impl LlmProvider for OpenAiResponsesProvider {
             arguments: String,
         }
 
-        let s = stream! {
-            let mut bytes = resp.bytes_stream();
-            let mut buf = String::new();
-            // Keyed by item_id (= call_id on llama.cpp, = item.id on OpenAI).
-            // output_index is absent from llama.cpp's function call events so we
-            // cannot use it as the key here.
-            let mut fc_accums: std::collections::HashMap<String, FcAccum> =
-                std::collections::HashMap::new();
+        let mut fc_accums: std::collections::HashMap<String, FcAccum> =
+            std::collections::HashMap::new();
+        let mut next_block_idx: usize = 0;
 
-            while let Some(chunk) = bytes.next().await {
-                match chunk {
-                    Err(e) => {
-                        yield Err(errors::stream_error(e.to_string(), request_id.clone()));
-                        return;
-                    }
-                    Ok(raw) => {
-                        buf.push_str(&String::from_utf8_lossy(&raw));
-                        loop {
-                            let Some(nl) = buf.find('\n') else { break };
-                            let line = buf[..nl].trim_end_matches('\r').to_string();
-                            buf = buf[nl + 1..].to_string();
+        let bytes = resp.bytes_stream();
+        futures::pin_mut!(bytes);
 
-                            let Some(data) = line.strip_prefix("data: ") else { continue };
-                            if data == "[DONE]" {
-                                return;
+        while let Some(chunk) = bytes.next().await {
+            match chunk {
+                Err(e) => {
+                    return Ok(StreamEnd {
+                        usage: None,
+                        stop_reason: Some(format!("stream error: {}", e)),
+                    });
+                }
+                Ok(raw) => {
+                    let mut buf = String::from(String::from_utf8_lossy(&raw));
+                    while let Some(nl) = buf.find('\n') {
+                        let line = buf[..nl].trim_end_matches('\r').to_string();
+                        buf = buf[nl + 1..].to_string();
+
+                        let Some(data) = line.strip_prefix("data: ") else { continue };
+                        if data == "[DONE]" {
+                            return Ok(StreamEnd { usage: None, stop_reason: None });
+                        }
+
+                        let event: SseEvent = match serde_json::from_str(data) {
+                            Ok(e) => e,
+                            Err(_) => continue,
+                        };
+
+                        match event.kind.as_str() {
+                            "response.output_text.delta" => {
+                                if let Some(rc) = event.reasoning_content {
+                                    if !rc.is_empty() {
+                                        let idx = next_block_idx;
+                                        next_block_idx += 1;
+                                        sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Reasoning });
+                                        sink(StreamEvent::BlockDelta { index: idx, delta: rc });
+                                    }
+                                }
+                                if let Some(delta) = event.delta {
+                                    if !delta.is_empty() {
+                                        let idx = next_block_idx;
+                                        next_block_idx += 1;
+                                        sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Text });
+                                        sink(StreamEvent::BlockDelta { index: idx, delta });
+                                    }
+                                }
                             }
-
-                            let event: SseEvent = match serde_json::from_str(data) {
-                                Ok(e) => e,
-                                Err(_) => continue,
-                            };
-
-                            match event.kind.as_str() {
-                                "response.output_text.delta" => {
-                                    if let Some(rc) = event.reasoning_content {
-                                        if !rc.is_empty() {
-                                            yield Ok(StreamEvent::ReasoningDelta(rc));
-                                        }
+                            "response.reasoning_text.delta" => {
+                                if let Some(delta) = event.delta {
+                                    if !delta.is_empty() {
+                                        let idx = next_block_idx;
+                                        next_block_idx += 1;
+                                        sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Reasoning });
+                                        sink(StreamEvent::BlockDelta { index: idx, delta });
                                     }
-                                    if let Some(delta) = event.delta {
-                                        if !delta.is_empty() {
-                                            yield Ok(StreamEvent::TextDelta(delta));
+                                }
+                            }
+                            "response.output_item.added" => {
+                                if let Some(item) = &event.item {
+                                    if item["type"] == "function_call" {
+                                        let call_id =
+                                            item["call_id"].as_str().unwrap_or("").to_string();
+                                        let name =
+                                            item["name"].as_str().unwrap_or("").to_string();
+                                        let key = item["id"]
+                                            .as_str()
+                                            .or_else(|| item["call_id"].as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        if !key.is_empty() {
+                                            fc_accums.insert(
+                                                key,
+                                                FcAccum { call_id, name, arguments: String::new() },
+                                            );
                                         }
                                     }
                                 }
-                                "response.reasoning_text.delta" => {
-                                    if let Some(delta) = event.delta {
-                                        if !delta.is_empty() {
-                                            yield Ok(StreamEvent::ReasoningDelta(delta));
-                                        }
-                                    }
-                                }
-                                "response.output_item.added" => {
-                                    if let Some(item) = &event.item {
-                                        if item["type"] == "function_call" {
-                                            let call_id =
-                                                item["call_id"].as_str().unwrap_or("").to_string();
-                                            let name =
-                                                item["name"].as_str().unwrap_or("").to_string();
-                                            // OpenAI uses item.id as the item_id in delta events;
-                                            // llama.cpp omits item.id and uses call_id as item_id.
-                                            let key = item["id"]
-                                                .as_str()
-                                                .or_else(|| item["call_id"].as_str())
-                                                .unwrap_or("")
-                                                .to_string();
-                                            if !key.is_empty() {
-                                                fc_accums.insert(
-                                                    key,
-                                                    FcAccum { call_id, name, arguments: String::new() },
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                                "response.function_call_arguments.delta" => {
-                                    if let (Some(item_id), Some(delta)) =
-                                        (&event.item_id, event.delta)
-                                    {
-                                        if let Some(acc) = fc_accums.get_mut(item_id) {
-                                            acc.arguments.push_str(&delta);
-                                            yield Ok(StreamEvent::ToolCall {
+                            }
+                            "response.function_call_arguments.delta" => {
+                                if let (Some(item_id), Some(delta)) =
+                                    (&event.item_id, event.delta)
+                                {
+                                    if let Some(acc) = fc_accums.get_mut(item_id) {
+                                        acc.arguments.push_str(&delta);
+                                        let idx = next_block_idx;
+                                        next_block_idx += 1;
+                                        sink(StreamEvent::BlockStart {
+                                            index: idx,
+                                            kind: BlockKind::ToolCall {
                                                 id: acc.call_id.clone(),
                                                 name: acc.name.clone(),
-                                                arguments: delta,
-                                            });
-                                        }
+                                            },
+                                        });
+                                        sink(StreamEvent::BlockDelta { index: idx, delta });
                                     }
                                 }
-                                "response.output_item.done" => {
-                                    if let Some(item) = &event.item {
-                                        if item["type"] == "function_call" {
-                                            if let (Some(call_id), Some(name), Some(arguments)) = (
-                                                item["call_id"].as_str(),
-                                                item["name"].as_str(),
-                                                item["arguments"].as_str(),
-                                            ) {
-                                                yield Ok(StreamEvent::ToolCallComplete {
-                                                    id: call_id.to_string(),
-                                                    name: name.to_string(),
-                                                    arguments: arguments.to_string(),
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                                "response.completed" => {
-                                    let (usage, sr) = match event.response {
-                                        Some(r) => {
-                                            let has_tc = !fc_accums.is_empty();
-                                            let sr = stop_reason(r.status.as_deref(), has_tc);
-                                            (r.usage.map(map_usage), sr)
-                                        }
-                                        None => (None, None),
-                                    };
-                                    yield Ok(StreamEvent::Done { usage, stop_reason: sr });
-                                    return;
-                                }
-                                _ => {}
                             }
+                            "response.output_item.done" => {
+                                if let Some(item) = &event.item {
+                                    if item["type"] == "function_call" {
+                                        sink(StreamEvent::BlockEnd { index: next_block_idx - 1 });
+                                    }
+                                }
+                            }
+                            "response.completed" => {
+                                let (usage, sr) = match event.response {
+                                    Some(r) => {
+                                        let has_tc = !fc_accums.is_empty();
+                                        let sr = stop_reason(r.status.as_deref(), has_tc);
+                                        (r.usage.map(map_usage), sr)
+                                    }
+                                    None => (None, None),
+                                };
+                                return Ok(StreamEnd { usage, stop_reason: sr });
+                            }
+                            _ => {}
                         }
                     }
                 }
             }
         }
-        .boxed();
 
-        Ok(LlmStream::new(s))
+        Ok(StreamEnd { usage: None, stop_reason: None })
     }
 }
