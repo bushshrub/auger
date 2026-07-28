@@ -475,14 +475,14 @@ impl LlmProvider for OpenAiResponsesProvider {
         }
 
         struct FcAccum {
-            call_id: String,
-            name: String,
-            arguments: String,
+            block_idx: usize,
         }
 
         let mut fc_accums: std::collections::HashMap<String, FcAccum> =
             std::collections::HashMap::new();
         let mut next_block_idx: usize = 0;
+        let mut content_block: Option<(usize, BlockKind)> = None;
+        let mut buf = Vec::new();
 
         let bytes = resp.bytes_stream();
         futures::pin_mut!(bytes);
@@ -491,13 +491,20 @@ impl LlmProvider for OpenAiResponsesProvider {
             match chunk {
                 Err(e) => return Err(errors::from_transport(e)),
                 Ok(raw) => {
-                    let mut buf = String::from(String::from_utf8_lossy(&raw));
-                    while let Some(nl) = buf.find('\n') {
-                        let line = buf[..nl].trim_end_matches('\r').to_string();
-                        buf = buf[nl + 1..].to_string();
+                    buf.extend_from_slice(&raw);
+                    while let Some(nl) = buf.iter().position(|byte| *byte == b'\n') {
+                        let mut raw_line: Vec<u8> = buf.drain(..=nl).collect();
+                        raw_line.pop();
+                        if raw_line.last() == Some(&b'\r') {
+                            raw_line.pop();
+                        }
+                        let line = String::from_utf8_lossy(&raw_line);
 
-                        let Some(data) = line.strip_prefix("data: ") else { continue };
+                        let Some(data) = line.strip_prefix("data:").map(str::trim_start) else { continue };
                         if data == "[DONE]" {
+                            if let Some((index, _)) = content_block.take() {
+                                sink(StreamEvent::BlockEnd { index });
+                            }
                             return Ok(StreamEnd { usage: None, stop_reason: None });
                         }
 
@@ -508,36 +515,46 @@ impl LlmProvider for OpenAiResponsesProvider {
 
                         match event.kind.as_str() {
                             "response.output_text.delta" => {
-                                if let Some(rc) = event.reasoning_content {
-                                    if !rc.is_empty() {
-                                        let idx = next_block_idx;
-                                        next_block_idx += 1;
-                                        sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Reasoning });
+                                if let Some(rc) = event.reasoning_content
+                                    && !rc.is_empty()
+                                {
+                                        let idx = content_index(
+                                            BlockKind::Reasoning,
+                                            &mut content_block,
+                                            &mut next_block_idx,
+                                            sink,
+                                        );
                                         sink(StreamEvent::BlockDelta { index: idx, delta: rc });
-                                    }
                                 }
-                                if let Some(delta) = event.delta {
-                                    if !delta.is_empty() {
-                                        let idx = next_block_idx;
-                                        next_block_idx += 1;
-                                        sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Text });
+                                if let Some(delta) = event.delta
+                                    && !delta.is_empty()
+                                {
+                                        let idx = content_index(
+                                            BlockKind::Text,
+                                            &mut content_block,
+                                            &mut next_block_idx,
+                                            sink,
+                                        );
                                         sink(StreamEvent::BlockDelta { index: idx, delta });
-                                    }
                                 }
                             }
                             "response.reasoning_text.delta" => {
-                                if let Some(delta) = event.delta {
-                                    if !delta.is_empty() {
-                                        let idx = next_block_idx;
-                                        next_block_idx += 1;
-                                        sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Reasoning });
+                                if let Some(delta) = event.delta
+                                    && !delta.is_empty()
+                                {
+                                        let idx = content_index(
+                                            BlockKind::Reasoning,
+                                            &mut content_block,
+                                            &mut next_block_idx,
+                                            sink,
+                                        );
                                         sink(StreamEvent::BlockDelta { index: idx, delta });
-                                    }
                                 }
                             }
                             "response.output_item.added" => {
-                                if let Some(item) = &event.item {
-                                    if item["type"] == "function_call" {
+                                if let Some(item) = &event.item
+                                    && item["type"] == "function_call"
+                                {
                                         let call_id =
                                             item["call_id"].as_str().unwrap_or("").to_string();
                                         let name =
@@ -548,44 +565,50 @@ impl LlmProvider for OpenAiResponsesProvider {
                                             .unwrap_or("")
                                             .to_string();
                                         if !key.is_empty() {
+                                            if let Some((index, _)) = content_block.take() {
+                                                sink(StreamEvent::BlockEnd { index });
+                                            }
+                                            let block_idx = next_block_idx;
+                                            next_block_idx += 1;
+                                            sink(StreamEvent::BlockStart {
+                                                index: block_idx,
+                                                kind: BlockKind::ToolCall { id: call_id, name },
+                                            });
                                             fc_accums.insert(
                                                 key,
-                                                FcAccum { call_id, name, arguments: String::new() },
+                                                FcAccum { block_idx },
                                             );
                                         }
-                                    }
                                 }
                             }
                             "response.function_call_arguments.delta" => {
                                 if let (Some(item_id), Some(delta)) =
                                     (&event.item_id, event.delta)
+                                    && let Some(acc) = fc_accums.get(item_id)
                                 {
-                                    if let Some(acc) = fc_accums.get_mut(item_id) {
-                                        let first_delta = acc.arguments.is_empty();
-                                        acc.arguments.push_str(&delta);
-                                        let idx = next_block_idx;
-                                        next_block_idx += 1;
-                                        if first_delta {
-                                            sink(StreamEvent::BlockStart {
-                                                index: idx,
-                                                kind: BlockKind::ToolCall {
-                                                    id: acc.call_id.clone(),
-                                                    name: acc.name.clone(),
-                                                },
-                                            });
-                                        }
-                                        sink(StreamEvent::BlockDelta { index: idx, delta });
-                                    }
+                                        sink(StreamEvent::BlockDelta {
+                                            index: acc.block_idx,
+                                            delta,
+                                        });
                                 }
                             }
                             "response.output_item.done" => {
-                                if let Some(item) = &event.item {
-                                    if item["type"] == "function_call" {
-                                        sink(StreamEvent::BlockEnd { index: next_block_idx - 1 });
-                                    }
+                                if let Some(item) = &event.item
+                                    && item["type"] == "function_call"
+                                {
+                                        let key = item["id"]
+                                            .as_str()
+                                            .or_else(|| item["call_id"].as_str())
+                                            .unwrap_or("");
+                                        if let Some(acc) = fc_accums.get(key) {
+                                            sink(StreamEvent::BlockEnd { index: acc.block_idx });
+                                        }
                                 }
                             }
                             "response.completed" => {
+                                if let Some((index, _)) = content_block.take() {
+                                    sink(StreamEvent::BlockEnd { index });
+                                }
                                 let (usage, sr) = match event.response {
                                     Some(r) => {
                                         let has_tc = !fc_accums.is_empty();
@@ -621,4 +644,26 @@ impl LlmProvider for OpenAiResponsesProvider {
 
         Ok(StreamEnd { usage: None, stop_reason: None })
     }
+}
+
+fn content_index(
+    kind: BlockKind,
+    current: &mut Option<(usize, BlockKind)>,
+    next: &mut usize,
+    sink: provider::EventSink<'_>,
+) -> usize {
+    let same_kind = current.as_ref().is_some_and(|(_, current_kind)| {
+        std::mem::discriminant(current_kind) == std::mem::discriminant(&kind)
+    });
+    if same_kind {
+        return current.as_ref().expect("content block exists").0;
+    }
+    if let Some((index, _)) = current.take() {
+        sink(StreamEvent::BlockEnd { index });
+    }
+    let index = *next;
+    *next += 1;
+    sink(StreamEvent::BlockStart { index, kind: kind.clone() });
+    *current = Some((index, kind));
+    index
 }

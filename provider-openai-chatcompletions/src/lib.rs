@@ -259,11 +259,12 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
         struct TcAccum {
             id: String,
             name: String,
-            arguments: String,
+            block_idx: Option<usize>,
         }
 
         let mut accums: Vec<Option<TcAccum>> = Vec::new();
         let mut next_block_idx: usize = 0;
+        let mut content_block: Option<(usize, BlockKind)> = None;
         let mut stop_reason: Option<String> = None;
         let mut final_usage: Option<TokenUsage> = None;
         let mut tool_calls_completed = false;
@@ -289,19 +290,49 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
                     let delta = &choice["delta"];
 
                     if let Some(reasoning) = extract_reasoning(delta) {
-                        let idx = next_block_idx;
-                        next_block_idx += 1;
-                        sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Reasoning });
+                        let idx = match &content_block {
+                            Some((idx, BlockKind::Reasoning)) => *idx,
+                            Some((idx, _)) => {
+                                sink(StreamEvent::BlockEnd { index: *idx });
+                                let idx = next_block_idx;
+                                next_block_idx += 1;
+                                sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Reasoning });
+                                content_block = Some((idx, BlockKind::Reasoning));
+                                idx
+                            }
+                            None => {
+                                let idx = next_block_idx;
+                                next_block_idx += 1;
+                                sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Reasoning });
+                                content_block = Some((idx, BlockKind::Reasoning));
+                                idx
+                            }
+                        };
                         sink(StreamEvent::BlockDelta { index: idx, delta: reasoning });
                     }
 
-                    if let Some(content) = delta["content"].as_str() {
-                        if !content.is_empty() {
-                            let idx = next_block_idx;
-                            next_block_idx += 1;
-                            sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Text });
-                            sink(StreamEvent::BlockDelta { index: idx, delta: content.to_string() });
-                        }
+                    if let Some(content) = delta["content"].as_str()
+                        && !content.is_empty()
+                    {
+                        let idx = match &content_block {
+                            Some((idx, BlockKind::Text)) => *idx,
+                            Some((idx, _)) => {
+                                sink(StreamEvent::BlockEnd { index: *idx });
+                                let idx = next_block_idx;
+                                next_block_idx += 1;
+                                sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Text });
+                                content_block = Some((idx, BlockKind::Text));
+                                idx
+                            }
+                            None => {
+                                let idx = next_block_idx;
+                                next_block_idx += 1;
+                                sink(StreamEvent::BlockStart { index: idx, kind: BlockKind::Text });
+                                content_block = Some((idx, BlockKind::Text));
+                                idx
+                            }
+                        };
+                        sink(StreamEvent::BlockDelta { index: idx, delta: content.to_string() });
                     }
 
                     if let Some(tcs) = delta["tool_calls"].as_array() {
@@ -313,7 +344,7 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
                             let newly_created = accums[idx].get_or_insert_with(|| TcAccum {
                                 id: String::new(),
                                 name: String::new(),
-                                arguments: String::new(),
+                                block_idx: None,
                             });
                             if let Some(id) = tc["id"].as_str() {
                                 newly_created.id = id.to_string();
@@ -321,16 +352,12 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
                             if let Some(name) = tc["function"]["name"].as_str() {
                                 newly_created.name = name.to_string();
                             }
-                            let mut arg_delta = "";
-                            if let Some(args) = tc["function"]["arguments"].as_str() {
-                                newly_created.arguments.push_str(args);
-                                arg_delta = args;
-                            }
-                            let tc_idx = next_block_idx;
-                            next_block_idx += 1;
-                            if newly_created.arguments.is_empty()
-                                && (tc["id"].is_string() || tc["function"]["name"].is_string())
-                            {
+                            if newly_created.block_idx.is_none() {
+                                if let Some((idx, _)) = content_block.take() {
+                                    sink(StreamEvent::BlockEnd { index: idx });
+                                }
+                                let tc_idx = next_block_idx;
+                                next_block_idx += 1;
                                 sink(StreamEvent::BlockStart {
                                     index: tc_idx,
                                     kind: BlockKind::ToolCall {
@@ -338,8 +365,14 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
                                         name: newly_created.name.clone(),
                                     },
                                 });
+                                newly_created.block_idx = Some(tc_idx);
                             }
-                            sink(StreamEvent::BlockDelta { index: tc_idx, delta: arg_delta.to_string() });
+                            if let Some(args) = tc["function"]["arguments"].as_str().filter(|s| !s.is_empty()) {
+                                sink(StreamEvent::BlockDelta {
+                                    index: newly_created.block_idx.expect("tool block started"),
+                                    delta: args.to_string(),
+                                });
+                            }
                         }
                     }
 
@@ -351,11 +384,27 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
                     }
                     if choice["finish_reason"].is_string() && !tool_calls_completed {
                         tool_calls_completed = true;
-                        for _acc in accums.iter().flatten() {
-                            sink(StreamEvent::BlockEnd { index: next_block_idx - 1 });
+                        if let Some((idx, _)) = content_block.take() {
+                            sink(StreamEvent::BlockEnd { index: idx });
+                        }
+                        for acc in accums.iter().flatten() {
+                            if let Some(index) = acc.block_idx {
+                                sink(StreamEvent::BlockEnd { index });
+                            }
                         }
                         stop_reason = choice["finish_reason"].as_str().map(str::to_string);
                     }
+                }
+            }
+        }
+
+        if let Some((idx, _)) = content_block.take() {
+            sink(StreamEvent::BlockEnd { index: idx });
+        }
+        if !tool_calls_completed {
+            for acc in accums.iter().flatten() {
+                if let Some(index) = acc.block_idx {
+                    sink(StreamEvent::BlockEnd { index });
                 }
             }
         }

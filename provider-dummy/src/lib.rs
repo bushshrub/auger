@@ -131,30 +131,32 @@ impl LlmProvider for DummyProvider {
 fn response_to_stream_events(response: &CompletedLlmResponse) -> Vec<StreamEvent> {
     let mut events = Vec::new();
 
-    for block in response.response.blocks() {
+    for (index, block) in response.response.blocks().iter().enumerate() {
         match block {
             Block::Text(text) => {
                 if !text.is_empty() {
-                    events.push(StreamEvent::BlockStart { index: 0, kind: BlockKind::Text });
-                    events.push(StreamEvent::BlockDelta { index: 0, delta: text.clone() });
+                    events.push(StreamEvent::BlockStart { index, kind: BlockKind::Text });
+                    events.push(StreamEvent::BlockDelta { index, delta: text.clone() });
+                    events.push(StreamEvent::BlockEnd { index });
                 }
             }
             Block::Reasoning { text } => {
                 if !text.is_empty() {
-                    events.push(StreamEvent::BlockStart { index: 0, kind: BlockKind::Reasoning });
-                    events.push(StreamEvent::BlockDelta { index: 0, delta: text.clone() });
+                    events.push(StreamEvent::BlockStart { index, kind: BlockKind::Reasoning });
+                    events.push(StreamEvent::BlockDelta { index, delta: text.clone() });
+                    events.push(StreamEvent::BlockEnd { index });
                 }
             }
             Block::ToolCall(tc) => {
                 events.push(StreamEvent::BlockStart {
-                    index: 0,
+                    index,
                     kind: BlockKind::ToolCall {
                         id: tc.id.clone(),
                         name: tc.name.clone(),
                     },
                 });
-                events.push(StreamEvent::BlockDelta { index: 0, delta: tc.arguments.clone() });
-                events.push(StreamEvent::BlockEnd { index: 0 });
+                events.push(StreamEvent::BlockDelta { index, delta: tc.arguments.clone() });
+                events.push(StreamEvent::BlockEnd { index });
             }
         }
     }

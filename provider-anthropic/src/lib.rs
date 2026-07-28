@@ -307,6 +307,7 @@ impl LlmProvider for AnthropicProvider {
         let mut cached_tokens: Option<i32> = None;
         let mut cache_creation_tokens: Option<i32> = None;
         let mut stop_reason: Option<String> = None;
+        let mut buf = Vec::new();
 
         let bytes = resp.bytes_stream();
         futures::pin_mut!(bytes);
@@ -315,12 +316,16 @@ impl LlmProvider for AnthropicProvider {
             match chunk {
                 Err(e) => return Err(errors::from_transport(e)),
                 Ok(raw) => {
-                    let mut buf = String::from(String::from_utf8_lossy(&raw));
-                    while let Some(nl) = buf.find('\n') {
-                        let line = buf[..nl].trim_end_matches('\r').to_string();
-                        buf = buf[nl + 1..].to_string();
+                    buf.extend_from_slice(&raw);
+                    while let Some(nl) = buf.iter().position(|byte| *byte == b'\n') {
+                        let mut raw_line: Vec<u8> = buf.drain(..=nl).collect();
+                        raw_line.pop();
+                        if raw_line.last() == Some(&b'\r') {
+                            raw_line.pop();
+                        }
+                        let line = String::from_utf8_lossy(&raw_line);
 
-                        let Some(data_str) = line.strip_prefix("data: ") else { continue };
+                        let Some(data_str) = line.strip_prefix("data:").map(str::trim_start) else { continue };
                         if data_str == "[DONE]" {
                             return Ok(StreamEnd { usage: None, stop_reason: None });
                         }
@@ -360,11 +365,8 @@ impl LlmProvider for AnthropicProvider {
                                     },
                                     _ => continue,
                                 };
-                                // Close previous block of same type
-                                if let Some(ref cur) = current_block {
-                                    if std::mem::discriminant(&cur.kind) == std::mem::discriminant(&kind) {
-                                        sink(StreamEvent::BlockEnd { index: next_block_idx - 1 });
-                                    }
+                                if let Some(previous) = current_block.take() {
+                                    sink(StreamEvent::BlockEnd { index: previous.idx });
                                 }
                                 let idx = next_block_idx;
                                 next_block_idx += 1;
