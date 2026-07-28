@@ -78,7 +78,12 @@ const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
  *   | { harness: string }
  *   | { tool_result: ToolCallResult }
  * )} RecordedInput
- * @typedef {{ reasoning: string | null, content: string, tool_calls: ToolCall[] }} AssistantResponse
+ * @typedef {(
+ *   | { text: string }
+ *   | { reasoning: { text: string } }
+ *   | { tool_call: ToolCall }
+ * )} AssistantBlock
+ * @typedef {{ blocks: AssistantBlock[] }} AssistantResponse
  * @typedef {'interrupted' | { failed: { kind: unknown, message: string } }} StopReason
  * @typedef {(
  *   | { completed: { response: AssistantResponse } }

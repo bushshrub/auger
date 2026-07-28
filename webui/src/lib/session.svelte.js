@@ -422,8 +422,7 @@ function buildItems(records) {
 					: outcome.incomplete.partial_response;
 			if (!response) continue;
 
-			const reasoning = response.reasoning ?? '';
-			const text = response.content;
+			const { reasoning, content: text, toolCalls } = responseParts(response);
 			if (reasoning.trim().length > 0 || text.trim().length > 0) {
 				items.push({
 					kind: 'assistant',
@@ -433,7 +432,7 @@ function buildItems(records) {
 					streaming: false
 				});
 			}
-			for (const tc of response.tool_calls) {
+			for (const tc of toolCalls) {
 				const needsApproval = APPROVAL_REQUIRED_TOOLS.has(tc.name);
 				/** @type {UiToolCall} */
 				const call = {
@@ -460,6 +459,34 @@ function buildItems(records) {
 	}
 
 	return items;
+}
+
+/**
+ * Normalize persisted provider blocks for the transcript. Uppercase keys keep
+ * snapshots written before the provider tags became snake_case readable.
+ * @param {import('./api.js').AssistantResponse | any} response
+ */
+function responseParts(response) {
+	if (!Array.isArray(response.blocks)) {
+		return {
+			reasoning: response.reasoning ?? '',
+			content: response.content ?? '',
+			toolCalls: response.tool_calls ?? []
+		};
+	}
+
+	let reasoning = '';
+	let content = '';
+	const toolCalls = [];
+	for (const block of response.blocks) {
+		if ('reasoning' in block) reasoning += block.reasoning.text;
+		else if ('text' in block) content += block.text;
+		else if ('tool_call' in block) toolCalls.push(block.tool_call);
+		else if ('Reasoning' in block) reasoning += block.Reasoning.text;
+		else if ('Text' in block) content += block.Text;
+		else if ('ToolCall' in block) toolCalls.push(block.ToolCall);
+	}
+	return { reasoning, content, toolCalls };
 }
 
 /**
