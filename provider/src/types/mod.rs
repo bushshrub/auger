@@ -13,6 +13,7 @@ pub use tool::*;
 pub type EventSink<'a> = &'a mut (dyn FnMut(StreamEvent) + Send + 'a);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Message {
     /// The system prompt
     System(String),

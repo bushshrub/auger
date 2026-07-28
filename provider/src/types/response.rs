@@ -1,14 +1,8 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use crate::AssistantResponse;
-use crate::Message;
 use crate::types::ToolCallRequest;
-use futures_core::Stream;
-use getset::Getters;
 use serde::Deserialize;
 use serde::Serialize;
-use std::pin::Pin;
-use std::task::Context;
-use std::task::Poll;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -36,6 +30,7 @@ pub struct TokenUsage {
 /// etc. etc.
 ///
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StreamEvent {
     BlockStart { index: usize, kind: BlockKind },
     BlockDelta { index: usize, delta: String },
@@ -45,6 +40,7 @@ pub enum StreamEvent {
 
 /// The type of block being emitted
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BlockKind {
     Reasoning,
     Text,
@@ -60,6 +56,7 @@ pub struct StreamEnd {
 
 /// A block of response from the clanker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Block {
     Text (String),
     Reasoning {
@@ -112,8 +109,8 @@ pub fn fold_events(events: &[StreamEvent]) -> (Vec<Block>, Option<TokenUsage>) {
     let blocks = open
         .into_values()
         .filter_map(|(kind, text)| match kind {
-            BlockKind::Text => (!text.is_empty()).then(|| Block::Text(text)),
-            BlockKind::Reasoning => (!text.is_empty()).then(|| Block::Reasoning { text }),
+            BlockKind::Text => (!text.is_empty()).then_some(Block::Text(text)),
+            BlockKind::Reasoning => (!text.is_empty()).then_some(Block::Reasoning { text }),
             BlockKind::ToolCall { id, name } => Some(Block::ToolCall(ToolCallRequest {
                 id,
                 name,
@@ -129,6 +126,7 @@ pub fn fold_events(events: &[StreamEvent]) -> (Vec<Block>, Option<TokenUsage>) {
 /// There are 2 kinds really, one in which we can just retry the request unchanged
 /// and one in which we cannot.
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
 pub enum LlmErrorKind {
     /// Resending the request unchanged may work
     Transient { retry_after: Option<Duration> },
@@ -154,3 +152,30 @@ impl std::fmt::Display for LlmError {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{Block, BlockKind, StreamEvent};
+    use serde_json::json;
+
+    #[test]
+    fn serializes_enum_tags_as_snake_case() {
+        assert_eq!(
+            serde_json::to_value(Block::Reasoning { text: "why".to_string() }).unwrap(),
+            json!({"reasoning": {"text": "why"}}),
+        );
+        assert_eq!(
+            serde_json::to_value(StreamEvent::BlockStart {
+                index: 0,
+                kind: BlockKind::ToolCall {
+                    id: "call_1".to_string(),
+                    name: "read".to_string(),
+                },
+            })
+            .unwrap(),
+            json!({"block_start": {
+                "index": 0,
+                "kind": {"tool_call": {"id": "call_1", "name": "read"}},
+            }}),
+        );
+    }
+}
