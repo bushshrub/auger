@@ -310,31 +310,35 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
                             while accums.len() <= idx {
                                 accums.push(None);
                             }
-                            let acc = accums[idx].get_or_insert_with(|| TcAccum {
+                            let newly_created = accums[idx].get_or_insert_with(|| TcAccum {
                                 id: String::new(),
                                 name: String::new(),
                                 arguments: String::new(),
                             });
                             if let Some(id) = tc["id"].as_str() {
-                                acc.id = id.to_string();
+                                newly_created.id = id.to_string();
                             }
                             if let Some(name) = tc["function"]["name"].as_str() {
-                                acc.name = name.to_string();
+                                newly_created.name = name.to_string();
                             }
                             let mut arg_delta = "";
                             if let Some(args) = tc["function"]["arguments"].as_str() {
-                                acc.arguments.push_str(args);
+                                newly_created.arguments.push_str(args);
                                 arg_delta = args;
                             }
                             let tc_idx = next_block_idx;
                             next_block_idx += 1;
-                            sink(StreamEvent::BlockStart {
-                                index: tc_idx,
-                                kind: BlockKind::ToolCall {
-                                    id: acc.id.clone(),
-                                    name: acc.name.clone(),
-                                },
-                            });
+                            if newly_created.arguments.is_empty()
+                                && (tc["id"].is_string() || tc["function"]["name"].is_string())
+                            {
+                                sink(StreamEvent::BlockStart {
+                                    index: tc_idx,
+                                    kind: BlockKind::ToolCall {
+                                        id: newly_created.id.clone(),
+                                        name: newly_created.name.clone(),
+                                    },
+                                });
+                            }
                             sink(StreamEvent::BlockDelta { index: tc_idx, delta: arg_delta.to_string() });
                         }
                     }

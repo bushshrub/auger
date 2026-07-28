@@ -561,16 +561,19 @@ impl LlmProvider for OpenAiResponsesProvider {
                                     (&event.item_id, event.delta)
                                 {
                                     if let Some(acc) = fc_accums.get_mut(item_id) {
+                                        let first_delta = acc.arguments.is_empty();
                                         acc.arguments.push_str(&delta);
                                         let idx = next_block_idx;
                                         next_block_idx += 1;
-                                        sink(StreamEvent::BlockStart {
-                                            index: idx,
-                                            kind: BlockKind::ToolCall {
-                                                id: acc.call_id.clone(),
-                                                name: acc.name.clone(),
-                                            },
-                                        });
+                                        if first_delta {
+                                            sink(StreamEvent::BlockStart {
+                                                index: idx,
+                                                kind: BlockKind::ToolCall {
+                                                    id: acc.call_id.clone(),
+                                                    name: acc.name.clone(),
+                                                },
+                                            });
+                                        }
                                         sink(StreamEvent::BlockDelta { index: idx, delta });
                                     }
                                 }
