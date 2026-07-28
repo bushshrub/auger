@@ -14,6 +14,35 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use uuid::Uuid;
 
+fn trace_tool_result_text(result: &Value) -> String {
+    let Some(outcome) = result.get("outcome") else {
+        return String::new();
+    };
+    if outcome.as_str() == Some("interrupted") {
+        return "Tool call was interrupted.".to_string();
+    }
+    if let Some(reason) = outcome
+        .get("denied")
+        .and_then(|denied| denied.get("reason"))
+        .and_then(|reason| reason.as_str())
+    {
+        return reason.to_string();
+    }
+    let data = outcome
+        .get("success")
+        .and_then(|success| success.get("content"))
+        .or_else(|| outcome.get("error").and_then(|error| error.get("error")));
+    data.and_then(|data| data.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.get("text")
+                .and_then(|text| text.get("text").or(Some(text)))
+                .and_then(|text| text.as_str())
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum View {
     SessionList,
@@ -610,95 +639,72 @@ impl App {
             if obj.get("kind").and_then(|k| k.as_str()) == Some("turn") {
                 let turn = obj.get("turn");
                 if let Some(turn) = turn.and_then(|t| t.as_object()) {
-                    // User message turn: {"input_message": {"content": [...]}}
-                    // Content can contain "text" (user message) and "tool_result" (folded results)
-                    if let Some(input_msg) = turn.get("input_message").and_then(|m| m.as_object()) {
+                    if let Some(input_msg) = turn.get("input").and_then(|m| m.as_object()) {
                         last_block_ids.clear();
-                        if let Some(content) = input_msg.get("content").and_then(|c| c.as_array()) {
-                            for item in content {
-                                match item.get("type").and_then(|t| t.as_str()) {
-                                    Some("text") => {
-                                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                                            self.items.push(ChatItem::User {
-                                                text: text.to_string(),
-                                            });
+                        if let Some(entries) = input_msg.get("entries").and_then(|c| c.as_array()) {
+                            for entry in entries {
+                                if let Some(text) = entry
+                                    .get("user")
+                                    .and_then(|user| user.get("message"))
+                                    .and_then(|text| text.as_str())
+                                {
+                                    self.items.push(ChatItem::User { text: text.to_string() });
+                                } else if let Some(result) = entry.get("tool_result") {
+                                    if let Some(tool_call_id) =
+                                        result.get("tool_call_id").and_then(|id| id.as_str())
+                                    {
+                                        let text = trace_tool_result_text(result);
+                                        if let Some(ChatItem::Tool { result, .. }) =
+                                            self.items.iter_mut().find(|item| {
+                                                matches!(item, ChatItem::Tool { id, .. } if id == tool_call_id)
+                                            })
+                                        {
+                                            *result = Some(text);
                                         }
                                     }
-                                    Some("tool_result") => {
-                                        if let (Some(tool_call_id), Some(result_content)) = (
-                                            item.get("tool_call_id").and_then(|i| i.as_str()),
-                                            item.get("content").and_then(|c| c.as_array()),
-                                        ) {
-                                            let text = result_content.iter()
-                                                .filter_map(|c| {
-                                                    // Could be {"text": "..." } or {"text": {"text": "..."}}
-                                                    if let Some(inner) = c.get("text") {
-                                                        inner.as_str().or_else(|| {
-                                                            inner.get("text").and_then(|t| t.as_str())
-                                                        })
-                                                    } else {
-                                                        None
-                                                    }
-                                                })
-                                                .collect::<Vec<_>>()
-                                                .join("");
-                                            if let Some(idx) = self.items.iter().position(|i| {
-                                                matches!(i, ChatItem::Tool { id, .. } if id == tool_call_id)
-                                            }) {
-                                                if let ChatItem::Tool { result, .. } = &mut self.items[idx] {
-                                                    *result = Some(text);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    _ => {}
                                 }
                             }
                         }
                         continue;
                     }
 
-                    // Assistant message turn: {"assistant_message": {"outcome": {...}}}
-                    if let Some(assist_msg) = turn.get("assistant_message").and_then(|m| m.as_object()) {
+                    if let Some(assist_msg) = turn.get("assistant").and_then(|m| m.as_object()) {
                         last_block_ids.clear();
                         if let Some(outcome) = assist_msg.get("outcome").and_then(|o| o.as_object()) {
-                            // outcome: {"completed": {"response": {...}}} or {"interrupted": {...}}
-                            if let Some(payload) = outcome
+                            let response = outcome
                                 .get("completed")
-                                .or_else(|| outcome.get("interrupted"))
-                                .and_then(|v| v.as_object())
+                                .and_then(|payload| payload.get("response"))
+                                .or_else(|| {
+                                    outcome
+                                        .get("incomplete")
+                                        .and_then(|payload| payload.get("partial_response"))
+                                });
+                            if let Some(blocks) = response
+                                .and_then(|response| response.get("blocks"))
+                                .and_then(|blocks| blocks.as_array())
                             {
-                                let response = payload
-                                    .get("response")
-                                    .and_then(|r| r.as_object())
-                                    .unwrap_or(payload);
-
-                                // Reasoning
-                                if let Some(reasoning) =
-                                    response.get("reasoning").and_then(|r| r.as_str())
-                                {
-                                    if !reasoning.is_empty() {
+                                for block in blocks {
+                                    if let Some(text) = block.get("reasoning")
+                                        .or_else(|| block.get("Reasoning"))
+                                        .and_then(|reasoning| reasoning.get("text"))
+                                        .and_then(|text| text.as_str())
+                                        .filter(|text| !text.is_empty())
+                                    {
                                         self.items.push(ChatItem::Reasoning {
-                                            text: reasoning.to_string(),
+                                            text: text.to_string(),
                                             collapsed: true,
                                         });
-                                    }
-                                }
-                                // Content
-                                if let Some(content) =
-                                    response.get("content").and_then(|c| c.as_str())
-                                {
-                                    if !content.is_empty() {
+                                    } else if let Some(text) = block.get("text")
+                                        .or_else(|| block.get("Text"))
+                                        .and_then(|text| text.as_str())
+                                        .filter(|text| !text.is_empty())
+                                    {
                                         self.items.push(ChatItem::Assistant {
-                                            text: content.to_string(),
+                                            text: text.to_string(),
                                         });
-                                    }
-                                }
-                                // Tool calls
-                                if let Some(tool_calls) =
-                                    response.get("tool_calls").and_then(|t| t.as_array())
-                                {
-                                    for tc in tool_calls {
+                                    } else if let Some(tc) =
+                                        block.get("tool_call").or_else(|| block.get("ToolCall"))
+                                    {
                                         if let (Some(id), Some(name), Some(args)) = (
                                             tc.get("id").and_then(|i| i.as_str()),
                                             tc.get("name").and_then(|n| n.as_str()),
@@ -913,6 +919,22 @@ mod tests {
             ChatItem::Tool { name, args, .. } => (name.clone(), args.clone()),
             other => panic!("item {index} is not a tool: {other:?}"),
         }
+    }
+
+    #[test]
+    fn current_snapshot_shape_restores_block_events() {
+        let mut app = App::new();
+        let lines = vec![
+            r#"{"kind":"turn","turn_id":"019fab1d-0000-7000-8000-000000000001","timestamp":"2026-07-28T00:00:00Z","parent_id":null,"turn":{"input":{"entries":[{"user":{"message":"hello"}}]}}}"#.to_string(),
+            r#"{"kind":"turn","turn_id":"019fab1d-0000-7000-8000-000000000002","timestamp":"2026-07-28T00:00:01Z","parent_id":"019fab1d-0000-7000-8000-000000000001","turn":{"assistant":{"outcome":{"completed":{"response":{"blocks":[{"reasoning":{"text":"think"}},{"text":"answer"},{"tool_call":{"id":"call_1","name":"shell","arguments":"{\"command\":\"pwd\"}"}}]}}}}}}"#.to_string(),
+        ];
+
+        app.apply_snapshot_lines(&lines);
+
+        assert!(matches!(&app.items[0], ChatItem::User { text } if text == "hello"));
+        assert!(matches!(&app.items[1], ChatItem::Reasoning { text, .. } if text == "think"));
+        assert!(matches!(&app.items[2], ChatItem::Assistant { text } if text == "answer"));
+        assert_eq!(tool_of(&app, 3), ("shell".into(), r#"{"command":"pwd"}"#.into()));
     }
 
     /// The bug from the screenshot: each streamed argument fragment became its

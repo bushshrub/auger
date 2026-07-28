@@ -265,6 +265,7 @@ export function subscribeEvents(id, token, onEvent, onClose) {
 				const { done, value } = await reader.read();
 				if (done) break;
 				buffer += decoder.decode(value, { stream: true });
+				buffer = buffer.replaceAll('\r\n', '\n');
 
 				let sep;
 				while ((sep = buffer.indexOf('\n\n')) !== -1) {
