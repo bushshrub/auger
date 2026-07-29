@@ -6,7 +6,6 @@ mod states;
 mod trace;
 
 pub use history::SessionRecord;
-pub use history::TurnEvent;
 pub use runtime::SessionHandle;
 pub use runtime::SessionId;
 pub use runtime::SnapshotError;

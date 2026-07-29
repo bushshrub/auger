@@ -55,10 +55,6 @@ impl<W: Write> TraceWriter<W> {
         })
     }
 
-    pub fn into_inner(self) -> W {
-        self.writer
-    }
-
     fn write_record(&mut self, record: &TraceRecordRef<'_>) -> Result<(), TraceWriteError> {
         serde_json::to_writer(&mut self.writer, record)?;
         self.writer.write_all(b"\n")?;

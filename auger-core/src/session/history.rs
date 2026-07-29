@@ -91,10 +91,6 @@ impl SessionRecord {
         }
     }
 
-    pub fn get_turn(&self, turn_id: &TurnId) -> Option<&TurnRecord> {
-        self.turns.iter().find(|tr| tr.data.turn_id == *turn_id)
-    }
-
     pub fn get_turn_mut(&mut self, turn_id: &TurnId) -> Option<&mut TurnRecord> {
         self.turns.iter_mut().find(|tr| tr.data.turn_id == *turn_id)
     }
@@ -106,10 +102,6 @@ impl SessionRecord {
     pub fn get_previous_turn(&self) -> Option<&TurnRecord> {
         // should only be None if the session JUST started.
         self.turns.last()
-    }
-
-    pub fn get_previous_turn_mut(&mut self) -> Option<&mut TurnRecord> {
-        self.turns.last_mut()
     }
 
     /// Record an input against the open input turn, opening a new one if the
@@ -216,21 +208,9 @@ impl Into<Uuid> for TurnId {
     }
 }
 
-impl From<Uuid> for TurnId {
-    fn from(id: Uuid) -> Self {
-        Self(id)
-    }
-}
-
 impl Into<Uuid> for EventId {
     fn into(self) -> Uuid {
         self.0
-    }
-}
-
-impl From<Uuid> for EventId {
-    fn from(id: Uuid) -> Self {
-        Self(id)
     }
 }
 
@@ -250,20 +230,6 @@ pub struct EventRecord {
     /// The actual event itself
     #[getset(get = "pub")]
     event: RecordableEvent,
-}
-
-#[derive(Debug, Clone, Getters, CopyGetters)]
-pub struct TurnEvent {
-    #[getset(get_copy = "pub")]
-    turn_id: TurnId,
-    #[getset(get = "pub")]
-    record: EventRecord,
-}
-
-impl TurnEvent {
-    pub fn new(turn_id: TurnId, record: EventRecord) -> Self {
-        Self { turn_id, record }
-    }
 }
 
 impl EventRecord {

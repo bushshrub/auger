@@ -16,7 +16,6 @@ pub use session::TraceReader;
 pub use session::TraceRestoreError;
 pub use session::TraceWriteError;
 pub use session::TraceWriter;
-pub use session::TurnEvent;
 pub use system_prompt::SystemPrompt;
 pub use tools::auto_approval::AutoApprovalPolicies;
 pub use tools::auto_approval::AutoApprovalPolicy;
