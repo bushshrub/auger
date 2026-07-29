@@ -15,7 +15,6 @@ dependencies = [
  "agent-tools",
  "auger-core",
  "auger-driver",
- "auger-traces",
  "axum",
  "builtin-tools",
  "futures",
@@ -194,7 +193,6 @@ dependencies = [
  "agent-tools",
  "async-trait",
  "auger-driver",
- "auger-traces",
  "builtin-tools",
  "chrono",
  "derive_more",
@@ -229,18 +227,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "uuid",
-]
-
-[[package]]
-name = "auger-traces"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "getset",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
  "uuid",
 ]
 

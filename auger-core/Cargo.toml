@@ -6,8 +6,6 @@ edition = "2024"
 [dependencies]
 agent-tools.workspace = true
 provider.workspace = true
-auger-traces.workspace = true
-
 futures.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
