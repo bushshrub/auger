@@ -7,7 +7,6 @@ mod trace;
 
 pub use history::SessionRecord;
 pub use runtime::SessionHandle;
-pub use runtime::SessionId;
 pub use runtime::SnapshotError;
 pub use session_builder::SessionBuilder;
 pub use trace::TraceReadError;

@@ -1,15 +1,15 @@
 //! Module for recording session events and turns,
 //! and for providing hooks for external observers to be notified of new events
 //! and turns.
+use crate::ids::EventId;
+use crate::ids::TurnId;
 use crate::session::SessionRecord;
 use crate::session::history::AssistantTurnOutcome;
 use crate::session::history::AuthorizationSource;
-use crate::session::history::EventId;
 use crate::session::history::EventRecord;
 use crate::session::history::RecordableEvent;
 use crate::session::history::RecordedInput;
 use crate::session::history::ToolDecision;
-use crate::session::history::TurnId;
 use crate::session::history::TurnRecord;
 use crate::tools::tool_execution::ToolCallResult;
 use auger_driver::Prompt;

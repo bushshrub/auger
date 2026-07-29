@@ -1,13 +1,13 @@
 use crate::AutoApprovalPolicies;
 use crate::SessionEvent;
 use crate::SessionHandle;
-use crate::SessionId;
 use crate::SystemPrompt;
+use crate::ids::SessionId;
+use crate::ids::TurnId;
 use crate::session::SessionRecord;
 use crate::session::history::EventRecord;
 use crate::session::history::ModelInfo;
 use crate::session::history::SessionData;
-use crate::session::history::TurnId;
 use crate::session::history::TurnRecord;
 use crate::session::recorder::EventCallback;
 use crate::session::recorder::SessionRecorder;

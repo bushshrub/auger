@@ -1,4 +1,5 @@
 mod events;
+mod ids;
 pub mod schema;
 mod session;
 mod system_prompt;
@@ -6,9 +7,9 @@ mod tools;
 
 pub use events::SessionCommand;
 pub use events::SessionEvent;
+pub use ids::SessionId;
 pub use session::SessionBuilder;
 pub use session::SessionHandle;
-pub use session::SessionId;
 pub use session::SessionRecord;
 pub use session::SnapshotError;
 pub use session::TraceReadError;

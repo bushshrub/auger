@@ -5,7 +5,7 @@ use crate::schema::TraceRecordRef;
 use crate::session::SessionRecord;
 use crate::session::history::EventRecord;
 use crate::session::history::SessionData;
-use crate::session::history::TurnId;
+use crate::ids::TurnId;
 use crate::session::history::TurnRecord;
 use std::collections::HashMap;
 use std::collections::HashSet;

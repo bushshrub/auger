@@ -1,7 +1,7 @@
 use crate::session::history::EventRecord;
 use crate::session::history::SessionData;
 use crate::session::history::TurnData;
-use crate::session::history::TurnId;
+use crate::ids::TurnId;
 use getset::Getters;
 use serde::Deserialize;
 use serde::Serialize;

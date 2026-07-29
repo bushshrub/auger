@@ -2,6 +2,7 @@ use crate::SystemPrompt;
 use crate::events::LoopMessage;
 use crate::events::SessionCommand;
 use crate::events::SessionEvent;
+use crate::ids::SessionId;
 use crate::session::history::AssistantTurnOutcome;
 use crate::session::history::AuthorizationSource;
 use crate::session::history::StopReason;
@@ -25,9 +26,6 @@ use getset::CopyGetters;
 use mpsc::Receiver;
 use provider::LlmModel;
 use provider::ToolDefinition;
-use serde::Deserialize;
-use serde::Serialize;
-use std::fmt;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
@@ -35,35 +33,10 @@ use tokio::runtime::Handle;
 use tracing::info;
 use tracing::warn;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct SessionId(uuid::Uuid);
-
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum SnapshotError {
     #[error("session is closed")]
     SessionClosed,
-}
-
-impl fmt::Display for SessionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl SessionId {
-    pub(super) fn new() -> Self {
-        Self(uuid::Uuid::new_v4())
-    }
-
-    pub fn as_uuid(self) -> uuid::Uuid {
-        self.0
-    }
-}
-
-impl From<uuid::Uuid> for SessionId {
-    fn from(id: uuid::Uuid) -> Self {
-        Self(id)
-    }
 }
 
 /// A handle to a running auger session
@@ -152,7 +125,7 @@ impl Session {
             Self::create_initial_agent(system_prompt, &session.recorder.record(), model, llm_tools);
 
         std::thread::Builder::new()
-            .name(format!("auger-session-{}", session.id.0))
+            .name(format!("auger-session-{}", session.id))
             .spawn(move || session.run(rt, initial_agent))
             .expect("failed to spawn session thread");
 
