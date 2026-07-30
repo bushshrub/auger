@@ -1,5 +1,5 @@
-use crate::tools::tool_decisions::Resolving;
-use crate::tools::tool_decisions::UserToolDecisions;
+use crate::harness::tools::tool_decisions::Resolving;
+use crate::harness::tools::tool_decisions::UserToolDecisions;
 use auger_driver::LlmStreamingInterrupted;
 use auger_driver::RestoredAgent;
 use auger_driver::StreamResult;

@@ -1,7 +1,7 @@
+use crate::harness::tools::tool_execution::ToolCallResult;
 use crate::ids::EventId;
 use crate::ids::SessionId;
 use crate::ids::TurnId;
-use crate::tools::tool_execution::ToolCallResult;
 use auger_driver::{HarnessEntry, InputEntry, RestoreState, ToolCallId, Turn};
 use chrono::DateTime;
 use chrono::Utc;
@@ -199,7 +199,7 @@ pub struct EventRecord {
 
 impl EventRecord {
     fn new(parent_id: Option<EventId>, timestamp: DateTime<Utc>, event: RecordableEvent) -> Self {
-        let event_id = EventId::new(timestamp);
+        let event_id = EventId::new();
         Self {
             parent_id,
             timestamp,
@@ -252,7 +252,7 @@ pub struct TurnRecord {
 impl TurnRecord {
     fn new(turn: RecordableTurn, parent_id: Option<TurnId>) -> Self {
         let timestamp = Utc::now();
-        let turn_id = TurnId::new(timestamp);
+        let turn_id = TurnId::new();
         let data = TurnData::new(turn_id, timestamp, parent_id, turn);
         Self {
             data,

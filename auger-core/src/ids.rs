@@ -1,15 +1,11 @@
 //! Identifiers used across the session record and the harness.
 //!
-//! Turn and event ids are uuid v7, so they sort by the timestamp they were
-//! minted from.
+//! Turn and event ids are uuid v7, so they sort by the order they were minted
+//! in.
 
-use chrono::DateTime;
-use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fmt;
-use uuid::NoContext;
-use uuid::Timestamp;
 use uuid::Uuid;
 
 /// ID of an auger session.
@@ -44,8 +40,8 @@ impl From<Uuid> for SessionId {
 pub struct TurnId(Uuid);
 
 impl TurnId {
-    pub(crate) fn new(time: DateTime<Utc>) -> Self {
-        Self(uuid_v7_from(time))
+    pub(crate) fn new() -> Self {
+        Self(Uuid::now_v7())
     }
 }
 
@@ -60,8 +56,8 @@ impl Into<Uuid> for TurnId {
 pub struct EventId(Uuid);
 
 impl EventId {
-    pub(crate) fn new(time: DateTime<Utc>) -> Self {
-        Self(uuid_v7_from(time))
+    pub(crate) fn new() -> Self {
+        Self(Uuid::now_v7())
     }
 }
 
@@ -69,10 +65,4 @@ impl Into<Uuid> for EventId {
     fn into(self) -> Uuid {
         self.0
     }
-}
-
-fn uuid_v7_from(dt: DateTime<Utc>) -> Uuid {
-    let secs = dt.timestamp() as u64;
-    let nanos = dt.timestamp_subsec_nanos();
-    Uuid::new_v7(Timestamp::from_unix(NoContext, secs, nanos))
 }

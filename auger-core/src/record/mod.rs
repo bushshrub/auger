@@ -1,14 +1,9 @@
 pub(crate) mod history;
-mod recorder;
-pub(crate) mod runtime;
-mod session_builder;
-mod states;
+pub(crate) mod recorder;
+pub mod schema;
 mod trace;
 
 pub use history::SessionRecord;
-pub use runtime::SessionHandle;
-pub use runtime::SnapshotError;
-pub use session_builder::SessionBuilder;
 pub use trace::TraceReadError;
 pub use trace::TraceReader;
 pub use trace::TraceRestoreError;

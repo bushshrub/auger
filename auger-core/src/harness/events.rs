@@ -1,8 +1,8 @@
 //! Events and command types for a session
 
-use crate::session::SessionRecord;
-use crate::tools::tool_execution::ToolCallResult;
-use crate::tools::tool_execution::ToolExecutionCompleted;
+use crate::harness::tools::tool_execution::ToolCallResult;
+use crate::harness::tools::tool_execution::ToolExecutionCompleted;
+use crate::record::SessionRecord;
 use auger_driver::Resolving;
 use auger_driver::StreamResult;
 use auger_driver::ToolBatch;

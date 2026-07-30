@@ -1,6 +1,6 @@
 use super::tool_decisions::ToolAuthorization;
 use super::tool_registry::ToolRegistry;
-use crate::events::SessionEvent;
+use crate::harness::events::SessionEvent;
 use auger_driver::ToolCallId;
 use futures::future::join_all;
 use getset::CloneGetters;
