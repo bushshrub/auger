@@ -35,14 +35,14 @@ should be in.
 
 ```mermaid
 stateDiagram-v2
-[*] --> WaitingForUserMessage
+[*] --> WaitingForUserMessage: New session or restored at user boundary
+[*] --> ToolPhase: Restored with unresolved tool calls
 
 WaitingForUserMessage --> Streaming: SendMessage
 
 Streaming --> WaitingForUserMessage: Completed without tools
 Streaming --> StreamingFailed: Stream failed
-Streaming --> ToolCallsAreRunning: Tools auto-approved
-Streaming --> NeedToolConsent: Consent required
+Streaming --> ToolPhase: Tools requested
 Streaming --> InterruptingStream: Interrupt
 
 InterruptingStream --> InterruptingStream: Queue message
@@ -52,12 +52,24 @@ InterruptingStream --> Streaming: Interrupted with queued message
 StreamingInterrupted --> Streaming: SendMessage
 StreamingFailed --> Streaming: SendMessage
 
-NeedToolConsent --> NeedToolConsent: More decisions needed
-NeedToolConsent --> ToolCallsAreRunning: All decisions received
+state ToolPhase {
+    state "Per-call lifecycle" as ToolCall {
+        [*] --> Undecided
+        Undecided --> Running: Approved
+        Undecided --> DoneWithheld: Denied, withhold result
+        Undecided --> DoneContinue: Denied, continue automatically
+        Undecided --> DoneContinue: Interrupted
+        Running --> DoneContinue: Result received
+        Running --> DoneContinue: Interrupted
+    }
+}
 
-ToolCallsAreRunning --> Streaming: Tool results received
-ToolCallsAreRunning --> InterruptingToolExecution: Interrupt
+ToolPhase --> ToolPhase: ToolDecision
+ToolPhase --> ToolPhase: Result
+ToolPhase --> ToolPhase: SendMessage
+ToolPhase --> ToolPhase: Interrupt
 
-InterruptingToolExecution --> Streaming: Interrupted tool results received
-
+ToolPhase --> Streaming: All calls done, none withheld, not all denied
+ToolPhase --> ToolResultsHeld: All calls done, any withheld or all denied
+ToolResultsHeld --> Streaming: SendMessage with held results
 ```
