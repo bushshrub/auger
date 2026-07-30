@@ -1,5 +1,4 @@
 mod harness;
-mod ids;
 mod record;
 mod system_prompt;
 
@@ -10,12 +9,11 @@ pub use harness::SessionHandle;
 pub use harness::SnapshotError;
 pub use harness::tools::auto_approval::AutoApprovalPolicies;
 pub use harness::tools::auto_approval::AutoApprovalPolicy;
-pub use ids::SessionId;
+pub use record::SessionId;
 pub use record::SessionRecord;
 pub use record::TraceReadError;
 pub use record::TraceReader;
 pub use record::TraceRestoreError;
 pub use record::TraceWriteError;
 pub use record::TraceWriter;
-pub use record::schema;
 pub use system_prompt::SystemPrompt;

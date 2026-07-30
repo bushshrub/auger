@@ -1,9 +1,11 @@
-pub(crate) mod history;
+pub(crate) mod event;
 pub(crate) mod recorder;
-pub mod schema;
+pub(crate) mod session;
 mod trace;
+pub(crate) mod turn;
 
-pub use history::SessionRecord;
+pub use session::SessionId;
+pub use session::SessionRecord;
 pub use trace::TraceReadError;
 pub use trace::TraceReader;
 pub use trace::TraceRestoreError;

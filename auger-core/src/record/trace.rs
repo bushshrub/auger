@@ -1,17 +1,51 @@
-use crate::ids::TurnId;
 use crate::record::SessionRecord;
-use crate::record::history::EventRecord;
-use crate::record::history::SessionData;
-use crate::record::history::TurnRecord;
-use crate::record::schema::OwnedTraceRecord;
-use crate::record::schema::SessionHeader;
-use crate::record::schema::TraceRecord;
-use crate::record::schema::TraceRecordRef;
+use crate::record::event::EventRecord;
+use crate::record::session::SessionData;
+use crate::record::turn::TurnData;
+use crate::record::turn::TurnId;
+use crate::record::turn::TurnRecord;
+use getset::Getters;
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::BufRead;
 use std::io::Write;
 use uuid::Uuid;
+
+/// One line of a trace. Written by reference and read by value, hence the two
+/// type parameters.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum TraceRecord<T, E> {
+    Session(SessionHeader),
+    Turn {
+        #[serde(flatten)]
+        record: T,
+    },
+    Event {
+        turn_id: TurnId,
+        #[serde(flatten)]
+        record: E,
+    },
+}
+
+type OwnedTraceRecord = TraceRecord<TurnData, EventRecord>;
+type TraceRecordRef<'a> = TraceRecord<&'a TurnData, &'a EventRecord>;
+
+#[derive(Serialize, Deserialize, Debug, Clone, Getters)]
+#[getset(get = "pub")]
+pub struct SessionHeader {
+    version: u32,
+    #[serde(flatten)]
+    data: SessionData,
+}
+
+impl SessionHeader {
+    fn new(data: SessionData) -> Self {
+        Self { version: 1, data }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum TraceWriteError {

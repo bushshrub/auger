@@ -2,16 +2,16 @@
 //! and for providing hooks for external observers to be notified of new events
 //! and turns.
 use crate::harness::tools::tool_execution::ToolCallResult;
-use crate::ids::EventId;
-use crate::ids::TurnId;
 use crate::record::SessionRecord;
-use crate::record::history::AssistantTurnOutcome;
-use crate::record::history::AuthorizationSource;
-use crate::record::history::EventRecord;
-use crate::record::history::RecordableEvent;
-use crate::record::history::RecordedInput;
-use crate::record::history::ToolDecision;
-use crate::record::history::TurnRecord;
+use crate::record::event::AuthorizationSource;
+use crate::record::event::EventId;
+use crate::record::event::EventRecord;
+use crate::record::event::RecordableEvent;
+use crate::record::event::ToolDecision;
+use crate::record::turn::AssistantTurnOutcome;
+use crate::record::turn::RecordedInput;
+use crate::record::turn::TurnId;
+use crate::record::turn::TurnRecord;
 use auger_driver::Prompt;
 use auger_driver::ToolCallId;
 use getset::Getters;
