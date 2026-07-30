@@ -16,8 +16,10 @@ use crate::record::session::SessionRecord;
 use crate::record::turn::AssistantTurnOutcome;
 use crate::record::turn::StopReason;
 use agent_tools::Tool;
+use auger_driver::ReadyToStream;
 use auger_driver::RestoredAgent;
 use auger_driver::StreamResult;
+use auger_driver::TypedAgent;
 use auger_driver::restore;
 use chrono::DateTime;
 use chrono::Utc;
@@ -132,6 +134,26 @@ impl Session {
         (handle, event_rx)
     }
 
+    /// Start streaming from `agent`, forwarding stream events to subscribers
+    /// and the eventual result back into the loop's own inbox.
+    fn start_stream(&self, agent: TypedAgent<ReadyToStream>, rt: &Handle) -> HarnessState {
+        let event_tx = self.event_tx.clone();
+        let inbox_tx = self.harness_internal_event_tx.clone();
+        let stream_fut = agent.create_stream(move |event| {
+            let _ = event_tx.send(SessionEvent::StreamEvent(event));
+        });
+        let cancel = stream_fut.interrupt_handle();
+        let sess_id = self.id;
+        rt.spawn(async move {
+            info!(session_id = %sess_id, "Starting stream");
+            let res = stream_fut.await;
+            inbox_tx
+                .send(LoopMessage::StreamResult(res))
+                .expect("inbox_rx was dropped");
+        });
+        HarnessState::Streaming { cancel }
+    }
+
     fn run(mut self, rt: Handle, init_agent: RestoredAgent) {
         info!(session_id = %self.id, "Session started");
         let mut curr_state = init_agent.into();
@@ -184,23 +206,8 @@ impl Session {
                             }
                         };
 
-                        let event_tx = self.event_tx.clone();
-                        let inbox_tx = self.harness_internal_event_tx.clone();
-                        let stream_fut = new_agent.create_stream(move |event| {
-                            let _ = event_tx.send(SessionEvent::StreamEvent(event));
-                        });
-                        let cancel = stream_fut.interrupt_handle();
-                        let sess_id = self.id;
-
                         self.recorder.record_prompt(prompt);
-                        rt.spawn(async move {
-                            info!(session_id=%sess_id, "Starting stream");
-                            let res = stream_fut.await;
-                            inbox_tx
-                                .send(LoopMessage::StreamResult(res))
-                                .expect("inbox_rx was dropped");
-                        });
-                        curr_state = HarnessState::Streaming { cancel };
+                        curr_state = self.start_stream(new_agent, &rt);
                     }
                     SessionCommand::Interrupt => {
                         curr_state = match curr_state {
@@ -420,21 +427,9 @@ impl Session {
                         HarnessState::InterruptingStream { pending_message } => match res {
                             StreamResult::Interrupted(agent) => match pending_message {
                                 Some(prompt) => {
-                                    let event_tx = self.event_tx.clone();
                                     let new_agent = agent.seal_and_continue(prompt.clone());
-                                    let inbox_tx = self.harness_internal_event_tx.clone();
-                                    let stream_fut = new_agent.create_stream(move |event| {
-                                        let _ = event_tx.send(SessionEvent::StreamEvent(event));
-                                    });
-                                    let cancel = stream_fut.interrupt_handle();
                                     self.recorder.record_prompt(prompt);
-                                    rt.spawn(async move {
-                                        let res = stream_fut.await;
-                                        inbox_tx
-                                            .send(LoopMessage::StreamResult(res))
-                                            .expect("inbox_rx was dropped");
-                                    });
-                                    HarnessState::Streaming { cancel }
+                                    self.start_stream(new_agent, &rt)
                                 }
                                 None => {
                                     info!(session_id=%self.id, "Stream successfully interrupted (no user msg)");
@@ -491,20 +486,7 @@ impl Session {
                     // TODO: allow steering message to ride along
                     info!(session_id=%self.id, "Sending {} tool results back to the model", resolved_batch.results().len());
                     let new_agent = agent.add_all_tool_responses(resolved_batch);
-                    let event_tx = self.event_tx.clone();
-                    let stream_fut = new_agent.create_stream(move |event| {
-                        let _ = event_tx.send(SessionEvent::StreamEvent(event));
-                    });
-                    let cancel = stream_fut.interrupt_handle();
-                    let inbox_tx = self.harness_internal_event_tx.clone();
-
-                    rt.spawn(async move {
-                        let res = stream_fut.await;
-                        inbox_tx
-                            .send(LoopMessage::StreamResult(res))
-                            .expect("inbox_rx was dropped");
-                    });
-                    curr_state = HarnessState::Streaming { cancel };
+                    curr_state = self.start_stream(new_agent, &rt);
                 }
             }
         }
