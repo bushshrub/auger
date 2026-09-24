@@ -1,7 +1,7 @@
 //! Module for recording session events and turns,
 //! and for providing hooks for external observers to be notified of new events
 //! and turns.
-use crate::harness::tools::tool_execution::ToolCallResult;
+use crate::harness::tool_engine::result::ToolCallResult;
 use crate::record::SessionRecord;
 use crate::record::event::AuthorizationSource;
 use crate::record::event::EventId;

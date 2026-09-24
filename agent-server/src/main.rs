@@ -301,7 +301,7 @@ async fn start_session(
 ) -> (Uuid, Uuid) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
-    let tools: Vec<Box<dyn agent_tools::Tool>> = vec![
+    let tools: Vec<Box<dyn auger_core::Tool>> = vec![
         Box::new(builtin_tools::ReadFile),
         Box::new(builtin_tools::WriteFile),
         Box::new(builtin_tools::EditFile),

@@ -1,9 +1,8 @@
 use crate::rate_limiter::RateLimiter;
-use agent_tools::JsonSchema;
-use agent_tools::Tool;
-use agent_tools::ToolCallResult;
-use agent_tools::ToolDetails;
-use agent_tools::ToolError;
+use auger_core::JsonSchema;
+use auger_core::Tool;
+use auger_core::ToolDetails;
+use auger_core::ToolError;
 use async_trait::async_trait;
 use scraper::ElementRef;
 use scraper::Html;
@@ -180,7 +179,7 @@ impl Tool for FetchContent {
         }))
     }
 
-    async fn call(&self, args: serde_json::Value) -> Result<ToolCallResult, ToolError> {
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
         let url = args["url"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: url".into()))?
@@ -226,7 +225,7 @@ impl Tool for FetchContent {
             (text, trunc)
         };
 
-        Ok(ToolCallResult::success(
+        Ok(
             json!({
                 "url": url,
                 "status": status,
@@ -235,6 +234,6 @@ impl Tool for FetchContent {
                 "truncated": truncated,
             })
             .to_string(),
-        ))
+        )
     }
 }

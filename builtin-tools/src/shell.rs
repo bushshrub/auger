@@ -1,10 +1,9 @@
 use crate::grep::Grep;
 use crate::shell_policy::parse_simple_command;
-use agent_tools::JsonSchema;
-use agent_tools::Tool;
-use agent_tools::ToolCallResult;
-use agent_tools::ToolDetails;
-use agent_tools::ToolError;
+use auger_core::JsonSchema;
+use auger_core::Tool;
+use auger_core::ToolDetails;
+use auger_core::ToolError;
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -36,7 +35,7 @@ impl Tool for Shell {
         }))
     }
 
-    async fn call(&self, args: serde_json::Value) -> Result<ToolCallResult, ToolError> {
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
         let command = args["command"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: command".into()))?
@@ -74,13 +73,13 @@ impl Tool for Shell {
             stderr.push_str("\n[truncated]");
         }
 
-        Ok(ToolCallResult::success(
+        Ok(
             json!({
                 "stdout": stdout,
                 "stderr": stderr,
                 "exit_code": exit_code
             })
             .to_string(),
-        ))
+        )
     }
 }

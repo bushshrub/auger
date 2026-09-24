@@ -1,8 +1,7 @@
-use agent_tools::JsonSchema;
-use agent_tools::Tool;
-use agent_tools::ToolCallResult;
-use agent_tools::ToolDetails;
-use agent_tools::ToolError;
+use auger_core::JsonSchema;
+use auger_core::Tool;
+use auger_core::ToolDetails;
+use auger_core::ToolError;
 use async_trait::async_trait;
 use grep::regex::RegexMatcherBuilder;
 use grep::searcher::Searcher;
@@ -135,7 +134,7 @@ impl Tool for Grep {
         }))
     }
 
-    async fn call(&self, args: serde_json::Value) -> Result<ToolCallResult, ToolError> {
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
         let pattern = args["pattern"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: pattern".into()))?
@@ -162,7 +161,7 @@ impl Tool for Grep {
         .await
         .map_err(|e| ToolError::Execution(e.to_string()))??;
 
-        Ok(ToolCallResult::success(output))
+        Ok(output)
     }
 }
 

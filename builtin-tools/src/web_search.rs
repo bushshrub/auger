@@ -1,9 +1,8 @@
 use crate::rate_limiter::RateLimiter;
-use agent_tools::JsonSchema;
-use agent_tools::Tool;
-use agent_tools::ToolCallResult;
-use agent_tools::ToolDetails;
-use agent_tools::ToolError;
+use auger_core::JsonSchema;
+use auger_core::Tool;
+use auger_core::ToolDetails;
+use auger_core::ToolError;
 use async_trait::async_trait;
 use scraper::Html;
 use scraper::Selector;
@@ -121,7 +120,7 @@ impl Tool for WebSearch {
         }))
     }
 
-    async fn call(&self, args: serde_json::Value) -> Result<ToolCallResult, ToolError> {
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
         let query = args["query"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: query".into()))?
@@ -157,22 +156,22 @@ impl Tool for WebSearch {
         let results = parse_results(&html, max_results);
 
         if results.is_empty() {
-            return Ok(ToolCallResult::success(
+            return Ok(
                 json!({
                     "query": query,
                     "results": [],
                     "note": "No results found. DuckDuckGo may be rate-limiting — try again shortly."
                 })
                 .to_string(),
-            ));
+            );
         }
 
-        Ok(ToolCallResult::success(
+        Ok(
             json!({
                 "query": query,
                 "results": results,
             })
             .to_string(),
-        ))
+        )
     }
 }

@@ -13,7 +13,7 @@ use crate::record::session::SessionData;
 use crate::record::session::SessionId;
 use crate::record::turn::TurnId;
 use crate::record::turn::TurnRecord;
-use agent_tools::Tool;
+use crate::tool::Tool;
 use provider::LlmModel;
 use std::env::current_dir;
 use std::sync::Arc;

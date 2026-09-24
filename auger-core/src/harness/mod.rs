@@ -3,6 +3,7 @@ pub(crate) mod events;
 pub(crate) mod session;
 mod states;
 pub(crate) mod tools;
+pub(crate) mod tool_engine;
 
 pub use builder::SessionBuilder;
 pub use events::SessionCommand;

@@ -1,8 +1,7 @@
-use agent_tools::JsonSchema;
-use agent_tools::Tool;
-use agent_tools::ToolCallResult;
-use agent_tools::ToolDetails;
-use agent_tools::ToolError;
+use auger_core::JsonSchema;
+use auger_core::Tool;
+use auger_core::ToolDetails;
+use auger_core::ToolError;
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -58,7 +57,7 @@ impl Tool for WebFetch {
         }))
     }
 
-    async fn call(&self, args: serde_json::Value) -> Result<ToolCallResult, ToolError> {
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
         let url = args["url"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: url".into()))?
@@ -85,14 +84,14 @@ impl Tool for WebFetch {
             .map_err(|e| ToolError::Execution(format!("failed to read body: {e}")))?;
 
         if body.len() <= MAX_INLINE {
-            return Ok(ToolCallResult::success(
+            return Ok(
                 json!({
                     "status": status,
                     "content_type": content_type,
                     "body": body,
                 })
                 .to_string(),
-            ));
+            );
         }
 
         let nanos = std::time::SystemTime::now()
@@ -104,7 +103,7 @@ impl Tool for WebFetch {
             .await
             .map_err(|e| ToolError::Execution(format!("failed to write temp file: {e}")))?;
 
-        Ok(ToolCallResult::success(
+        Ok(
             json!({
                 "status": status,
                 "content_type": content_type,
@@ -119,6 +118,6 @@ impl Tool for WebFetch {
                 ),
             })
             .to_string(),
-        ))
+        )
     }
 }

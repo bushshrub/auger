@@ -12,7 +12,6 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "agent-server"
 version = "0.1.0"
 dependencies = [
- "agent-tools",
  "auger-core",
  "auger-driver",
  "axum",
@@ -32,15 +31,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "agent-tools"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "serde_json",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -190,7 +180,6 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 name = "auger-core"
 version = "0.1.0"
 dependencies = [
- "agent-tools",
  "async-trait",
  "auger-driver",
  "builtin-tools",
@@ -422,7 +411,6 @@ dependencies = [
 name = "builtin-tools"
 version = "0.1.0"
 dependencies = [
- "agent-tools",
  "async-trait",
  "auger-core",
  "glob",

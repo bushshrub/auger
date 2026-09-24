@@ -1,6 +1,5 @@
-use agent_tools::Tool;
-use agent_tools::ToolCallResult;
-use agent_tools::ToolError;
+use crate::tool::Tool;
+use crate::tool::ToolError;
 use provider::ToolCallRequest;
 use provider::ToolDefinition;
 use std::collections::HashMap;
@@ -28,11 +27,11 @@ impl ToolRegistry {
         self.0.insert(tool.details().name.to_string(), tool);
     }
 
-    pub(crate) async fn call_tool(
+    async fn call_tool(
         &self,
         tool_name: &str,
         args: String,
-    ) -> Result<ToolCallResult, ToolInvokeIssue> {
+    ) -> Result<String, ToolInvokeIssue> {
         let tool = self
             .0
             .get(tool_name)
@@ -48,7 +47,7 @@ impl ToolRegistry {
     pub(crate) async fn invoke(
         &self,
         tc: ToolCallRequest,
-    ) -> Result<ToolCallResult, ToolInvokeIssue> {
+    ) -> Result<String, ToolInvokeIssue> {
         self.call_tool(&tc.name, tc.arguments).await
     }
 

@@ -1,8 +1,7 @@
-use agent_tools::JsonSchema;
-use agent_tools::Tool;
-use agent_tools::ToolCallResult;
-use agent_tools::ToolDetails;
-use agent_tools::ToolError;
+use auger_core::JsonSchema;
+use auger_core::Tool;
+use auger_core::ToolDetails;
+use auger_core::ToolError;
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -46,7 +45,7 @@ impl Tool for ReadFile {
         }))
     }
 
-    async fn call(&self, args: serde_json::Value) -> Result<ToolCallResult, ToolError> {
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
         let path = args["path"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: path".into()))?;
@@ -81,15 +80,15 @@ impl Tool for ReadFile {
         if limit.is_none() && line_count > INLINE_LINE_LIMIT {
             let tmp_path = format!("/tmp/auger_read_{}.txt", sanitize_filename(path));
             tokio::fs::write(&tmp_path, &out).await?;
-            return Ok(ToolCallResult::success(format!(
+            return Ok(format!(
                 "File has {total} lines (exceeds inline limit of {INLINE_LINE_LIMIT}). Full \
                  contents written to: {tmp_path}"
-            )));
+            ));
         }
 
         let mut result = format!("Total lines: {total}\n\n");
         result.push_str(&out);
-        Ok(ToolCallResult::success(result))
+        Ok(result)
     }
 }
 

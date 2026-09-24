@@ -1,4 +1,4 @@
-use crate::harness::tools::tool_execution::ToolCallResult;
+use crate::harness::tool_engine::result::ToolCallResult;
 use crate::record::event::EventId;
 use crate::record::event::EventRecord;
 use crate::record::event::RecordableEvent;
