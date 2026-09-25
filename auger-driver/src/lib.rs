@@ -21,8 +21,7 @@
 //!     match agent.create_stream(|_event| {}).await {
 //!         StreamResult::WaitingForUserMessage { .. } => {}
 //!         StreamResult::WaitingForToolResponses { agent, .. } => {
-//!             let pending_tools = agent.get_batch();
-//!             let _ = (pending_tools, execute_tools);
+//!             let _ = agent.get_requested_tools();
 //!         }
 //!         StreamResult::Interrupted(_) | StreamResult::Failed { .. } => {}
 //!     }
@@ -30,12 +29,6 @@
 //!
 //! fn load_tool_definitions() -> Vec<ToolDefinition> {
 //!     todo!("construct the available tool definitions")
-//! }
-//!
-//! async fn execute_tools(
-//!     pending_tools: auger_driver::ToolBatch<auger_driver::Resolving>,
-//! ) -> auger_driver::ToolBatch<auger_driver::Resolved> {
-//!     todo!("apply policy, execute tools, and return a resolved batch")
 //! }
 //! ```
 
@@ -60,9 +53,7 @@ pub use restore::RestoredAgent;
 pub use restore::restore;
 pub use streaming::LlmStreaming;
 pub use streaming::StreamResult;
-pub use tool_batch::AddToolResponseIssue;
 pub use tool_batch::Resolved;
-pub use tool_batch::Resolving;
 pub use tool_batch::ToolBatch;
 pub use tool_batch::ToolBatchState;
 pub use tool_batch::ToolCallId;

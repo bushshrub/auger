@@ -2,9 +2,7 @@
 
 use crate::harness::tool_engine::result::ToolCallResult;
 use crate::record::SessionRecord;
-use auger_driver::Resolving;
 use auger_driver::StreamResult;
-use auger_driver::ToolBatch;
 use auger_driver::Prompt;
 use provider::TokenUsage;
 use std::sync::mpsc;
@@ -61,9 +59,4 @@ pub(crate) enum LoopMessage {
     Cmd(SessionCommand),
     /// A streaming future completed.
     StreamResult(StreamResult),
-    /// A tool batch has executed and returned its results
-    ToolBatchExecutionResult {
-        batch: ToolBatch<Resolving>,
-        results: Vec<ToolCallResult>,
-    },
 }

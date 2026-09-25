@@ -8,8 +8,6 @@ pub use harness::SessionCommand;
 pub use harness::SessionEvent;
 pub use harness::SessionHandle;
 pub use harness::SnapshotError;
-pub use harness::tool_engine::auto_approval::AutoApprovalPolicies;
-pub use harness::tool_engine::auto_approval::AutoApprovalPolicy;
 pub use record::SessionId;
 pub use record::SessionRecord;
 pub use record::TraceReadError;

@@ -1,4 +1,3 @@
-use crate::AutoApprovalPolicies;
 use crate::SessionEvent;
 use crate::SessionHandle;
 use crate::SystemPrompt;
@@ -73,7 +72,6 @@ impl SessionBuilder {
         system_prompt: SystemPrompt,
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
-        auto_approval_policies: impl Into<AutoApprovalPolicies>,
     ) -> (SessionHandle, Receiver<SessionEvent>) {
         let recorder = SessionRecorder::new(self.record, self.on_turn, self.on_event);
         Session::spawn(
@@ -82,7 +80,6 @@ impl SessionBuilder {
             recorder,
             model,
             tools,
-            auto_approval_policies.into(),
         )
     }
 }

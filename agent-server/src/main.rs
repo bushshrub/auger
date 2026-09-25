@@ -3,7 +3,6 @@ use crate::stream_events::BlockTracker;
 use crate::server_types::CreateSessionRequest;
 use crate::server_types::SessionEntry;
 use crate::server_types::UserInputRequest;
-use auger_core::AutoApprovalPolicies;
 use auger_core::SessionBuilder;
 use auger_core::SessionCommand;
 use auger_core::SessionEvent;
@@ -299,7 +298,6 @@ async fn start_session(
     tokens: Option<(Uuid, Uuid)>,
     events: Option<tokio::sync::broadcast::Sender<SessionEvent>>,
 ) -> (Uuid, Uuid) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
     let tools: Vec<Box<dyn auger_core::Tool>> = vec![
         Box::new(builtin_tools::ReadFile),
@@ -307,9 +305,6 @@ async fn start_session(
         Box::new(builtin_tools::EditFile),
         Box::new(builtin_tools::Shell),
     ];
-    // Read-only tools run without consent.
-    let auto_approved: Vec<String> = vec!["read_file".to_string()];
-    let auto_approval = AutoApprovalPolicies::from(auto_approved);
     let session_id = builder.id();
     create_dir_all(trace_path.parent().expect("trace path has a parent"))
         .expect("failed to create session trace directory");
@@ -355,7 +350,6 @@ async fn start_session(
         sys_prompt,
         tokio::runtime::Handle::current(),
         tools,
-        auto_approval,
     );
 
     let event_tx = events.unwrap_or_else(|| tokio::sync::broadcast::channel(256).0);

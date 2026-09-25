@@ -3,7 +3,6 @@ use crate::harness::events::LoopMessage;
 use crate::harness::events::SessionCommand;
 use crate::harness::events::SessionEvent;
 use crate::harness::states::HarnessState;
-use crate::harness::tool_engine::auto_approval::AutoApprovalPolicies;
 use crate::harness::tool_engine::registry::ToolRegistry;
 use crate::record::recorder::SessionRecorder;
 use crate::record::session::SessionId;
@@ -73,7 +72,6 @@ pub struct Session {
     /// Sender for the session to emit events through
     event_tx: Sender<SessionEvent>,
     tool_registry: Arc<ToolRegistry>,
-    auto_approval_policies: Arc<AutoApprovalPolicies>,
     recorder: SessionRecorder,
 }
 
@@ -93,7 +91,6 @@ impl Session {
         record: SessionRecorder,
         model: LlmModel,
         tools: Vec<Box<dyn Tool>>,
-        auto_approval_policies: AutoApprovalPolicies,
     ) -> (SessionHandle, Receiver<SessionEvent>) {
         let id = record.record().data().session_id();
         let creation_time = record.record().data().created_at();
@@ -112,7 +109,6 @@ impl Session {
             harness_internal_event_tx: cmd_tx.clone(),
             event_tx,
             tool_registry,
-            auto_approval_policies: Arc::new(auto_approval_policies),
             recorder: record,
         };
         let handle = SessionHandle::new(session.id, cmd_tx.clone(), creation_time);
@@ -151,13 +147,6 @@ impl Session {
     fn run(mut self, rt: Handle, init_agent: RestoredAgent) {
         info!(session_id = %self.id, "Session started");
         let mut curr_state = init_agent.into();
-        if let HarnessState::HasToolCalls { _agent: agent } = curr_state {
-            let tool_calls = agent.get_requested_tools();
-            let _ = self
-                .event_tx
-                .send(SessionEvent::ToolConsentRequired { tool_calls });
-            curr_state = HarnessState::NeedToolConsent { agent };
-        }
         'session_loop: while let Ok(msg) = self.cmd_rx.recv() {
             match msg {
                 LoopMessage::Cmd(cmd) => match cmd {
@@ -208,11 +197,6 @@ impl Session {
                                     pending_message: None,
                                 }
                             }
-                            HarnessState::ToolCallsAreRunning { agent, cancel } => {
-                                info!(session_id = %self.id, "Interrupting tool execution");
-                                cancel.cancel();
-                                HarnessState::InterruptingToolExecution { agent }
-                            }
                             _ => {
                                 warn!(session_id = %self.id, command = "interrupt", "Ignoring command in invalid harness state");
                                 curr_state
@@ -225,9 +209,9 @@ impl Session {
                         message,
                     } => {
                         curr_state = match curr_state {
-                            HarnessState::NeedToolConsent { .. } => {
+                            HarnessState::ToolPhase { .. } => {
                                 let _ = (id, approved, message);
-                                todo!("apply tool decision through ToolPhaseEngine")
+                                todo!("forward the decision to the tool phase engine")
                             }
                             _ => {
                                 warn!(session_id = %self.id, command = "tool_decision", "Ignoring command in invalid harness state");
@@ -280,7 +264,7 @@ impl Session {
                                     });
 
                                     let _ = (agent, turn_id);
-                                    todo!("run tool calls through ToolPhaseEngine")
+                                    todo!("start the tool phase")
                                 }
                                 StreamResult::WaitingForUserMessage { agent, end } => {
                                     info!(session_id=%self.id, "Stream has returned: No tools called");
@@ -329,32 +313,6 @@ impl Session {
                         },
                         _ => curr_state,
                     };
-                }
-                LoopMessage::ToolBatchExecutionResult { mut batch, results } => {
-                    info!(session_id=%self.id, "tools have finished executing");
-                    let agent = match curr_state {
-                        HarnessState::ToolCallsAreRunning { agent, cancel } => {
-                            drop(cancel);
-                            agent
-                        }
-                        HarnessState::InterruptingToolExecution { agent } => agent,
-                        other => {
-                            curr_state = other;
-                            continue 'session_loop;
-                        }
-                    };
-
-                    for result in results {
-                        self.recorder.record_tool_result(result.clone());
-                        batch
-                            .add_result(result.tool_call_id(), result.into())
-                            .expect("result to be for a requested call");
-                    }
-                    let resolved_batch = batch.into_resolved().expect_right("there is a bug");
-                    // TODO: allow steering message to ride along
-                    info!(session_id=%self.id, "Sending {} tool results back to the model", resolved_batch.results().len());
-                    let new_agent = agent.add_all_tool_responses(resolved_batch);
-                    curr_state = self.start_stream(new_agent, &rt);
                 }
             }
         }

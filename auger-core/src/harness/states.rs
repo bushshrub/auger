@@ -25,21 +25,9 @@ pub(crate) enum HarnessState {
     StreamingFailed {
         agent: TypedAgent<LlmStreamingInterrupted>,
     },
-    /// LLM streaming came back and there are tool calls
-    HasToolCalls {
-        _agent: TypedAgent<WaitingForToolResponses>,
-    },
-    /// Tool call execution is in progress
-    ToolCallsAreRunning {
-        agent: TypedAgent<WaitingForToolResponses>,
-        cancel: CancellationToken,
-    },
-    /// Tool execution is being interrupted.
-    InterruptingToolExecution {
-        agent: TypedAgent<WaitingForToolResponses>,
-    },
-    /// Session is waiting for consent for tool calls
-    NeedToolConsent {
+    /// The model called tools. Every call must be answered before the
+    /// results go back to the model.
+    ToolPhase {
         agent: TypedAgent<WaitingForToolResponses>,
     },
 }
@@ -50,7 +38,7 @@ impl From<StreamResult> for HarnessState {
             StreamResult::Interrupted(agent) => Self::StreamingInterrupted { agent },
             StreamResult::Failed { agent, .. } => Self::StreamingFailed { agent },
             StreamResult::WaitingForUserMessage { agent, .. } => Self::WaitingForUserMessage { agent },
-            StreamResult::WaitingForToolResponses { agent, .. } => Self::HasToolCalls { _agent: agent },
+            StreamResult::WaitingForToolResponses { agent, .. } => Self::ToolPhase { agent },
         }
     }
 }
@@ -62,7 +50,7 @@ impl From<RestoredAgent> for HarnessState {
                 HarnessState::WaitingForUserMessage { agent }
             }
             RestoredAgent::WaitingForToolResponses(agent) => {
-                HarnessState::HasToolCalls { _agent: agent }
+                HarnessState::ToolPhase { agent }
             }
             RestoredAgent::Interrupted(agent) => HarnessState::StreamingInterrupted { agent },
         }

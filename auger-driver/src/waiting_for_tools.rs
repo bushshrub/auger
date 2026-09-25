@@ -2,7 +2,6 @@ use crate::agent::{pending_tool_calls, HarnessEntry, Prompt, ReadyToStream};
 use crate::agent::State;
 use crate::agent::TypedAgent;
 use crate::tool_batch::Resolved;
-use crate::tool_batch::Resolving;
 use crate::tool_batch::ToolBatch;
 use provider::AssistantResponse;
 use provider::ToolCallRequest;
@@ -35,11 +34,6 @@ impl TypedAgent<WaitingForToolResponses> {
 
     pub fn get_requested_tools(&self) -> Vec<ToolCallRequest> {
         self.get_tool_calls()
-    }
-
-    /// Get the batch of tool calls that were requested.
-    pub fn get_batch(&self) -> ToolBatch<Resolving> {
-        ToolBatch::new(self.get_tool_calls())
     }
 
     /// Inject a prompt. This is useful for things like steering.
