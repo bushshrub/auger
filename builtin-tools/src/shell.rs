@@ -1,5 +1,3 @@
-use crate::grep::Grep;
-use crate::shell_policy::parse_simple_command;
 use auger_core::JsonSchema;
 use auger_core::Tool;
 use auger_core::ToolDetails;
@@ -42,18 +40,12 @@ impl Tool for Shell {
             .to_owned();
 
         let output = tokio::task::spawn_blocking(move || {
-            if let Some(result) =
-                parse_simple_command(&command).and_then(|words| Grep::run_shell_command(&words))
-            {
-                return result.map(|stdout| (stdout, String::new(), 0));
-            }
-
             let output = std::process::Command::new("/bin/sh")
                 .arg("-c")
                 .arg(&command)
                 .output()
                 .map_err(|error| ToolError::Execution(error.to_string()))?;
-            Ok((
+            Ok::<_, ToolError>((
                 String::from_utf8_lossy(&output.stdout).into_owned(),
                 String::from_utf8_lossy(&output.stderr).into_owned(),
                 output.status.code().unwrap_or(-1),

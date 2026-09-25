@@ -305,32 +305,11 @@ async fn start_session(
         Box::new(builtin_tools::ReadFile),
         Box::new(builtin_tools::WriteFile),
         Box::new(builtin_tools::EditFile),
-        Box::new(builtin_tools::Glob),
-        Box::new(builtin_tools::Grep),
-        Box::new(builtin_tools::ListFiles),
         Box::new(builtin_tools::Shell),
-        Box::new(builtin_tools::TodoList::new()),
-        Box::new(builtin_tools::WebSearch::new()),
-        Box::new(builtin_tools::FetchContent::new()),
     ];
-    // Read-only tools and the conservative shell policy run without consent.
-    let auto_approved: Vec<String> = [
-        "read_file",
-        "grep",
-        "glob",
-        "list_files",
-        "todo_list",
-        "web_search",
-        "fetch_content",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    let mut auto_approval = AutoApprovalPolicies::from(auto_approved);
-    auto_approval.add(
-        "shell",
-        builtin_tools::BashAutoApprovalPolicy::new(cwd.clone()),
-    );
+    // Read-only tools run without consent.
+    let auto_approved: Vec<String> = vec!["read_file".to_string()];
+    let auto_approval = AutoApprovalPolicies::from(auto_approved);
     let session_id = builder.id();
     create_dir_all(trace_path.parent().expect("trace path has a parent"))
         .expect("failed to create session trace directory");
