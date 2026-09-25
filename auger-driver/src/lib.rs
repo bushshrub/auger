@@ -57,4 +57,5 @@ pub use tool_batch::Resolved;
 pub use tool_batch::ToolBatch;
 pub use tool_batch::ToolBatchState;
 pub use tool_batch::ToolCallId;
+pub use tool_batch::Unresolved;
 pub use waiting_for_tools::WaitingForToolResponses;

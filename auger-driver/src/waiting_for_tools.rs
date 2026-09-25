@@ -2,6 +2,7 @@ use crate::agent::{pending_tool_calls, HarnessEntry, Prompt, ReadyToStream};
 use crate::agent::State;
 use crate::agent::TypedAgent;
 use crate::tool_batch::Resolved;
+use crate::tool_batch::Unresolved;
 use crate::tool_batch::ToolBatch;
 use provider::AssistantResponse;
 use provider::ToolCallRequest;
@@ -36,6 +37,11 @@ impl TypedAgent<WaitingForToolResponses> {
         self.get_tool_calls()
     }
 
+    /// The unanswered calls, to be resolved by the host.
+    pub fn get_batch(&self) -> ToolBatch<Unresolved> {
+        ToolBatch::new(self.get_tool_calls())
+    }
+
     /// Inject a prompt. This is useful for things like steering.
     pub fn inject(mut self, prompt: Prompt) -> Self {
         self.push_input(prompt.into());
@@ -47,7 +53,7 @@ impl TypedAgent<WaitingForToolResponses> {
         mut self,
         responses: ToolBatch<Resolved>,
     ) -> TypedAgent<ReadyToStream> {
-        for result in responses.drain() {
+        for result in responses.into_results() {
             self.push_input(HarnessEntry::ToolResult(result).into());
         }
         TypedAgent {
