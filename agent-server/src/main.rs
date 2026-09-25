@@ -9,7 +9,6 @@ use auger_core::SessionEvent;
 use auger_core::SessionHandle;
 use auger_core::SessionId;
 use auger_core::SystemPrompt;
-use auger_core::TraceReader;
 use auger_core::TraceWriter;
 use axum::Extension;
 use axum::Json;
@@ -32,13 +31,7 @@ use provider::LlmModel;
 use provider::LlmProvider;
 use serde_json::json;
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::fs::create_dir_all;
-use std::io::BufReader;
-use std::io::BufWriter;
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -54,15 +47,6 @@ mod config;
 mod provider_config;
 mod server_types;
 mod stream_events;
-
-fn trace_path(session_id: SessionId) -> PathBuf {
-    let home = std::env::var_os("HOME").expect("HOME is not set");
-    PathBuf::from(home)
-        .join(".auger")
-        .join("sessions")
-        .join(session_id.to_string())
-        .join("trace.jsonl")
-}
 
 const DEFAULT_CONTEXT_WINDOW: usize = 113072;
 const SYSTEM_PROMPT: &str = "You are a precise, capable software engineering agent. You have \
@@ -96,47 +80,10 @@ struct AppState {
 struct DiskSession {
     record: auger_core::SessionRecord,
     model: String,
-    path: PathBuf,
     read_token: Uuid,
     write_token: Uuid,
     archived: bool,
     events: tokio::sync::broadcast::Sender<SessionEvent>,
-}
-
-fn load_disk_sessions() -> Vec<DiskSession> {
-    let Some(home) = std::env::var_os("HOME") else {
-        return Vec::new();
-    };
-    let sessions_dir = PathBuf::from(home).join(".auger").join("sessions");
-    let Ok(entries) = std::fs::read_dir(sessions_dir) else {
-        return Vec::new();
-    };
-    let mut sessions = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path().join("trace.jsonl");
-        let Ok(file) = std::fs::File::open(&path) else {
-            continue;
-        };
-        match TraceReader::read(BufReader::new(file)) {
-            Ok(record) => {
-                let model = record.data().model_info().id().clone();
-                let (events, _) = tokio::sync::broadcast::channel(256);
-                sessions.push(DiskSession {
-                    record,
-                    model,
-                    path,
-                    read_token: Uuid::new_v4(),
-                    write_token: Uuid::new_v4(),
-                    archived: false,
-                    events,
-                });
-            }
-            Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "failed to restore session trace")
-            }
-        }
-    }
-    sessions
 }
 
 #[tokio::main]
@@ -149,14 +96,10 @@ async fn main() {
     let addr = config.listen_addr();
     let provider = provider_config::from_config(&config);
 
-    let disk_sessions = load_disk_sessions()
-        .into_iter()
-        .map(|session| (session.record.data().session_id(), session))
-        .collect();
     let state = AppState {
         provider: Arc::clone(&provider),
         sessions: Arc::new(RwLock::new(HashMap::new())),
-        disk_sessions: Arc::new(RwLock::new(disk_sessions)),
+        disk_sessions: Arc::new(RwLock::new(HashMap::new())),
         activation_lock: Arc::new(TokioMutex::new(())),
         default_model: config.model(),
     };
@@ -207,7 +150,6 @@ async fn resolve_session_extensions(
                     &state,
                     SessionBuilder::restore(disk.record),
                     disk.model,
-                    disk.path,
                     Some((disk.read_token, disk.write_token)),
                     Some(disk.events),
                 )
@@ -281,7 +223,7 @@ async fn create_session(
     let builder = SessionBuilder::new(model.clone());
     let session_id = builder.id();
     let (read_token, write_token) =
-        start_session(&state, builder, model.clone(), trace_path(session_id), None, None).await;
+        start_session(&state, builder, model.clone(), None, None).await;
     Json(
         json!({ "session_id": session_id, "model": model, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
         "read": read_token,
@@ -294,7 +236,6 @@ async fn start_session(
     state: &AppState,
     builder: SessionBuilder,
     model: String,
-    trace_path: PathBuf,
     tokens: Option<(Uuid, Uuid)>,
     events: Option<tokio::sync::broadcast::Sender<SessionEvent>>,
 ) -> (Uuid, Uuid) {
@@ -306,45 +247,6 @@ async fn start_session(
         Box::new(builtin_tools::Shell),
     ];
     let session_id = builder.id();
-    create_dir_all(trace_path.parent().expect("trace path has a parent"))
-        .expect("failed to create session trace directory");
-    let is_new_trace = !trace_path.exists()
-        || std::fs::metadata(&trace_path)
-            .expect("failed to inspect session trace file")
-            .len()
-            == 0;
-    let trace_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&trace_path)
-        .expect("failed to create session trace file");
-    let writer = BufWriter::new(trace_file);
-    let trace_writer = if is_new_trace {
-        TraceWriter::new(writer, builder.session_data())
-            .expect("failed to write session trace header")
-    } else {
-        TraceWriter::resume(writer)
-    };
-    let trace_writer = Arc::new(Mutex::new(trace_writer));
-    let turn_writer = Arc::clone(&trace_writer);
-    let event_writer = Arc::clone(&trace_writer);
-    let builder = builder
-        .on_turn(move |_, record| match turn_writer.lock() {
-            Ok(mut writer) => {
-                if let Err(error) = writer.write_turn(record) {
-                    tracing::error!(%error, "failed to write session trace turn");
-                }
-            }
-            Err(_) => tracing::error!("trace writer lock poisoned"),
-        })
-        .on_event(move |turn_id, record| match event_writer.lock() {
-            Ok(mut writer) => {
-                if let Err(error) = writer.write_event(turn_id, record) {
-                    tracing::error!(%error, "failed to write session trace event");
-                }
-            }
-            Err(_) => tracing::error!("trace writer lock poisoned"),
-        });
     let (handle, event_rx) = builder.start(
         LlmModel::new(state.provider.clone(), &model),
         sys_prompt,
