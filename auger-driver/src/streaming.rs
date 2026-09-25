@@ -6,6 +6,7 @@ use crate::interrupt_states::LlmStreamingInterrupted;
 use crate::waiting_for_tools::WaitingForToolResponses;
 use provider::{fold_events, AssistantResponse, LlmError, LlmModel, StreamEnd, StreamEvent};
 use provider::LlmRequest;
+use provider::Message;
 use provider::ToolDefinition;
 use std::future::Future;
 use std::pin::Pin;
@@ -72,8 +73,9 @@ pub(crate) async fn run_stream(
         event_callback(event.clone());
         events.push(event);
     };
-    let messages_so_far = convert_turns_into_messages(turns_so_far.clone());
-    let request = LlmRequest::new(messages_so_far.clone(), tools.clone());
+    let mut messages = vec![Message::System(system_prompt.clone())];
+    messages.extend(convert_turns_into_messages(turns_so_far.clone()));
+    let request = LlmRequest::new(messages, tools.clone());
     tokio::select! {
         result = model.stream(request, &mut sink) => match result {
             Ok(stream) => {
