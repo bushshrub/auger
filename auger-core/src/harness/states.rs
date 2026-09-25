@@ -1,5 +1,3 @@
-use crate::harness::tools::tool_decisions::Resolving;
-use crate::harness::tools::tool_decisions::UserToolDecisions;
 use auger_driver::LlmStreamingInterrupted;
 use auger_driver::RestoredAgent;
 use auger_driver::StreamResult;
@@ -43,7 +41,6 @@ pub(crate) enum HarnessState {
     /// Session is waiting for consent for tool calls
     NeedToolConsent {
         agent: TypedAgent<WaitingForToolResponses>,
-        user_tool_decisions: UserToolDecisions<Resolving>,
     },
 }
 
