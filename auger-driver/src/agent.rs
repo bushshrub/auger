@@ -168,12 +168,16 @@ pub(crate) fn convert_turns_into_messages(turns: Vec<Turn>) -> Vec<Message> {
             Turn::Input { entries } => {
                 let mut message = String::new();
                 let mut tool_call_results = Vec::new();
+                let mut push_text = |text: &str| {
+                    if !message.is_empty() {
+                        message.push_str("\n\n");
+                    }
+                    message.push_str(text);
+                };
                 for entry in entries {
                     match entry {
-                        InputEntry::User(prompt) => message.push_str(&prompt.message),
-                        InputEntry::Harness(HarnessEntry::Message(text)) => {
-                            message.push_str(&text)
-                        }
+                        InputEntry::User(prompt) => push_text(&prompt.message),
+                        InputEntry::Harness(HarnessEntry::Message(text)) => push_text(&text),
                         InputEntry::Harness(HarnessEntry::ToolResult(result)) => {
                             tool_call_results.push(result)
                         }
