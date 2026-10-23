@@ -274,6 +274,14 @@ components:
             tool_calls: { type: array, items: { $ref: "#/components/schemas/ToolCall" } }
         - type: object
           description: >-
+            Live only, not in the snapshot. Sent once when a restored session
+            starts: tools it called before are not offered now.
+          required: [type, names]
+          properties:
+            type: { const: tools_missing }
+            names: { type: array, items: { type: string } }
+        - type: object
+          description: >-
             The approval policy settled a call without asking the user. An
             allowed call runs at once; a denied call is followed by its
             tool_call_result. Calls the policy cannot settle appear in

@@ -39,6 +39,9 @@ pub enum SessionEvent {
     /// back to the model with the next user message; until then the session
     /// waits for input.
     ToolResultsWithheld,
+    /// A restored session called tools the current tool set does not offer.
+    /// Emitted once, right after the session starts.
+    ToolsMissing { names: Vec<String> },
     /// The session has stopped and will not emit further events.
     Closed,
 }

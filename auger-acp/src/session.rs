@@ -116,6 +116,9 @@ impl Session {
                 }
             }
             SessionEvent::ToolResultsWithheld => self.settle(out, Outcome::Stop("end_turn")),
+            SessionEvent::ToolsMissing { names } => {
+                tracing::warn!(?names, "restored session used tools that are no longer available");
+            }
             SessionEvent::Closed => self.settle(out, Outcome::Failed("session closed".into())),
         }
     }

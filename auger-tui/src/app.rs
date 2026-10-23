@@ -347,6 +347,12 @@ impl App {
                 }
             }
 
+            SseEvent::ToolsMissing { names } => {
+                self.items.push(ChatItem::Error {
+                    text: format!("Tools no longer available: {}", names.join(", ")),
+                });
+            }
+
             SseEvent::StreamClosed => {
                 self.status = Status::Idle;
             }

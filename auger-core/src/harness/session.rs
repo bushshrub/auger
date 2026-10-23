@@ -3,6 +3,7 @@ use crate::harness::events::LoopMessage;
 use crate::harness::events::SessionCommand;
 use crate::harness::events::SessionEvent;
 use crate::harness::states::HarnessState;
+use crate::harness::tools_missing::missing_tools;
 use crate::record::RecordBody;
 use crate::record::RecordSink;
 use crate::record::RestoreError;
@@ -88,6 +89,11 @@ impl Session {
     ) -> Result<(SessionHandle, Receiver<SessionEvent>), RestoreError> {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
+        let offered: Vec<String> = tools.iter().map(|tool| tool.details().name).collect();
+        let missing = match &origin {
+            Origin::Restored(restored) => missing_tools(&restored.turns, &offered),
+            Origin::New { .. } => Vec::new(),
+        };
         let (data, writer, system_prompt, state, cwd, batch_facts) = match origin {
             Origin::New {
                 data,
@@ -117,6 +123,10 @@ impl Session {
         };
         let tools = ToolSetup::new(tools, policy, data.cwd().clone(), cwd, writer.journal());
         let initial_agent = restore(model, system_prompt, tools.definitions(), state)?;
+
+        if !missing.is_empty() {
+            let _ = event_tx.send(SessionEvent::ToolsMissing { names: missing });
+        }
 
         let session = Self {
             id: data.session_id(),

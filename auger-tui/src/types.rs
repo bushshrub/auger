@@ -127,6 +127,10 @@ pub enum SseEvent {
     TurnComplete,
     /// A call was denied: the session waits for the next user message.
     ToolResultsWithheld,
+    /// A restored session called tools that are no longer offered.
+    ToolsMissing {
+        names: Vec<String>,
+    },
     Interrupted,
     StreamClosed,
     StreamError {
@@ -172,6 +176,9 @@ pub enum RawSessionEvent {
         node: String,
     },
     ToolResultsWithheld,
+    ToolsMissing {
+        names: Vec<String>,
+    },
     Interrupted,
     StreamError {
         error: String,
@@ -303,6 +310,7 @@ pub fn transform_raw_event(ev: RawSessionEvent) -> Vec<SseEvent> {
         },
         RawSessionEvent::Interrupted => vec![SseEvent::Interrupted],
         RawSessionEvent::ToolResultsWithheld => vec![SseEvent::ToolResultsWithheld],
+        RawSessionEvent::ToolsMissing { names } => vec![SseEvent::ToolsMissing { names }],
         RawSessionEvent::StreamError { error } => {
             vec![SseEvent::StreamError { message: error }]
         }
