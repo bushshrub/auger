@@ -26,6 +26,7 @@ impl Client {
             model: "test-model".into(),
             sessions_dir,
             system_prompt: "test".into(),
+            mcp_servers: Default::default(),
         };
         let agent = std::thread::spawn(move || auger_acp::run(in_reader, out_writer, deps));
         Self {

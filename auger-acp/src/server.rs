@@ -1,15 +1,18 @@
 //! The agent's event loop. Client messages and session events arrive on one
 //! channel and are handled one at a time, so no handler blocks on a reply.
 
+use crate::mcp;
 use crate::jsonrpc::{self, INVALID_PARAMS, Incoming, METHOD_NOT_FOUND, Out, RpcError};
 use crate::session::Session;
 use crate::storage;
 use crate::updates::{self, Mapper};
 use crate::Deps;
 use auger_core::{SessionBuilder, SessionEvent, SystemPrompt};
+use auger_mcp::{McpServers, ServerConfig};
+use auger_toolengine::Chain;
 use provider::LlmModel;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -135,7 +138,8 @@ impl Server {
         let builder = SessionBuilder::new(self.deps.model.clone(), SystemPrompt::new(prompt))
             .cwd(cwd.clone());
         let builder = storage::attach_sink(builder, self.deps.sessions_dir.as_deref());
-        let id = self.start(builder, Mapper::new(cwd))?;
+        let servers = mcp::servers(&self.deps.mcp_servers, params);
+        let id = self.start(builder, Mapper::new(cwd), &servers)?;
         Ok(json!({"sessionId": id}))
     }
 
@@ -159,20 +163,35 @@ impl Server {
             let builder = SessionBuilder::restore(records)
                 .map_err(|error| RpcError::internal(error.to_string()))?;
             let builder = storage::attach_sink(builder, Some(&dir));
-            self.start(builder, mapper)?;
+            let servers = mcp::servers(&self.deps.mcp_servers, params);
+            self.start(builder, mapper, &servers)?;
         }
         Ok(json!({}))
     }
 
-    fn start(&mut self, builder: SessionBuilder, mapper: Mapper) -> Result<String, RpcError> {
+    /// Start `builder` with the built-in tools and the tools of `servers`,
+    /// which run in the session's cwd and stop with the session.
+    fn start(
+        &mut self,
+        builder: SessionBuilder,
+        mapper: Mapper,
+        servers: &BTreeMap<String, ServerConfig>,
+    ) -> Result<String, RpcError> {
         let id = builder.id().to_string();
         let model = LlmModel::new(Arc::clone(&self.deps.provider), &self.deps.model);
+        let cwd = builder.session_data().cwd().clone();
+        let (mcp_tools, mcp_policy) = self
+            .rt
+            .block_on(McpServers::start(servers, &cwd))
+            .into_parts();
+        let mut tools = tools();
+        tools.extend(mcp_tools);
         let (handle, events) = builder
             .start(
                 model,
                 self.rt.clone(),
-                tools(),
-                Arc::new(auger_policy::default_policy()),
+                tools,
+                Arc::new(Chain(mcp_policy, auger_policy::default_policy())),
             )
             .map_err(|error| RpcError::internal(error.to_string()))?;
         let tx = self.tx.clone();

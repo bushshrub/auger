@@ -3,12 +3,14 @@
 //! and stdout.
 
 mod jsonrpc;
+mod mcp;
 mod server;
 mod session;
 mod storage;
 mod updates;
 
 use provider::LlmProvider;
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,6 +25,8 @@ pub struct Deps {
     pub sessions_dir: Option<PathBuf>,
     /// System prompt. Each session appends its working directory.
     pub system_prompt: String,
+    /// MCP servers every session gets, besides those the client passes.
+    pub mcp_servers: BTreeMap<String, auger_mcp::ServerConfig>,
 }
 
 /// Serve ACP on `input` and `output` until the input ends and every running

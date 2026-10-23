@@ -7,6 +7,7 @@ edition = "2024"
 agent-server = { version = "0.1.0", path = "../agent-server" }
 auger-core = { version = "0.1.0", path = "../auger-core" }
 auger-driver = { version = "0.1.0", path = "../auger-driver" }
+auger-mcp = { version = "0.1.0", path = "../auger-mcp" }
 auger-policy = { version = "0.1.0", path = "../auger-policy" }
 auger-toolengine = { version = "0.1.0", path = "../auger-toolengine" }
 builtin-tools = { version = "0.1.0", path = "../builtin-tools" }

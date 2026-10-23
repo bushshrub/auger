@@ -99,6 +99,7 @@ pub struct Defaults {
     pub model: String,
     pub sessions_dir: Option<PathBuf>,
     pub system_prompt: String,
+    pub mcp_servers: BTreeMap<String, auger_mcp::ServerConfig>,
 }
 
 /// The configured provider and defaults, read from the same config as the server.
@@ -109,6 +110,7 @@ pub fn defaults() -> Result<Defaults, String> {
         model: config.model(),
         sessions_dir: trace_store::sessions_dir(),
         system_prompt: SYSTEM_PROMPT.to_string(),
+        mcp_servers: config.mcp.servers.clone(),
     })
 }
 

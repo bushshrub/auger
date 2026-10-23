@@ -20,6 +20,7 @@ fn main() -> ExitCode {
         model: defaults.model,
         sessions_dir: defaults.sessions_dir,
         system_prompt: defaults.system_prompt,
+        mcp_servers: defaults.mcp_servers,
     };
     match auger_acp::run(io::stdin(), io::stdout(), deps) {
         Ok(()) => ExitCode::SUCCESS,

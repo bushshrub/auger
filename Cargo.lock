@@ -169,6 +169,7 @@ dependencies = [
  "agent-server",
  "auger-core",
  "auger-driver",
+ "auger-mcp",
  "auger-policy",
  "auger-toolengine",
  "builtin-tools",
