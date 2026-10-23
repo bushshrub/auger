@@ -50,6 +50,9 @@ enum Rule {
 
 const FIND_BANNED: &[&str] = &[
     "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fls", "-fprint", "-fprint0", "-fprintf",
+    // Following symlinks can lead out of the workspace, and xargs trusts
+    // find's output to stay inside it.
+    "-L", "-follow",
 ];
 const RG_BANNED: &[&str] = &["--pre", "--pre-glob", "--hostname-bin"];
 const SORT_BANNED: &[&str] = &["-o", "--output", "--compress-program"];
@@ -88,7 +91,10 @@ fn read_only(commands: &[Command], cwd: &Path, workspace: &Path) -> bool {
             .redirects
             .iter()
             .all(|r| redirect_ok(r, &cwd, workspace))
-            && command_ok(&command.argv, &cwd, workspace);
+            && match command.argv[0].text.as_str() {
+                "xargs" => xargs_ok(commands, i, &cwd, workspace),
+                _ => command_ok(&command.argv, &cwd, workspace),
+            };
         if !ok {
             return false;
         }
@@ -114,6 +120,26 @@ fn leading_cd(commands: &[Command], i: usize, cwd: &Path, workspace: &Path) -> O
     }
     let target = resolve(cwd, Path::new(&dir.text))?;
     inside_workspace(workspace, cwd, &target).then_some(target)
+}
+
+/// `find ... | xargs <read-only program>`: the names xargs appends come from
+/// `find`, whose roots were checked, so they stay inside the workspace. Only
+/// programs that just read their path arguments may run this way.
+fn xargs_ok(commands: &[Command], i: usize, cwd: &Path, workspace: &Path) -> bool {
+    let command = &commands[i];
+    let fed_by_find = i > 0
+        && command.joint == Some(Joint::Pipe)
+        && commands[i - 1].argv[0].text == "find";
+    let inner = command.argv[1..]
+        .iter()
+        .position(|a| !matches!(a.text.as_str(), "-0" | "-r" | "--null" | "--no-run-if-empty"))
+        .map(|start| &command.argv[1 + start..]);
+    match inner {
+        Some(inner) if fed_by_find => {
+            matches!(rule(&inner[0].text), Some(Rule::Paths)) && command_ok(inner, cwd, workspace)
+        }
+        _ => false,
+    }
 }
 
 fn redirect_ok(redirect: &Redirect, cwd: &Path, workspace: &Path) -> bool {
@@ -237,6 +263,7 @@ mod tests {
             "ls -la src >/dev/null",
             "git branch -a && git shortlog -sn | head",
             r#"cd $WS && for f in src/a.rs src/b.rs; do echo "=== $f ==="; cat "$f"; done"#,
+            r#"cd $WS && for d in src; do echo "=== $d ==="; find $d -name '*.rs' 2>/dev/null | xargs wc -l | sort -n | tail -30; done"#,
             "cd $WS && sed -n 110,180p src/a.rs && echo '=== x ===' && head -70 src/b.rs",
         ] {
             assert!(allowed(cmd), "denied: {cmd}");
@@ -268,6 +295,10 @@ mod tests {
             "cd src; ls",
             "ls | sh",
             "xargs cat",
+            "echo /etc/hosts | xargs cat",
+            "find . -name x | xargs rm",
+            "find -L . -name x | xargs cat",
+            "find . -name x | xargs sh -c id",
             "sed -i s/a/b/ src/a.rs",
             "sed -n 1w/tmp/x src/a.rs",
             "sed -n 1p /etc/hosts",
