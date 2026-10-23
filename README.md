@@ -2,6 +2,37 @@
 
 A minimal agent harness designed in Rust.
 
+> **Note: this is the `prototype` branch.** It is heavily AI assisted and
+> unstable. Handwritten work lives on `master`.
+
+## Quick start
+
+1. Create `~/.config/auger/config.toml` (or `$XDG_CONFIG_HOME/auger/config.toml`):
+
+```toml
+model = "your-model-name"
+
+[provider]
+# anthropic, openai-chat-completions or openai-responses
+type = "openai-chat-completions"
+base_url = "https://your-provider.example/v1/"
+# ${VAR} is expanded from the environment
+api_key = "${MY_API_KEY}"
+```
+
+2. Run the TUI, which starts its own server in-process:
+
+```bash
+cargo run -p auger-tui
+```
+
+Use `--server <url>` to attach to an already running `agent-server`
+instead. Env vars (`MODEL`, `PROVIDER_TYPE`, `PROVIDER_BASE_URL`,
+`PROVIDER_API_KEY`) override the file for a standalone server.
+
+Tool calls that only read inside the workspace run without asking; anything
+else shows an approval prompt.
+
 Design goals:
 - Artisanal code
   - At the current stage only the core and provider abstraction is artisanal (handwritten)
