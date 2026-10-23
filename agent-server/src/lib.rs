@@ -91,6 +91,25 @@ pub fn listen_addr() -> Result<String, String> {
     Ok(config::Config::load()?.listen_addr())
 }
 
+/// What an embedder needs to run sessions the way the server does.
+pub struct Defaults {
+    pub provider: Arc<dyn LlmProvider>,
+    pub model: String,
+    pub sessions_dir: Option<PathBuf>,
+    pub system_prompt: String,
+}
+
+/// The configured provider and defaults, read from the same config as the server.
+pub fn defaults() -> Result<Defaults, String> {
+    let config = config::Config::load()?;
+    Ok(Defaults {
+        provider: provider_config::from_config(&config),
+        model: config.model(),
+        sessions_dir: trace_store::sessions_dir(),
+        system_prompt: SYSTEM_PROMPT.to_string(),
+    })
+}
+
 /// Serve the agent API on `listener` until the server fails.
 pub async fn serve(listener: TcpListener) -> Result<(), String> {
     let config = config::Config::load()?;
