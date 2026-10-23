@@ -1,0 +1,14 @@
+[package]
+name = "auger-webui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+agent-server = { version = "0.1.0", path = "../agent-server" }
+axum = "0.8.9"
+tokio = { workspace = true, features = ["full"] }
+tower-http = { version = "0.7.1", features = ["fs"] }
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+tower = { version = "0.5.3", features = ["util"] }

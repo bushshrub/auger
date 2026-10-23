@@ -30,6 +30,16 @@ Use `--server <url>` to attach to an already running `agent-server`
 instead. Env vars (`MODEL`, `PROVIDER_TYPE`, `PROVIDER_BASE_URL`,
 `PROVIDER_API_KEY`) override the file for a standalone server.
 
+3. Run the webui with its own agent server on one address (opens the browser;
+pass `--no-open` to skip it). It builds `webui/` with pnpm when needed:
+
+```bash
+cargo run -p auger-webui
+```
+
+Overrides: `AUGER_WEBUI_ADDR` (default `127.0.0.1:3080`), `AUGER_WEBUI_DIR`
+(a prebuilt directory, used as-is).
+
 Tool calls that only read inside the workspace run without asking; anything
 else shows an approval prompt.
 
