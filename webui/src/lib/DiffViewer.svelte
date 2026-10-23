@@ -26,7 +26,7 @@
 	 * Compute unified diff hunks from two strings using the `diff` package.
 	 * DiffParser.parse() is called per element and expects a complete file diff
 	 * starting with --- / +++ headers, so we pass the whole diff as one string
-	 * (dropping only the two-line "Index: …\n===…" preamble).
+	 * (dropping only the two-line "Index: ...\n===..." preamble).
 	 * @param {string} oldStr
 	 * @param {string} newStr
 	 * @param {string} name
@@ -35,8 +35,8 @@
 	function computeHunks(oldStr, newStr, name) {
 		if (oldStr === newStr) return [];
 		const patch = createPatch(name, oldStr, newStr, '', '', { context: 3 });
-		// createPatch emits: "Index: …\n===…\n--- …\n+++ …\n<hunks>"
-		// Drop lines 0-1 ("Index:" and "===…"); keep "--- …" onward as one string.
+		// createPatch emits: "Index: ...\n===...\n--- ...\n+++ ...\n<hunks>"
+		// Drop lines 0-1 ("Index:" and "===..."); keep "--- ..." onward as one string.
 		const body = patch.split('\n').slice(2).join('\n');
 		return [body];
 	}

@@ -1,15 +1,16 @@
 <script>
-	import { CornerDownLeft, LoaderCircle, Square } from '@lucide/svelte';
+	import { ArrowUp, Square } from '@lucide/svelte';
 
 	/**
 	 * @type {{
 	 *   busy: boolean,
 	 *   disabled?: boolean,
+	 *   model?: string,
 	 *   onSend: (content: string) => Promise<void>,
 	 *   onInterrupt: () => void
 	 * }}
 	 */
-	let { busy, disabled = false, onSend, onInterrupt } = $props();
+	let { busy, disabled = false, model = '', onSend, onInterrupt } = $props();
 
 	let value = $state('');
 	let sending = $state(false);
@@ -40,47 +41,45 @@
 	}
 </script>
 
-<div class="rounded-lg border border-border bg-card focus-within:border-primary/50">
-	<div class="flex items-end gap-2 px-3 py-2">
-		<span class="pb-2 font-mono text-sm font-bold text-primary select-none" aria-hidden="true">
-			&gt;
-		</span>
+<div class="flex flex-col gap-1.5">
+	<div
+		class="flex items-end gap-2 rounded-2xl border border-border bg-card px-3 py-2 shadow-sm focus-within:border-foreground/25"
+	>
 		<textarea
 			bind:this={textarea}
 			bind:value
 			{onkeydown}
-			rows="2"
-			placeholder={busy ? 'Agent is working…' : 'Give the agent a coding task…'}
+			rows="1"
+			placeholder="Type / for commands"
 			{disabled}
 			aria-label="Message the agent"
-			class="max-h-48 min-h-12 flex-1 resize-none bg-transparent py-2 font-mono text-sm text-foreground outline-none placeholder:text-muted-foreground/60 disabled:opacity-50 auger-scroll"
+			class="max-h-48 min-h-7 flex-1 resize-none bg-transparent py-1.5 text-[0.9375rem] outline-none placeholder:text-muted-foreground disabled:opacity-50 [field-sizing:content] auger-scroll"
 		></textarea>
 		{#if busy}
 			<button
 				type="button"
 				onclick={onInterrupt}
-				class="mb-1 flex items-center gap-1.5 rounded-md border border-destructive/50 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
+				aria-label="Stop"
+				title="Stop"
+				class="mb-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-foreground text-background hover:opacity-80"
 			>
-				<Square class="size-3.5" aria-hidden="true" />
-				Stop
+				<Square class="size-3.5 fill-current" aria-hidden="true" />
+			</button>
+		{:else}
+			<button
+				type="button"
+				onclick={submit}
+				disabled={!value.trim() || sending || disabled}
+				aria-label="Send"
+				title="Send"
+				class="mb-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-30"
+			>
+				<ArrowUp class="size-4" aria-hidden="true" />
 			</button>
 		{/if}
-		<button
-			type="button"
-			onclick={submit}
-			disabled={!value.trim() || busy || sending || disabled}
-			class="mb-1 flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
-		>
-			{#if busy || sending}
-				<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />
-			{:else}
-				<CornerDownLeft class="size-3.5" aria-hidden="true" />
-			{/if}
-			Send
-		</button>
 	</div>
-	<div class="flex items-center justify-between border-t border-border px-4 py-1.5">
-		<p class="font-mono text-[10px] text-muted-foreground">enter to send · shift+enter for newline</p>
-		<p class="font-mono text-[10px] text-muted-foreground">shell / edit / write require approval</p>
-	</div>
+	<p class="text-center text-xs text-muted-foreground">
+		{model || 'server default model'}
+		<span class="hidden sm:inline">| Enter to send, Shift+Enter for a new line</span>
+	</p>
 </div>

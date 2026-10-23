@@ -1,7 +1,7 @@
 // Markdown + LaTeX rendering for agent output.
 //
 // markdown-it runs with `html: false`, so any raw HTML in the (untrusted) model
-// output is escaped rather than executed — the rendered string is safe to drop
+// output is escaped rather than executed - the rendered string is safe to drop
 // in with {@html}. KaTeX math is produced by our own renderer, not the model.
 
 import MarkdownIt from 'markdown-it';
@@ -19,8 +19,20 @@ const md = new MarkdownIt({
 
 md.use(plugin, { throwOnError: false, errorColor: '#ff6b6b' });
 
+// Fenced blocks get a language label and a copy button; Markdown.svelte wires the button.
 /**
- * Render markdown (with $…$, $$…$$, \(…\), \[…\] math) to safe HTML.
+ * @param {import('markdown-it/lib/token.mjs').default[]} tokens
+ * @param {number} idx
+ */
+md.renderer.rules.fence = (tokens, idx) => {
+	const tok = tokens[idx];
+	const lang = md.utils.escapeHtml(tok.info.trim().split(/\s+/)[0] ?? '');
+	const code = md.utils.escapeHtml(tok.content);
+	return `<div class="auger-code"><div class="auger-code-head"><span>${lang}</span><button type="button" class="auger-copy" data-copy>Copy</button></div><pre><code>${code}</code></pre></div>\n`;
+};
+
+/**
+ * Render markdown (with $...$, $$...$$, \(...\), \[...\] math) to safe HTML.
  * @param {string | undefined} src
  * @returns {string}
  */

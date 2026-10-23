@@ -1,152 +1,115 @@
 <script>
-	import { Archive, LoaderCircle, Plus, SquareTerminal } from '@lucide/svelte';
+	import { PanelLeft, Plus, Search } from '@lucide/svelte';
+	import { sessionMeta, sessionTitle } from '$lib/session-meta.svelte.js';
+	import SidebarRow from './SidebarRow.svelte';
+
+	const LIMIT = 20;
 
 	/**
 	 * @type {{
 	 *   sessions: import('$lib/api.js').SessionInfo[],
 	 *   activeId: string | null,
 	 *   creating: boolean,
+	 *   open: boolean,
 	 *   statuses: Record<string, import('$lib/status.svelte.js').SessionStatus>,
 	 *   onSelect: (id: string) => void,
-	 *   onCreate: (model: string) => void,
-	 *   onArchive: (id: string) => void
+	 *   onCreate: () => void
 	 * }}
 	 */
-	let { sessions, activeId, creating, statuses, onSelect, onCreate, onArchive } = $props();
+	let { sessions, activeId, creating, open = $bindable(true), statuses, onSelect, onCreate } = $props();
 
-	const activeSessions = $derived(sessions.filter((s) => !s.archived));
-	const archivedSessions = $derived(sessions.filter((s) => s.archived));
+	let searching = $state(false);
+	let query = $state('');
+	let showAll = $state(false);
 
-	// Empty means "let the server pick its default model".
-	let model = $state('');
+	const filtered = $derived.by(() => {
+		const q = query.trim().toLowerCase();
+		return q ? sessions.filter((s) => sessionTitle(s.session_id).toLowerCase().includes(q)) : sessions;
+	});
+	const searchActive = $derived(query.trim().length > 0);
+	const visible = $derived(showAll || searchActive ? filtered : filtered.slice(0, LIMIT));
 
-	/** @param {string} createdAt RFC3339 timestamp */
-	function formatTime(createdAt) {
-		return new Date(createdAt).toLocaleTimeString([], {
-			hour: '2-digit',
-			minute: '2-digit'
-		});
+	/** @param {import('$lib/api.js').SessionInfo} s */
+	function statusOf(s) {
+		if (s.archived) return 'archived';
+		const meta = sessionMeta[s.session_id];
+		if (meta?.approval) return 'approval';
+		if (meta?.busy || statuses[s.session_id] === 'working') return 'running';
+		return 'idle';
 	}
 </script>
 
-<aside class="flex w-64 shrink-0 flex-col border-r border-border bg-sidebar max-md:hidden">
-	<div class="flex items-center gap-2 border-b border-border px-4 py-3">
-		<SquareTerminal class="size-4 text-primary" aria-hidden="true" />
-		<h1 class="font-mono text-sm font-bold tracking-tight text-foreground">auger</h1>
-		<span class="ml-auto rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-			webui
-		</span>
-	</div>
-
-	<div class="flex flex-col gap-2 border-b border-border p-3">
-		<label
-			for="model-input"
-			class="font-mono text-[10px] tracking-wider text-muted-foreground uppercase"
-		>
-			model
-		</label>
-		<input
-			id="model-input"
-			bind:value={model}
-			placeholder="server default"
-			class="rounded-md border border-border bg-card px-2 py-1.5 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-primary/50"
-		/>
+<aside
+	class={`flex min-h-0 shrink-0 flex-col bg-sidebar text-sidebar-foreground max-md:hidden ${open ? 'w-64 border-r border-border' : 'w-0 overflow-hidden'}`}
+	aria-label="Sessions"
+>
+	<div class="flex h-12 shrink-0 items-center justify-between px-3">
+		<span class="px-1 text-sm font-semibold tracking-tight">auger</span>
 		<button
 			type="button"
-			disabled={creating}
-			onclick={() => onCreate(model.trim())}
-			class="flex items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+			onclick={() => (open = false)}
+			aria-label="Collapse sidebar"
+			class="rounded-md p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
 		>
-			{#if creating}
-				<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />
-			{:else}
-				<Plus class="size-3.5" aria-hidden="true" />
-			{/if}
-			New session
+			<PanelLeft class="size-4" aria-hidden="true" />
 		</button>
 	</div>
 
-	<nav aria-label="Sessions" class="min-h-0 flex-1 overflow-y-auto p-2 auger-scroll">
-		{#if sessions.length === 0}
-			<p class="px-2 py-3 font-mono text-xs text-muted-foreground">no sessions yet</p>
-		{:else}
-			{#if activeSessions.length > 0}
-				<ul class="flex flex-col gap-1">
-					{#each activeSessions as s (s.session_id)}
-						<li class="group relative">
-							<button
-								type="button"
-								onclick={() => onSelect(s.session_id)}
-								aria-current={s.session_id === activeId ? 'true' : undefined}
-								class={`flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left hover:bg-sidebar-accent ${s.session_id === activeId ? 'bg-sidebar-accent' : ''}`}
-							>
-								<span class="flex items-center gap-2">
-									<span
-										class={`size-2 shrink-0 rounded-full ${statuses[s.session_id] === 'working' ? 'bg-primary animate-pulse' : 'bg-success'}`}
-										title={statuses[s.session_id] === 'working' ? 'working' : 'idle'}
-										aria-hidden="true"
-									></span>
-									<span
-										class={`font-mono text-xs ${s.session_id === activeId ? 'text-primary' : 'text-foreground'}`}
-									>
-										{s.session_id.slice(0, 8)}
-									</span>
-									<span class="ml-auto font-mono text-[9px] tracking-wider text-muted-foreground uppercase">
-										{statuses[s.session_id] === 'working' ? 'working' : 'idle'}
-									</span>
-								</span>
-								<span class="font-mono text-[10px] text-muted-foreground">
-									{s.model} · {formatTime(s.created_at)}
-								</span>
-							</button>
-							<button
-								type="button"
-								onclick={() => onArchive(s.session_id)}
-								aria-label={`Archive session ${s.session_id.slice(0, 8)}`}
-								class="absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100"
-							>
-								<Archive class="size-3.5" aria-hidden="true" />
-							</button>
-						</li>
-					{/each}
-				</ul>
-			{/if}
+	<div class="flex flex-col gap-0.5 px-2">
+		<button
+			type="button"
+			onclick={onCreate}
+			disabled={creating}
+			class="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm hover:bg-sidebar-accent disabled:opacity-50"
+		>
+			<Plus class="size-4" aria-hidden="true" />
+			New
+		</button>
+		<button
+			type="button"
+			onclick={() => (searching = !searching)}
+			aria-pressed={searching}
+			class="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm hover:bg-sidebar-accent"
+		>
+			<Search class="size-4" aria-hidden="true" />
+			Search
+		</button>
+		{#if searching}
+			<input
+				bind:value={query}
+				placeholder="Filter sessions"
+				aria-label="Filter sessions by title"
+				class="mx-0.5 mt-1 rounded-md border border-border bg-background px-2 py-1 text-xs outline-none placeholder:text-muted-foreground focus:border-foreground/30"
+			/>
+		{/if}
+	</div>
 
-			{#if archivedSessions.length > 0}
-				<p class="px-2 pt-3 pb-1 font-mono text-[10px] tracking-wider text-muted-foreground uppercase">
-					archived
-				</p>
-				<ul class="flex flex-col gap-1">
-					{#each archivedSessions as s (s.session_id)}
-						<li>
-							<button
-								type="button"
-								onclick={() => onSelect(s.session_id)}
-								aria-current={s.session_id === activeId ? 'true' : undefined}
-								class={`flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left opacity-60 hover:bg-sidebar-accent hover:opacity-100 ${s.session_id === activeId ? 'bg-sidebar-accent opacity-100' : ''}`}
-							>
-								<span class="font-mono text-xs text-muted-foreground">
-									{s.session_id.slice(0, 8)}
-								</span>
-								<span class="font-mono text-[10px] text-muted-foreground">
-									{s.model} · {formatTime(s.created_at)}
-								</span>
-							</button>
-						</li>
-					{/each}
-				</ul>
-			{/if}
+	<p class="px-4 pt-4 pb-1 text-xs font-medium text-muted-foreground">Recents</p>
+	<nav class="min-h-0 flex-1 overflow-y-auto px-2 pb-3 auger-scroll">
+		{#if sessions.length === 0}
+			<p class="px-2.5 py-2 text-xs text-muted-foreground">No sessions yet</p>
+		{:else if visible.length === 0}
+			<p class="px-2.5 py-2 text-xs text-muted-foreground">No matches</p>
+		{:else}
+			<ul class="flex flex-col gap-0.5">
+				{#each visible as s (s.session_id)}
+					<SidebarRow
+						title={sessionTitle(s.session_id)}
+						active={s.session_id === activeId}
+						status={statusOf(s)}
+						onSelect={() => onSelect(s.session_id)}
+					/>
+				{/each}
+			</ul>
+		{/if}
+		{#if !searchActive && filtered.length > LIMIT}
+			<button
+				type="button"
+				onclick={() => (showAll = !showAll)}
+				class="mt-1 px-2.5 py-1.5 text-xs text-muted-foreground hover:text-foreground"
+			>
+				{showAll ? 'Show less' : 'Show more'}
+			</button>
 		{/if}
 	</nav>
-
-	<footer class="border-t border-border px-4 py-2.5">
-		<a
-			href="https://github.com/bushshrub/auger"
-			target="_blank"
-			rel="noreferrer"
-			class="font-mono text-[10px] text-muted-foreground hover:text-foreground"
-		>
-			bushshrub/auger · AGPL-3.0
-		</a>
-	</footer>
 </aside>

@@ -12,7 +12,7 @@
 	const noOutput = $derived(!!item.empty && !item.streaming && !hasReasoning && !hasContent);
 </script>
 
-<div class="flex flex-col gap-2 pl-7">
+<div class="flex flex-col gap-3">
 	{#if hasReasoning}
 		<ReasoningToggle text={item.reasoning} />
 	{/if}
@@ -21,13 +21,13 @@
 			{#if hasContent}
 				<Markdown text={item.content} streaming={item.streaming} />
 			{:else}
-				<span class="font-mono text-xs text-muted-foreground auger-caret">thinking</span>
+				<span class="text-sm text-muted-foreground auger-caret">Thinking</span>
 			{/if}
 		</div>
 	{/if}
 	{#if noOutput}
-		<span class="font-mono text-xs italic text-muted-foreground">
-			model returned no output — the turn ended without any response
+		<span class="text-sm italic text-muted-foreground">
+			Model returned no output. The turn ended without a response.
 		</span>
 	{/if}
 </div>

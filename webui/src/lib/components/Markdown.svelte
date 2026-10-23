@@ -41,7 +41,21 @@
 	});
 
 	$effect(() => () => cancelScheduled?.());
+
+	/** @param {MouseEvent} e */
+	function onclick(e) {
+		const btn = /** @type {HTMLElement} */ (e.target).closest?.('[data-copy]');
+		if (!btn) return;
+		const code = btn.closest('.auger-code')?.querySelector('code')?.textContent ?? '';
+		navigator.clipboard?.writeText(code).then(
+			() => {
+				btn.textContent = 'Copied';
+				setTimeout(() => (btn.textContent = 'Copy'), 1500);
+			},
+			() => {}
+		);
+	}
 </script>
 
 <!-- renderMarkdown escapes raw HTML (markdown-it html:false), safe for {@html} -->
-<div class="auger-md">{@html html}</div>
+<div class="auger-md" {onclick} role="presentation">{@html html}</div>
