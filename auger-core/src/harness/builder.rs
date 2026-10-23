@@ -16,6 +16,7 @@ use auger_toolengine::Tool;
 use chrono::Utc;
 use provider::LlmModel;
 use std::env::current_dir;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use tokio::runtime::Handle;
@@ -68,6 +69,20 @@ impl SessionBuilder {
             Origin::New { data, .. } => data,
             Origin::Restored(restored) => &restored.header.data,
         }
+    }
+
+    /// Work in `cwd` instead of the process's working directory. Only a new
+    /// session takes it; a restored session keeps its own.
+    pub fn cwd(mut self, cwd: PathBuf) -> Self {
+        if let Origin::New { data, .. } = &mut self.origin {
+            *data = SessionData::new(
+                data.session_id(),
+                data.created_at(),
+                cwd,
+                data.model_info().clone(),
+            );
+        }
+        self
     }
 
     /// Where records go. A restored session appends to the records it was
