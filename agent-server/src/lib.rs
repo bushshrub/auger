@@ -31,6 +31,7 @@ use futures::StreamExt;
 use provider::LlmModel;
 use provider::LlmProvider;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -73,6 +74,7 @@ struct AppState {
     activation_lock: Arc<TokioMutex<()>>,
     default_model: String,
     sessions_dir: Option<PathBuf>,
+    mcp_servers: Arc<BTreeMap<String, auger_mcp::ServerConfig>>,
 }
 
 /// A session stored on disk, started again on its first input.
@@ -118,6 +120,7 @@ pub async fn serve(listener: TcpListener) -> Result<(), String> {
         activation_lock: Arc::new(TokioMutex::new(())),
         default_model: config.model(),
         sessions_dir,
+        mcp_servers: Arc::new(config.mcp.servers.clone()),
     };
 
     if let Ok(addr) = listener.local_addr() {
@@ -271,12 +274,18 @@ async fn start_session(
     events: Option<tokio::sync::broadcast::Sender<SessionEvent>>,
     records: Vec<Record>,
 ) -> Result<(Uuid, Uuid), RestoreError> {
-    let tools: Vec<Box<dyn auger_toolengine::Tool>> = vec![
+    let cwd = builder.session_data().cwd().clone();
+    let (mcp_tools, mcp_policy) = auger_mcp::McpServers::start(&state.mcp_servers, &cwd)
+        .await
+        .into_parts();
+    let mut tools: Vec<Box<dyn auger_toolengine::Tool>> = vec![
         Box::new(builtin_tools::ReadFile),
         Box::new(builtin_tools::WriteFile),
         Box::new(builtin_tools::EditFile),
         Box::new(builtin_tools::Shell),
     ];
+    tools.extend(mcp_tools);
+    let policy = auger_toolengine::Chain(mcp_policy, auger_policy::default_policy());
     let session_id = builder.id();
     let log = Arc::new(std::sync::Mutex::new(records));
     let sink = trace_store::ServerSink::open(state.sessions_dir.as_deref(), session_id, log.clone());
@@ -284,7 +293,7 @@ async fn start_session(
         LlmModel::new(state.provider.clone(), &model),
         tokio::runtime::Handle::current(),
         tools,
-        std::sync::Arc::new(auger_policy::default_policy()),
+        std::sync::Arc::new(policy),
     )?;
 
     let event_tx = events.unwrap_or_else(|| tokio::sync::broadcast::channel(256).0);

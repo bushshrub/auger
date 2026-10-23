@@ -44,6 +44,9 @@ impl BlockTracker {
             SessionEvent::ToolResultsWithheld => {
                 vec![json!({ "type": "tool_results_withheld" })]
             }
+            SessionEvent::ToolsMissing { names } => {
+                vec![json!({ "type": "tools_missing", "names": names })]
+            }
             SessionEvent::Closed => vec![json!({ "type": "closed" })],
         }
     }

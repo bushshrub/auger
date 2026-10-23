@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:3000";
@@ -12,9 +13,16 @@ pub(crate) struct Config {
     pub(crate) model: Option<String>,
     pub(crate) user_agent: Option<String>,
     pub(crate) provider: ProviderConfig,
+    pub(crate) mcp: McpConfig,
     /// Frontend settings. Read by the frontends, ignored by the server.
     #[allow(dead_code)]
     pub(crate) tui: Option<toml::Table>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct McpConfig {
+    pub(crate) servers: BTreeMap<String, auger_mcp::ServerConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -40,6 +48,11 @@ impl Config {
             .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
         if let Some(key) = &config.provider.api_key {
             config.provider.api_key = Some(expand_env(key)?);
+        }
+        for server in config.mcp.servers.values_mut() {
+            for value in server.env.values_mut() {
+                *value = expand_env(value)?;
+            }
         }
         Ok(config)
     }
