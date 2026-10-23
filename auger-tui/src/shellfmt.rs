@@ -1,17 +1,23 @@
 //! Display formatting for shell commands: one statement per line, `&&`/`||`
-//! chains broken before the operator, and loop and `if` bodies indented. A
-//! `;` that ends a line is implied by the line break and hidden; the words
-//! are kept verbatim.
+//! steps on their own lines indented under the first, and loop and `if`
+//! bodies indented under their keyword. A `;` that ends a line is implied by
+//! the line break and hidden; the words are kept verbatim.
 
-const INDENT: &str = "  ";
+/// Indent of a loop or `if` body past its keyword.
+const BODY: usize = 2;
+/// Indent of the `&&`/`||` steps after the first.
+const STEP_INDENT: &str = "    ";
 
 /// Format `src` into display lines.
 pub fn format(src: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let mut depth = 0usize;
+    // Each open `for`/`while`/`if`: its keyword's column and the column of
+    // the statement it belongs to.
+    let mut open: Vec<(usize, usize)> = Vec::new();
     for (statement, terminator) in statements(src) {
         let mut rest = statement.as_str();
         loop {
+            let body = open.last().map_or(0, |(col, _)| col + BODY);
             let (word, tail) = first_word(rest);
             match word {
                 // `for ...; do` and `if ...; then` read best on one line.
@@ -19,19 +25,20 @@ pub fn format(src: &str) -> Vec<String> {
                     if let Some(last) = out.last_mut() {
                         last.push_str("; ");
                         last.push_str(word);
+                        open.push(columns(last));
                     }
-                    depth += 1;
                 }
                 "else" => {
-                    out.push(format!("{}else", INDENT.repeat(depth.saturating_sub(1))));
+                    let col = open.last().map_or(0, |(col, _)| *col);
+                    out.push(format!("{}else", " ".repeat(col)));
                 }
                 "elif" | "done" | "fi" | "esac" => {
-                    depth = depth.saturating_sub(1);
-                    emit(&mut out, depth, rest, terminator);
+                    let (col, base) = open.pop().unwrap_or((0, 0));
+                    emit(&mut out, col, base, rest, terminator);
                     break;
                 }
                 _ => {
-                    emit(&mut out, depth, rest, terminator);
+                    emit(&mut out, body, body, rest, terminator);
                     break;
                 }
             }
@@ -47,10 +54,28 @@ pub fn format(src: &str) -> Vec<String> {
     out
 }
 
-fn emit(out: &mut Vec<String>, depth: usize, statement: &str, terminator: &str) {
-    let indent = INDENT.repeat(depth);
-    for line in split_ops(statement).iter().flat_map(|step| step.lines()) {
-        out.push(format!("{indent}{}", line.trim_end()));
+/// For an opener line: where its keyword starts (past any leading `&&` or
+/// `||`), and the column of the statement the line belongs to.
+fn columns(line: &str) -> (usize, usize) {
+    let indent = line.len() - line.trim_start().len();
+    let trimmed = line.trim_start();
+    match trimmed.strip_prefix("&& ").or_else(|| trimmed.strip_prefix("|| ")) {
+        Some(_) => (indent + 3, indent.saturating_sub(STEP_INDENT.len())),
+        None => (indent, indent),
+    }
+}
+
+/// Push `statement`: its first step at `column`, later `&&`/`||` steps
+/// indented from `base`.
+fn emit(out: &mut Vec<String>, column: usize, base: usize, statement: &str, terminator: &str) {
+    for (index, step) in split_ops(statement).into_iter().enumerate() {
+        let indent = match index {
+            0 => " ".repeat(column),
+            _ => " ".repeat(base) + STEP_INDENT,
+        };
+        for line in step.lines() {
+            out.push(format!("{indent}{}", line.trim_end()));
+        }
     }
     // `;;` ends a case arm and carries meaning; a plain `;` does not.
     if terminator == ";;" {
@@ -173,10 +198,18 @@ mod tests {
     }
 
     #[test]
-    fn breaks_chains_before_operators() {
+    fn loops_inside_a_step_indent_under_the_keyword() {
+        assert_eq!(
+            format("cd /a && for d in x; do echo $d; done && ls"),
+            ["cd /a", "    && for d in x; do", "         echo $d", "       done", "    && ls"]
+        );
+    }
+
+    #[test]
+    fn indents_chain_steps() {
         assert_eq!(
             format("cd /a && echo 'x && y' || (b && c) | head; ls"),
-            ["cd /a", "&& echo 'x && y'", "|| (b && c) | head", "ls"]
+            ["cd /a", "    && echo 'x && y'", "    || (b && c) | head", "ls"]
         );
     }
 }

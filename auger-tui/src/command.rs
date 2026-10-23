@@ -79,6 +79,7 @@ pub fn help_text() -> String {
     for (name, description) in COMMANDS {
         out.push_str(&format!("\n  {name:<16} {description}"));
     }
+    out.push_str("\n\nKeys:\n  ctrl+t           full transcript, nothing folded");
     out
 }
 

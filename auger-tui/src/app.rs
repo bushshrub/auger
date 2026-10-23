@@ -74,6 +74,12 @@ pub struct App {
     pub approval_selected: usize,
     /// First preview row shown in the approval panel.
     pub approval_scroll: usize,
+    /// The transcript pager is open.
+    pub pager_open: bool,
+    /// Pager rows scrolled up from the bottom.
+    pub pager_from_bottom: usize,
+    /// Largest useful `pager_from_bottom`, set when the pager draws.
+    pub pager_max: std::cell::Cell<usize>,
     /// Text typed into the focused "No, and tell auger" row.
     pub approval_note: String,
     /// A denial note to send as the next message once the batch is withheld.
@@ -122,6 +128,9 @@ impl App {
             pending_tools: vec![],
             approval_selected: 0,
             approval_scroll: 0,
+            pager_open: false,
+            pager_from_bottom: 0,
+            pager_max: std::cell::Cell::new(0),
             approval_note: String::new(),
             queued_note: None,
             submit_requested: false,
@@ -889,6 +898,12 @@ impl App {
         self.approval_scroll = self.approval_scroll.saturating_add_signed(delta);
     }
 
+    /// Scroll the pager by `delta` rows; positive scrolls up.
+    pub fn pager_scroll_by(&mut self, delta: isize) {
+        let max = self.pager_max.get();
+        self.pager_from_bottom = self.pager_from_bottom.saturating_add_signed(delta).min(max);
+    }
+
     /// The highlighted approval choice.
     pub fn approval_choice(&self) -> Option<Choice> {
         let choices = crate::approval::choices(self.pending_tools.len());
@@ -906,24 +921,13 @@ impl App {
         if !choice.approved() && !note.trim().is_empty() {
             self.queued_note = Some(note.trim().to_string());
         }
-        match choice.all() {
-            true => self.decide_all_tools(choice.approved()),
-            false => self
-                .decide_tool(choice.approved())
-                .map(|(sid, token, id)| (sid, token, vec![id])),
-        }
+        self.decide_tool(choice.approved())
+            .map(|(sid, token, id)| (sid, token, vec![id]))
     }
 
     pub fn decide_tool(&mut self, approved: bool) -> Option<(Uuid, String, String)> {
         let (session_id, write_token, mut ids) = self.decide_tools(approved, 1)?;
         Some((session_id, write_token, ids.remove(0)))
-    }
-
-    /// Decide every queued tool call at once. The server wants one response
-    /// per call, so this hands back the whole list to answer.
-    pub fn decide_all_tools(&mut self, approved: bool) -> Option<(Uuid, String, Vec<String>)> {
-        let count = self.pending_tools.len();
-        self.decide_tools(approved, count)
     }
 
     fn decide_tools(
@@ -1147,43 +1151,6 @@ mod tests {
             answered.push(id);
         }
         assert_eq!(answered, ["c1", "c2", "c3", "c4"]);
-        assert!(!app.has_pending_tool());
-    }
-
-    /// The batch keys have to be on screen, otherwise the only way out of a
-    /// multi-call prompt is invisible.
-    #[test]
-    fn a_batch_prompt_offers_the_bulk_keys() {
-        let mut app = App::new();
-        with_session(&mut app);
-        for id in ["c1", "c2"] {
-            app.handle_app_event(consent(id));
-        }
-
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal
-            .draw(|frame| crate::ui::render(frame, &mut app))
-            .unwrap();
-        let screen: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
-        assert!(screen.contains("approve all 2 pending calls (a)"), "screen was:\n{screen}");
-        assert!(screen.contains("No to all 2 pending calls (d)"));
-    }
-
-    #[test]
-    fn approving_all_answers_the_whole_batch() {
-        let mut app = App::new();
-        with_session(&mut app);
-        for id in ["c1", "c2"] {
-            app.handle_app_event(consent(id));
-        }
-        let (_, _, ids) = app.decide_all_tools(true).expect("a batch is pending");
-        assert_eq!(ids, ["c1", "c2"]);
         assert!(!app.has_pending_tool());
     }
 

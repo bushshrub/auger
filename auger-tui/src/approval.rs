@@ -21,9 +21,7 @@ pub const PAGE_ROWS: usize = 5;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Choice {
     Approve,
-    ApproveAll,
     Deny,
-    DenyAll,
 }
 
 impl Choice {
@@ -31,37 +29,29 @@ impl Choice {
     fn key(self) -> &'static str {
         match self {
             Choice::Approve => "y",
-            Choice::ApproveAll => "a",
             Choice::Deny => "esc",
-            Choice::DenyAll => "d",
         }
     }
 
     pub fn approved(self) -> bool {
-        matches!(self, Choice::Approve | Choice::ApproveAll)
+        matches!(self, Choice::Approve)
     }
 
-    pub fn all(self) -> bool {
-        matches!(self, Choice::ApproveAll | Choice::DenyAll)
-    }
-
-    fn label(self, queued: usize) -> String {
+    fn label(self) -> &'static str {
         match self {
-            Choice::Approve => "Yes, proceed".to_string(),
-            Choice::ApproveAll => format!("Yes, and approve all {queued} pending calls"),
-            Choice::Deny => "No, and tell auger what to do differently".to_string(),
-            Choice::DenyAll => format!("No to all {queued} pending calls"),
+            Choice::Approve => "Yes, proceed",
+            Choice::Deny => "No, and tell auger what to do differently",
         }
     }
 }
 
-/// Choices offered when `queued` calls wait for a decision. The bulk choices
-/// only appear for a batch.
+/// Choices offered when `queued` calls wait for a decision. Calls are
+/// decided one at a time, since a call can't be approved unseen; denying one
+/// skips the rest of its batch.
 pub fn choices(queued: usize) -> Vec<Choice> {
     match queued {
         0 => vec![],
-        1 => vec![Choice::Approve, Choice::Deny],
-        _ => vec![Choice::Approve, Choice::ApproveAll, Choice::Deny, Choice::DenyAll],
+        _ => vec![Choice::Approve, Choice::Deny],
     }
 }
 
@@ -81,7 +71,11 @@ pub fn lines(
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let dim = Style::default().add_modifier(Modifier::DIM);
 
-    let mut out = vec![Line::from(Span::styled(format!("  {}", question(name)), bold))];
+    let mut header = vec![Span::styled(format!("  {}", question(name)), bold)];
+    if queued > 1 {
+        header.push(Span::styled(format!("  ({} more queued)", queued - 1), dim));
+    }
+    let mut out = vec![Line::from(header)];
     out.push(Line::from(""));
     let preview = preview(name, args, width);
     let rows = height.saturating_sub(chrome_rows(queued)).max(1);
@@ -104,7 +98,7 @@ pub fn lines(
             continue;
         }
         let line = Line::from(vec![
-            Span::raw(format!("{marker}{}. {} (", i + 1, choice.label(queued))),
+            Span::raw(format!("{marker}{}. {} (", i + 1, choice.label())),
             Span::styled(choice.key(), bold),
             Span::raw(")"),
         ]);
@@ -147,16 +141,18 @@ fn question(name: &str) -> String {
 fn preview(name: &str, args: &str, width: usize) -> Vec<Line<'static>> {
     let parsed: serde_json::Value = serde_json::from_str(args).unwrap_or_default();
     let lines = match (name, parsed.get("command").and_then(|c| c.as_str())) {
-        ("shell", Some(_)) => crate::exec::command_rows(args, width.saturating_sub(4))
-            .into_iter()
-            .enumerate()
-            .map(|(i, spans)| {
-                let prompt = if i == 0 { "  $ " } else { "    " };
-                let mut row = vec![Span::styled(prompt, Style::default().fg(Color::Blue))];
-                row.extend(spans);
-                Line::from(row)
-            })
-            .collect(),
+        ("shell", Some(_)) => {
+            let (rows, numbered) = crate::cmdview::rows(args, width.saturating_sub(4));
+            rows.into_iter()
+                .enumerate()
+                .map(|(i, spans)| {
+                    let prompt = if i == 0 && !numbered { "  $ " } else { "  " };
+                    let mut row = vec![Span::styled(prompt, Style::default().fg(Color::Blue))];
+                    row.extend(spans);
+                    Line::from(row)
+                })
+                .collect()
+        }
         _ => match crate::diff::tool_view(name, args) {
             Some(view) => {
                 let mut lines = vec![Line::from(format!("  {}", crate::diff::summary(&view, None)))];

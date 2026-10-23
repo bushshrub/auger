@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 mod api;
 mod app;
 mod approval;
+mod cmdview;
 mod command;
 mod completion;
 mod config;
@@ -19,6 +20,7 @@ mod exec;
 mod explore;
 mod history;
 mod markdown;
+mod pager;
 mod shell;
 mod shellfmt;
 mod statusline;
@@ -131,12 +133,30 @@ async fn run(
     tx: &mpsc::Sender<TuiEvent>,
     server: &str,
 ) -> anyhow::Result<()> {
+    let mut pager: Option<pager::Pager> = None;
     loop {
-        ui::flush_finished(terminal, app)?;
-        if let Some(command) = app.shell_request.take() {
-            shell::run(terminal, &command, ui::VIEWPORT_HEIGHT)?;
+        // While the pager is open, scrollback waits: it would print into the
+        // alternate screen.
+        match (app.pager_open, pager.take()) {
+            (true, Some(mut open)) => {
+                open.draw(app)?;
+                pager = Some(open);
+            }
+            (true, None) => {
+                let mut open = pager::Pager::open()?;
+                open.draw(app)?;
+                pager = Some(open);
+            }
+            (false, Some(open)) => open.close(terminal)?,
+            (false, None) => {}
         }
-        terminal.draw(|f| ui::render(f, app))?;
+        if pager.is_none() {
+            ui::flush_finished(terminal, app)?;
+            if let Some(command) = app.shell_request.take() {
+                shell::run(terminal, &command, ui::VIEWPORT_HEIGHT)?;
+            }
+            terminal.draw(|f| ui::render(f, app))?;
+        }
 
         // Wait for the first event, then drain everything that arrived in the
         // same frame window before drawing again. This batches bursts of fast
@@ -167,6 +187,9 @@ async fn run(
             break;
         }
     }
+    if let Some(open) = pager {
+        open.close(terminal)?;
+    }
     Ok(())
 }
 
@@ -193,7 +216,19 @@ async fn handle_terminal_event(
     tx: &mpsc::Sender<TuiEvent>,
     server: &str,
 ) {
+    if app.pager_open {
+        handle_pager_event(ev, app);
+        return;
+    }
     match ev {
+        Event::Key(key)
+            if key.kind == KeyEventKind::Press
+                && key.code == KeyCode::Char('t')
+                && key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            app.pager_open = true;
+            app.pager_from_bottom = 0;
+        }
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             if app.picker.is_some() {
                 handle_picker_key(key, app, tx, server);
@@ -201,6 +236,35 @@ async fn handle_terminal_event(
                 handle_chat_key(key, app, tx, server).await;
             }
         }
+        _ => {}
+    }
+}
+
+/// Keys and the mouse wheel while the transcript pager is open.
+fn handle_pager_event(ev: Event, app: &mut App) {
+    const PAGE: isize = 20;
+    match ev {
+        Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.should_quit = true
+            }
+            KeyCode::Char('q') | KeyCode::Esc => app.pager_open = false,
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.pager_open = false
+            }
+            KeyCode::Up | KeyCode::Char('k') => app.pager_scroll_by(1),
+            KeyCode::Down | KeyCode::Char('j') => app.pager_scroll_by(-1),
+            KeyCode::PageUp | KeyCode::Char('b') => app.pager_scroll_by(PAGE),
+            KeyCode::PageDown | KeyCode::Char(' ') => app.pager_scroll_by(-PAGE),
+            KeyCode::Home | KeyCode::Char('g') => app.pager_scroll_by(isize::MAX),
+            KeyCode::End | KeyCode::Char('G') => app.pager_from_bottom = 0,
+            _ => {}
+        },
+        Event::Mouse(mouse) => match mouse.kind {
+            crossterm::event::MouseEventKind::ScrollUp => app.pager_scroll_by(3),
+            crossterm::event::MouseEventKind::ScrollDown => app.pager_scroll_by(-3),
+            _ => {}
+        },
         _ => {}
     }
 }
@@ -364,9 +428,7 @@ fn handle_approval_key(
         KeyCode::Down | KeyCode::Char('j') => return app.approval_next(),
         KeyCode::Enter => app.approval_choice(),
         KeyCode::Char('y') => Some(Choice::Approve),
-        KeyCode::Char('a') => Some(Choice::ApproveAll),
         KeyCode::Char('n') | KeyCode::Esc => Some(Choice::Deny),
-        KeyCode::Char('d') => Some(Choice::DenyAll),
         _ => None,
     };
     if let Some((sid, token, ids)) = choice.and_then(|c| app.decide(c).map(|d| (d, c))).map(

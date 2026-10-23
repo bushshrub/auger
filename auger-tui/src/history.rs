@@ -26,6 +26,16 @@ pub struct LiveTool<'a> {
 /// Lines printed into scrollback once `item` is finished. Starts with a
 /// blank spacer row.
 pub fn final_lines(item: &ChatItem, width: usize) -> Vec<Line<'static>> {
+    lines_for(item, width, false)
+}
+
+/// Lines for the transcript pager: like [`final_lines`], with nothing folded.
+pub fn transcript_lines(item: &ChatItem, width: usize) -> Vec<Line<'static>> {
+    lines_for(item, width, true)
+}
+
+fn lines_for(item: &ChatItem, width: usize, expanded: bool) -> Vec<Line<'static>> {
+    let body_limit = if expanded { 0 } else { MAX_BODY_LINES };
     let mut lines = vec![Line::from("")];
     match item {
         ChatItem::Reasoning { started, .. } => {
@@ -42,7 +52,7 @@ pub fn final_lines(item: &ChatItem, width: usize) -> Vec<Line<'static>> {
             decision,
             ..
         } if name == "shell" => {
-            lines.extend(crate::exec::lines(args, result.as_deref(), decision.as_ref(), width));
+            lines.extend(crate::exec::lines(args, result.as_deref(), decision.as_ref(), width, expanded));
         }
         ChatItem::Tool {
             name,
@@ -58,15 +68,15 @@ pub fn final_lines(item: &ChatItem, width: usize) -> Vec<Line<'static>> {
                         format!("    {}", crate::diff::summary(&view, result.as_deref())),
                         dim(),
                     )));
-                    lines.extend(indent(crate::diff::body(&view, result.as_deref(), MAX_BODY_LINES)));
+                    lines.extend(indent(crate::diff::body(&view, result.as_deref(), body_limit)));
                 }
                 None => lines.extend(indent(crate::toolargs::render(
                     name,
                     args,
                     result.as_deref(),
-                    false,
+                    expanded,
                     width.saturating_sub(4),
-                    MAX_BODY_LINES,
+                    if expanded { usize::MAX } else { MAX_BODY_LINES },
                 ))),
             }
         }
@@ -97,7 +107,7 @@ pub fn live_lines(item: &ChatItem, width: usize, tools: &LiveTool) -> Vec<Line<'
                 return vec![];
             }
             if name == "shell" {
-                lines.extend(crate::exec::lines(args, result.as_deref(), decision.as_ref(), width));
+                lines.extend(crate::exec::lines(args, result.as_deref(), decision.as_ref(), width, false));
                 return lines;
             }
             lines.push(tool_header(name, decision.as_ref()));

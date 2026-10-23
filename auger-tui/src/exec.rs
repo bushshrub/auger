@@ -32,24 +32,17 @@ struct Output {
     stderr: String,
 }
 
-/// The command as highlighted rows, one chain step per line, wrapped to
-/// `width`.
-pub fn command_rows(args: &str, width: usize) -> Vec<Vec<Span<'static>>> {
-    let view = crate::toolargs::arg_view("shell", args);
-    let rows: Vec<String> = view
-        .lines
-        .iter()
-        .flat_map(|line| wrap_text(line, width.max(1)))
-        .collect();
-    crate::diff::highlight(&rows.join("\n"), "command.sh")
-}
-
 pub fn lines(
     args: &str,
     result: Option<&str>,
     decision: Option<&ToolDecision>,
     width: usize,
+    expanded: bool,
 ) -> Vec<Line<'static>> {
+    let (command_rows, output_rows) = match expanded {
+        true => (usize::MAX, usize::MAX),
+        false => (COMMAND_ROWS, OUTPUT_ROWS),
+    };
     let (status, output) = outcome(result, decision);
     let (bullet, title) = match status {
         Status::Running => (dim(), "Running"),
@@ -58,13 +51,25 @@ pub fn lines(
         Status::Denied => (Style::default().fg(Color::Red).add_modifier(Modifier::BOLD), "Denied"),
     };
 
-    let mut highlighted = command_rows(args, width.saturating_sub(HEADER_WIDTH)).into_iter();
+    // A one-line command sits on the header; a script goes below it,
+    // numbered.
+    let (single, _) = crate::cmdview::rows(args, width.saturating_sub(HEADER_WIDTH));
+    let (rows, numbered) = match single.len() {
+        1 => (single, false),
+        _ => crate::cmdview::rows(args, width.saturating_sub(PREFIX_WIDTH)),
+    };
+    let mut highlighted = rows.into_iter();
 
     let mut header = vec![
         Span::styled("\u{2022} ", bullet),
-        Span::styled(format!("{title} "), Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            if numbered { title.to_string() } else { format!("{title} ") },
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
     ];
-    header.extend(highlighted.next().unwrap_or_default());
+    if !numbered {
+        header.extend(highlighted.next().unwrap_or_default());
+    }
     match decision {
         Some(ToolDecision::Auto(node)) => header.push(Span::styled(format!("  \u{b7} auto: {node}"), dim())),
         Some(ToolDecision::Approved) => header.push(Span::styled("  \u{b7} approved", dim())),
@@ -76,7 +81,7 @@ pub fn lines(
     let mut out = vec![Line::from(header)];
 
     let rest: Vec<_> = highlighted.collect();
-    let shown = fold(rest.len(), COMMAND_ROWS);
+    let shown = fold(rest.len(), command_rows);
     let hidden = rest.len() - shown;
     for spans in rest.into_iter().take(shown) {
         let mut row = vec![Span::styled("  \u{2502} ", dim())];
@@ -100,7 +105,7 @@ pub fn lines(
         if rows.is_empty() {
             out.push(Line::from(Span::styled("  \u{2514} (no output)", dim())));
         }
-        let shown = fold(rows.len(), OUTPUT_ROWS);
+        let shown = fold(rows.len(), output_rows);
         for (index, (row, style)) in rows.iter().take(shown).enumerate() {
             let prefix = if index == 0 { "  \u{2514} " } else { "    " };
             out.push(Line::from(vec![
@@ -159,7 +164,7 @@ fn outcome(result: Option<&str>, decision: Option<&ToolDecision>) -> (Status, Op
 /// Rows to show of `total` with room for `limit`: folding a single row would
 /// only replace it with a hint of the same height.
 fn fold(total: usize, limit: usize) -> usize {
-    if total <= limit + 1 { total } else { limit }
+    if total <= limit.saturating_add(1) { total } else { limit }
 }
 
 fn dim() -> Style {
