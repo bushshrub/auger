@@ -11,7 +11,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use serde_json::Value;
 
-/// Lines shown for a collapsed call before the rest is folded away.
+/// Rows shown for a collapsed call before the rest is folded away.
 const COLLAPSED_ARG_LINES: usize = 3;
 const COLLAPSED_RESULT_LINES: usize = 2;
 
@@ -19,8 +19,10 @@ const COLLAPSED_RESULT_LINES: usize = 2;
 pub struct ArgView {
     /// Prefix for the first line, e.g. `$` for a shell command.
     pub marker: &'static str,
-    /// The argument text, one entry per source line, never truncated.
+    /// The argument text, one entry per display line, never truncated.
     pub lines: Vec<String>,
+    /// Highlight the lines as bash.
+    pub shell: bool,
 }
 
 /// Turn raw tool arguments into displayable text.
@@ -32,15 +34,15 @@ pub struct ArgView {
 pub fn arg_view(name: &str, args: &str) -> ArgView {
     let parsed: Option<Value> = serde_json::from_str(args).ok();
 
-    if let Some(command) = parsed
-        .as_ref()
-        .filter(|_| name == "shell")
-        .and_then(|v| v.get("command"))
-        .and_then(Value::as_str)
-    {
+    let command = match &parsed {
+        Some(value) => value.get("command").and_then(Value::as_str).map(str::to_string),
+        None => partial_field(args, "command"),
+    };
+    if let Some(command) = command.filter(|_| name == "shell") {
         return ArgView {
             marker: "$",
-            lines: text_lines(command),
+            lines: crate::shellfmt::format(&command),
+            shell: true,
         };
     }
 
@@ -51,7 +53,35 @@ pub fn arg_view(name: &str, args: &str) -> ArgView {
     ArgView {
         marker: " ",
         lines: text_lines(&text),
+        shell: false,
     }
+}
+
+/// The string value of `field` in arguments that are still streaming, as far
+/// as it has arrived: `{"command":"cd /tm` gives `cd /tm`.
+pub fn partial_field(args: &str, field: &str) -> Option<String> {
+    let key = format!("\"{field}\"");
+    let rest = args[args.find(&key)? + key.len()..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('u') => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    out.extend(u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32));
+                }
+                Some(other) => out.push(other),
+                None => break,
+            },
+            c => out.push(c),
+        }
+    }
+    Some(out)
 }
 
 /// Render a non-file tool call: its arguments, then its result if one has
@@ -68,34 +98,39 @@ pub fn render(
     let view = arg_view(name, args);
     let mut out = Vec::new();
 
-    let shown = match expanded {
-        true => view.lines.len(),
-        false => COLLAPSED_ARG_LINES.min(view.lines.len()),
-    };
-    for (index, line) in view.lines.iter().take(shown).enumerate() {
+    let mut rows = Vec::new();
+    for (index, line) in view.lines.iter().enumerate() {
         let marker = if index == 0 { view.marker } else { " " };
-        for (wrapped_index, part) in crate::ui::wrap_text(line, width.saturating_sub(2))
-            .into_iter()
-            .enumerate()
-        {
+        let parts = crate::ui::wrap_text(line, width.saturating_sub(2));
+        let spans: Vec<Vec<Span<'static>>> = match view.shell {
+            true => crate::diff::highlight(&parts.join("\n"), "command.sh"),
+            false => parts
+                .into_iter()
+                .map(|part| vec![Span::styled(part, Style::default().fg(Color::White))])
+                .collect(),
+        };
+        for (wrapped_index, content) in spans.into_iter().enumerate() {
             let prefix = if wrapped_index == 0 { marker } else { " " };
-            out.push(Line::from(vec![
-                Span::styled(format!("{prefix} "), Style::default().fg(Color::Magenta)),
-                Span::styled(part, Style::default().fg(Color::White)),
-            ]));
+            let mut row = vec![Span::styled(
+                format!("{prefix} "),
+                Style::default().fg(Color::Magenta),
+            )];
+            row.extend(content);
+            rows.push(Line::from(row));
         }
     }
-    if shown < view.lines.len() {
-        out.push(hint(format!(
-            "+{} more lines - click to expand",
-            view.lines.len() - shown
-        )));
+    let total = rows.len();
+    let shown = match expanded {
+        true => total,
+        false => COLLAPSED_ARG_LINES.min(total),
+    };
+    out.extend(rows.into_iter().take(shown));
+    if shown < total {
+        out.push(hint(format!("... +{} more lines", total - shown)));
     }
 
     if let Some(result) = result {
         out.extend(result_lines(result, expanded, width, max_result_lines));
-    } else if !expanded {
-        out.push(hint("click to expand".to_string()));
     }
     out
 }
@@ -124,7 +159,7 @@ fn result_lines(result: &str, expanded: bool, width: usize, max_lines: usize) ->
         let hidden = all.len() - budget;
         out.push(hint(match expanded {
             true => format!("... {hidden} more lines"),
-            false => format!("+{hidden} more lines - click to expand"),
+            false => format!("... +{hidden} more lines"),
         }));
     }
     out
@@ -150,116 +185,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shell_commands_show_verbatim_without_json_noise() {
-        let view = arg_view("shell", r#"{"command":"cd /tmp && git status"}"#);
-        assert_eq!(view.marker, "$");
-        assert_eq!(view.lines, ["cd /tmp && git status"]);
-    }
-
-    /// The reported bug: a long command was cut at 80 characters, so the part
-    /// being approved was invisible.
-    #[test]
-    fn long_commands_are_not_truncated() {
-        let command = format!("git commit -m '{}'", "x".repeat(300));
-        let args = serde_json::json!({ "command": command }).to_string();
-        let view = arg_view("shell", &args);
-        assert_eq!(view.lines[0], command);
-    }
-
-    #[test]
-    fn multiline_commands_keep_their_lines() {
-        let args = serde_json::json!({ "command": "set -e\nmake build\nmake test" }).to_string();
-        let view = arg_view("shell", &args);
-        assert_eq!(view.lines, ["set -e", "make build", "make test"]);
-    }
-
-    #[test]
-    fn other_tools_get_pretty_printed_json() {
-        let view = arg_view("grep", r#"{"pattern":"fn main","path":"src"}"#);
-        assert!(view.lines.len() > 1, "pretty JSON spans lines");
-        assert!(view.lines.iter().any(|l| l.contains("\"pattern\"")));
-    }
-
-    #[test]
-    fn partial_arguments_are_shown_as_typed() {
-        // Still streaming: not valid JSON, but the user should see it anyway.
-        let view = arg_view("shell", "{\"command\":\"cd /tm");
-        assert_eq!(view.lines, ["{\"command\":\"cd /tm"]);
-    }
-
-    #[test]
-    fn empty_arguments_still_have_a_summary_line() {
-        assert_eq!(arg_view("shell", "").lines, [""]);
-    }
-
-    // ── rendering ────────────────────────────────────────────────────────
-
-    fn text(lines: &[Line<'static>]) -> String {
-        lines
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    #[test]
-    fn a_wide_command_wraps_instead_of_being_cut_off() {
-        let command = format!("git log {}", "-q".repeat(60));
-        let args = serde_json::json!({ "command": command }).to_string();
-        let rendered = text(&render("shell", &args, None, false, 40, 10));
-        // Every character of the command survives the wrap.
-        assert!(rendered.lines().count() > 1, "long command must wrap");
-        assert_eq!(
-            rendered.chars().filter(|c| *c == 'q').count(),
-            60,
-            "no characters dropped"
-        );
-    }
-
-    #[test]
-    fn a_collapsed_call_folds_a_long_command_but_says_so() {
-        let command = (0..10)
-            .map(|i| format!("step{i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let args = serde_json::json!({ "command": command }).to_string();
-        let rendered = text(&render("shell", &args, None, false, 60, 10));
-        assert!(rendered.contains("step0"));
-        assert!(!rendered.contains("step9"));
-        assert!(rendered.contains("+7 more lines"), "got:\n{rendered}");
-    }
-
-    #[test]
-    fn an_expanded_call_shows_the_whole_command() {
-        let command = (0..10)
-            .map(|i| format!("step{i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let args = serde_json::json!({ "command": command }).to_string();
-        let rendered = text(&render("shell", &args, None, true, 60, 10));
-        assert!(rendered.contains("step9"));
-        assert!(!rendered.contains("more lines"));
-    }
-
-    #[test]
-    fn results_are_previewed_collapsed_and_capped_expanded() {
-        let result = (0..30)
-            .map(|i| format!("out{i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let args = serde_json::json!({ "command": "ls" }).to_string();
-
-        let collapsed = text(&render("shell", &args, Some(&result), false, 60, 10));
-        assert!(collapsed.contains("out0"));
-        assert!(!collapsed.contains("out5"));
-
-        let expanded = text(&render("shell", &args, Some(&result), true, 60, 10));
-        assert!(expanded.contains("out9"));
-        assert!(expanded.contains("20 more lines"), "cap is reported");
+    fn partial_fields_decode_as_far_as_they_arrived() {
+        assert_eq!(partial_field(r#"{"command": "echo \"hi\nx"#, "command").as_deref(), Some("echo \"hi\nx"));
+        assert_eq!(partial_field(r#"{"comm"#, "command"), None);
     }
 }

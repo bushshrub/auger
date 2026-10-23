@@ -72,6 +72,14 @@ pub struct App {
     pub shell_request: Option<String>,
     /// Highlighted row of the approval panel.
     pub approval_selected: usize,
+    /// First preview row shown in the approval panel.
+    pub approval_scroll: usize,
+    /// Text typed into the focused "No, and tell auger" row.
+    pub approval_note: String,
+    /// A denial note to send as the next message once the batch is withheld.
+    queued_note: Option<String>,
+    /// Send the composer's text on the next loop turn.
+    pub submit_requested: bool,
     /// Fields shown in the bottom statusline, in order.
     pub statusline: Vec<StatusItem>,
     /// Token counters shown live in the header. `tokens_out` is reconciled
@@ -113,6 +121,10 @@ impl App {
             flushed: 0,
             pending_tools: vec![],
             approval_selected: 0,
+            approval_scroll: 0,
+            approval_note: String::new(),
+            queued_note: None,
+            submit_requested: false,
             shell_request: None,
             working_since: None,
             statusline: crate::config::TuiConfig::default().statusline,
@@ -311,8 +323,31 @@ impl App {
                         *args = arguments;
                     }
                 }
-                self.queue_pending_tool(id);
                 self.status = Status::Running;
+            }
+
+            SseEvent::ToolConsent {
+                id,
+                name,
+                arguments,
+            } => {
+                self.handle_sse(SseEvent::ToolCallComplete {
+                    id: id.clone(),
+                    name,
+                    arguments,
+                });
+                self.queue_pending_tool(id);
+            }
+
+            SseEvent::ToolAuto { id, node } => {
+                if let Some(ChatItem::Tool { decision, .. }) = self
+                    .items
+                    .iter_mut()
+                    .find(|i| matches!(i, ChatItem::Tool { id: tid, .. } if tid == &id))
+                {
+                    *decision = Some(ToolDecision::Auto(node));
+                }
+                self.resolve_pending_tool(&id);
             }
 
             SseEvent::Interrupted => {
@@ -325,6 +360,10 @@ impl App {
 
             SseEvent::ToolResultsWithheld => {
                 self.status = Status::Idle;
+                if let Some(note) = self.queued_note.take() {
+                    self.input = note;
+                    self.submit_requested = true;
+                }
             }
 
             SseEvent::StreamClosed => {
@@ -378,8 +417,16 @@ impl App {
                 self.reasoning_idx = None;
                 self.live_chars = 0;
                 // A turn that ended asking for consent is not idle: the user
-                // still owes the server a decision per queued call.
-                if !self.has_pending_tool() {
+                // still owes the server a decision per queued call. Nor is
+                // one that ended in tool calls: the session runs them and
+                // streams again.
+                let calls_tools = self
+                    .items
+                    .iter()
+                    .rev()
+                    .find(|i| !matches!(i, ChatItem::Reasoning { .. }))
+                    .is_some_and(|i| matches!(i, ChatItem::Tool { .. }));
+                if !self.has_pending_tool() && !calls_tools {
                     self.status = Status::Idle;
                 }
             }
@@ -421,7 +468,12 @@ impl App {
     /// follows it or the turn ends.
     fn is_finished(&self, index: usize) -> bool {
         match &self.items[index] {
-            ChatItem::Tool { result, .. } => result.is_some(),
+            // A finished exploratory call waits while the next call may
+            // still fold into the same "Explored" cell.
+            ChatItem::Tool { result, .. } => {
+                result.is_some()
+                    && !crate::explore::holds(&self.items, index, self.status == Status::Idle)
+            }
             ChatItem::User { .. } | ChatItem::Error { .. } => true,
             ChatItem::Assistant { .. } | ChatItem::Reasoning { .. } => {
                 index + 1 < self.items.len() || self.status == Status::Idle
@@ -832,6 +884,11 @@ impl App {
         }
     }
 
+    /// Scroll the approval preview by `delta` rows. Clamped when drawn.
+    pub fn approval_scroll_by(&mut self, delta: isize) {
+        self.approval_scroll = self.approval_scroll.saturating_add_signed(delta);
+    }
+
     /// The highlighted approval choice.
     pub fn approval_choice(&self) -> Option<Choice> {
         let choices = crate::approval::choices(self.pending_tools.len());
@@ -844,6 +901,11 @@ impl App {
             return None;
         }
         self.approval_selected = 0;
+        self.approval_scroll = 0;
+        let note = std::mem::take(&mut self.approval_note);
+        if !choice.approved() && !note.trim().is_empty() {
+            self.queued_note = Some(note.trim().to_string());
+        }
         match choice.all() {
             true => self.decide_all_tools(choice.approved()),
             false => self
@@ -1013,7 +1075,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(
             &events[0],
-            SseEvent::ToolCallComplete { id, name, .. } if id == "call_1" && name == "shell"
+            SseEvent::ToolConsent { id, name, .. } if id == "call_1" && name == "shell"
         ));
     }
 
@@ -1062,7 +1124,7 @@ mod tests {
     }
 
     fn consent(id: &str) -> AppEvent {
-        AppEvent::Sse(SseEvent::ToolCallComplete {
+        AppEvent::Sse(SseEvent::ToolConsent {
             id: id.into(),
             name: "shell".into(),
             arguments: "{}".into(),
@@ -1336,3 +1398,4 @@ mod tests {
         assert_eq!(app.take_finished().len(), 2);
     }
 }
+

@@ -15,9 +15,12 @@ mod command;
 mod completion;
 mod config;
 mod diff;
+mod exec;
+mod explore;
 mod history;
 mod markdown;
 mod shell;
+mod shellfmt;
 mod statusline;
 mod toolargs;
 mod types;
@@ -110,7 +113,13 @@ async fn main() -> anyhow::Result<()> {
     let _ = terminal.clear();
     ratatui::restore();
 
-    result
+    // The embedded server's blocking event forwarders never finish, and the
+    // runtime would wait for them forever on drop.
+    if let Err(error) = result {
+        eprintln!("Error: {error:?}");
+        std::process::exit(1);
+    }
+    std::process::exit(0);
 }
 
 const FRAME_BUDGET: Duration = Duration::from_millis(16); // ~60 fps cap
@@ -148,6 +157,11 @@ async fn run(
             _ = tokio::time::sleep_until(deadline.into()) => {}
         }
 
+        if std::mem::take(&mut app.submit_requested) {
+            if let Some((sid, write_token, text)) = app.send_message() {
+                spawn_send(sid, write_token, text, tx, server);
+            }
+        }
         app.track_working();
         if app.should_quit {
             break;
@@ -280,6 +294,18 @@ fn refresh_sessions(tx: &mpsc::Sender<TuiEvent>, server: &str) {
     });
 }
 
+fn spawn_send(sid: uuid::Uuid, write_token: String, text: String, tx: &mpsc::Sender<TuiEvent>, server: &str) {
+    let s = server.to_string();
+    let app_tx = tx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = api::send_input(&s, sid, &write_token, &text).await {
+            let _ = app_tx
+                .send(TuiEvent::App(AppEvent::NetworkError(e.to_string())))
+                .await;
+        }
+    });
+}
+
 /// Send a decision for each of `tool_ids`. Every queued call needs its own
 /// response or the session sits waiting forever.
 fn respond_to_tools(
@@ -320,7 +346,20 @@ fn handle_approval_key(
     tx: &mpsc::Sender<TuiEvent>,
     server: &str,
 ) {
+    // The focused deny row is a text box: typing goes into the note, and
+    // Enter or Esc denies with it.
+    let typing = app.approval_choice() == Some(Choice::Deny)
+        && !key.modifiers.contains(KeyModifiers::CONTROL);
     let choice = match key.code {
+        KeyCode::Char(c) if typing => return app.approval_note.push(c),
+        KeyCode::Backspace if typing => {
+            app.approval_note.pop();
+            return;
+        }
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => return app.approval_scroll_by(-1),
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => return app.approval_scroll_by(1),
+        KeyCode::PageUp => return app.approval_scroll_by(-(approval::PAGE_ROWS as isize)),
+        KeyCode::PageDown => return app.approval_scroll_by(approval::PAGE_ROWS as isize),
         KeyCode::Up | KeyCode::Char('k') => return app.approval_prev(),
         KeyCode::Down | KeyCode::Char('j') => return app.approval_next(),
         KeyCode::Enter => app.approval_choice(),
@@ -429,15 +468,7 @@ async fn handle_chat_key(
             }
             if !app.has_pending_tool() {
                 if let Some((sid, write_token, text)) = app.send_message() {
-                    let s = server.to_string();
-                    let app_tx = tx.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = api::send_input(&s, sid, &write_token, &text).await {
-                            let _ = app_tx
-                                .send(TuiEvent::App(AppEvent::NetworkError(e.to_string())))
-                                .await;
-                        }
-                    });
+                    spawn_send(sid, write_token, text, tx, server);
                 }
             }
         }

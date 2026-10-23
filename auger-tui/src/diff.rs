@@ -16,7 +16,6 @@ use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::FontStyle;
 use syntect::highlighting::Theme;
-use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxReference;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
@@ -31,15 +30,12 @@ struct Highlighter {
 fn highlighter() -> &'static Highlighter {
     static HIGHLIGHTER: OnceLock<Highlighter> = OnceLock::new();
     HIGHLIGHTER.get_or_init(|| {
-        let themes = ThemeSet::load_defaults();
-        let theme = themes
-            .themes
-            .get("base16-eighties.dark")
-            .or_else(|| themes.themes.values().next())
-            .cloned()
-            .unwrap_or_default();
+        // Codex's default dark theme.
+        let theme = two_face::theme::extra()
+            .get(two_face::theme::EmbeddedThemeName::CatppuccinMocha)
+            .clone();
         Highlighter {
-            syntaxes: SyntaxSet::load_defaults_newlines(),
+            syntaxes: two_face::syntax::extra_newlines(),
             theme,
         }
     })
@@ -59,7 +55,7 @@ fn to_ratatui_color(color: syntect::highlighting::Color) -> Color {
 }
 
 /// Highlight `text`, returning one span vector per line (newlines stripped).
-fn highlight(text: &str, path: &str) -> Vec<Vec<Span<'static>>> {
+pub(crate) fn highlight(text: &str, path: &str) -> Vec<Vec<Span<'static>>> {
     let highlighter = highlighter();
     let mut state = HighlightLines::new(syntax_for(path), &highlighter.theme);
 
@@ -72,9 +68,6 @@ fn highlight(text: &str, path: &str) -> Vec<Vec<Span<'static>>> {
                     let mut s = Style::default().fg(to_ratatui_color(style.foreground));
                     if style.font_style.contains(FontStyle::BOLD) {
                         s = s.add_modifier(Modifier::BOLD);
-                    }
-                    if style.font_style.contains(FontStyle::ITALIC) {
-                        s = s.add_modifier(Modifier::ITALIC);
                     }
                     Span::styled(piece.trim_end_matches(['\n', '\r']).to_string(), s)
                 })
@@ -136,11 +129,33 @@ pub fn summary(view: &ToolView, result: Option<&str>) -> String {
         ToolView::Write { path, content } => {
             format!("{path} ({} lines)", content.lines().count())
         }
-        ToolView::Read { path } => match result {
-            Some(content) => format!("{path} ({} lines)", content.lines().count()),
-            None => path.clone(),
+        ToolView::Read { path } => match result.map(numbered_lines) {
+            Some(lines) if !lines.is_empty() => format!("{path} ({} lines)", lines.len()),
+            _ => path.clone(),
         },
     }
+}
+
+/// The `(number, text)` rows of a `read_file` result, whose lines look like
+/// `  12 code`. The `Total lines` header and any line without a number (an
+/// error, a note about a temp file) are skipped.
+fn numbered_lines(result: &str) -> Vec<(&str, &str)> {
+    result
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start_matches(' ');
+            let digits = line.find(|c: char| !c.is_ascii_digit()).unwrap_or(line.len());
+            if digits == 0 {
+                return None;
+            }
+            let (number, rest) = line.split_at(digits);
+            match rest.strip_prefix(' ') {
+                Some(text) => Some((number, text)),
+                None if rest.is_empty() => Some((number, "")),
+                None => None,
+            }
+        })
+        .collect()
 }
 
 fn counts(old: &str, new: &str) -> (usize, usize) {
@@ -182,10 +197,7 @@ pub fn body(view: &ToolView, result: Option<&str>, max_lines: usize) -> Vec<Line
             out
         }
         ToolView::Read { path } => match result {
-            Some(content) => highlight(content, path)
-                .into_iter()
-                .map(|spans| gutter_line(" ", Style::default(), spans))
-                .collect(),
+            Some(content) => read_lines(path, content),
             None => vec![],
         },
     };
@@ -222,6 +234,31 @@ fn gutter_line(marker: &str, background: Style, content: Vec<Span<'static>>) -> 
         spans.push(Span::styled(span.content, style));
     }
     Line::from(spans)
+}
+
+/// A file preview with a dim line-number gutter. A result with no numbered
+/// lines (an error) is shown as-is.
+fn read_lines(path: &str, result: &str) -> Vec<Line<'static>> {
+    let rows = numbered_lines(result);
+    if rows.is_empty() {
+        return result
+            .lines()
+            .map(|line| Line::from(Span::styled(line.to_string(), Style::default().fg(Color::DarkGray))))
+            .collect();
+    }
+    let width = rows.iter().map(|(number, _)| number.len()).max().unwrap_or(1);
+    let code: Vec<&str> = rows.iter().map(|(_, text)| *text).collect();
+    rows.iter()
+        .zip(highlight(&code.join("\n"), path))
+        .map(|((number, _), content)| {
+            let mut spans = vec![Span::styled(
+                format!("{number:>width$}  "),
+                Style::default().fg(Color::DarkGray),
+            )];
+            spans.extend(content);
+            Line::from(spans)
+        })
+        .collect()
 }
 
 fn diff_lines(path: &str, old: &str, new: &str) -> Vec<Line<'static>> {
@@ -317,13 +354,9 @@ mod tests {
     }
 
     #[test]
-    fn read_uses_the_tool_result_for_content() {
-        let view = ToolView::Read {
-            path: "x.rs".into(),
-        };
-        assert_eq!(plain(&body(&view, Some("a\nb\n"), 100)), vec!["  a", "  b"]);
-        // Before the result arrives there is nothing to show.
-        assert!(body(&view, None, 100).is_empty());
+    fn read_parses_numbered_lines() {
+        let result = "Total lines: 2\n\n 9 a\n10 \n";
+        assert_eq!(numbered_lines(result), [("9", "a"), ("10", "")]);
     }
 
     #[test]

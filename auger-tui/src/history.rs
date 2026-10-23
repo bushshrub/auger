@@ -41,6 +41,15 @@ pub fn final_lines(item: &ChatItem, width: usize) -> Vec<Line<'static>> {
             result,
             decision,
             ..
+        } if name == "shell" => {
+            lines.extend(crate::exec::lines(args, result.as_deref(), decision.as_ref(), width));
+        }
+        ChatItem::Tool {
+            name,
+            args,
+            result,
+            decision,
+            ..
         } => {
             lines.push(tool_header(name, decision.as_ref()));
             match crate::diff::tool_view(name, args) {
@@ -87,6 +96,10 @@ pub fn live_lines(item: &ChatItem, width: usize, tools: &LiveTool) -> Vec<Line<'
             if decision.is_none() && tools.pending.iter().any(|t| t == id) {
                 return vec![];
             }
+            if name == "shell" {
+                lines.extend(crate::exec::lines(args, result.as_deref(), decision.as_ref(), width));
+                return lines;
+            }
             lines.push(tool_header(name, decision.as_ref()));
             lines.extend(indent(crate::toolargs::render(
                 name,
@@ -125,19 +138,18 @@ fn plain_lines(item: &ChatItem, width: usize) -> Vec<Line<'static>> {
 }
 
 fn tool_header(name: &str, decision: Option<&ToolDecision>) -> Line<'static> {
-    let (label, style) = match decision {
-        Some(ToolDecision::Approved) => (" [approved]", Style::default().fg(Color::Green)),
-        Some(ToolDecision::Denied) => (" [denied]", Style::default().fg(Color::Red)),
-        Some(ToolDecision::Auto) => (" [auto]", dim()),
-        None => ("", Style::default()),
+    let green = Style::default().fg(Color::Green).add_modifier(Modifier::BOLD);
+    let red = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let (bullet, label) = match decision {
+        Some(ToolDecision::Approved) => (green, "  \u{b7} approved".to_string()),
+        Some(ToolDecision::Denied) => (red, "  \u{b7} denied".to_string()),
+        Some(ToolDecision::Auto(node)) => (green, format!("  \u{b7} auto: {node}")),
+        None => (dim(), String::new()),
     };
     Line::from(vec![
-        Span::styled("  tool ", Style::default().fg(Color::Magenta)),
-        Span::styled(
-            name.to_string(),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(label, style),
+        Span::styled("\u{2022} ", bullet),
+        Span::styled(name.to_string(), Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(label, dim()),
     ])
 }
 

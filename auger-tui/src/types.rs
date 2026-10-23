@@ -14,7 +14,8 @@ pub struct SessionInfo {
 pub enum ToolDecision {
     Approved,
     Denied,
-    Auto,
+    /// Allowed by the approval policy; holds the node's name.
+    Auto(String),
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +100,17 @@ pub enum SseEvent {
         name: String,
         arguments: String,
     },
+    /// A call that waits for the user's approval.
+    ToolConsent {
+        id: String,
+        name: String,
+        arguments: String,
+    },
+    /// The approval policy allowed a call; `node` names who.
+    ToolAuto {
+        id: String,
+        node: String,
+    },
     ToolResult {
         id: String,
         content: String,
@@ -153,6 +165,11 @@ pub enum RawSessionEvent {
     ToolCallResult {
         id: String,
         result: RawToolCallResult,
+    },
+    ToolPolicyDecision {
+        id: String,
+        decision: String,
+        node: String,
     },
     ToolResultsWithheld,
     Interrupted,
@@ -265,7 +282,7 @@ pub fn transform_raw_event(ev: RawSessionEvent) -> Vec<SseEvent> {
         // Consent lists whole tool calls, so they are complete by definition.
         RawSessionEvent::ToolConsentRequired { tool_calls } => tool_calls
             .into_iter()
-            .map(|tc| SseEvent::ToolCallComplete {
+            .map(|tc| SseEvent::ToolConsent {
                 id: tc.id,
                 name: tc.name,
                 arguments: tc.arguments,
@@ -279,6 +296,11 @@ pub fn transform_raw_event(ev: RawSessionEvent) -> Vec<SseEvent> {
                 denied,
             }]
         }
+        // A denial is followed by its tool_call_result, which marks it.
+        RawSessionEvent::ToolPolicyDecision { id, decision, node } => match decision.as_str() {
+            "allowed" => vec![SseEvent::ToolAuto { id, node }],
+            _ => vec![],
+        },
         RawSessionEvent::Interrupted => vec![SseEvent::Interrupted],
         RawSessionEvent::ToolResultsWithheld => vec![SseEvent::ToolResultsWithheld],
         RawSessionEvent::StreamError { error } => {

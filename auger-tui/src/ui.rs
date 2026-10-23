@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::explore::Segment;
 use crate::history::LiveTool;
 use crate::types::Status;
 use ratatui::DefaultTerminal;
@@ -27,10 +28,12 @@ pub const VIEWPORT_HEIGHT: u16 = 16;
 /// scrollback.
 pub fn flush_finished(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
     let width = terminal.size()?.width as usize;
-    let lines: Vec<Line> = app
-        .take_finished()
+    let lines: Vec<Line> = crate::explore::segments(app.take_finished())
         .iter()
-        .flat_map(|item| crate::history::final_lines(item, width))
+        .flat_map(|segment| match segment {
+            Segment::Item(item) => crate::history::final_lines(item, width),
+            Segment::Explored(intents) => crate::explore::lines(intents, width),
+        })
         .collect();
     if lines.is_empty() {
         return Ok(());
@@ -52,7 +55,11 @@ pub fn render(frame: &mut Frame, app: &App) {
             args,
             app.pending_tools.len(),
             app.approval_selected,
+            app.approval_scroll,
+            &app.approval_note,
             width,
+            // The two rules and the statusline stay visible.
+            (frame.area().height as usize).saturating_sub(3),
         ),
         None => vec![],
     };
@@ -106,10 +113,12 @@ fn render_live(frame: &mut Frame, app: &App, area: Rect) {
         pending: &app.pending_tools,
     };
     let width = area.width as usize;
-    let lines: Vec<Line> = app
-        .live_items()
+    let lines: Vec<Line> = crate::explore::segments(app.live_items())
         .iter()
-        .flat_map(|item| crate::history::live_lines(item, width, &tools))
+        .flat_map(|segment| match segment {
+            Segment::Item(item) => crate::history::live_lines(item, width, &tools),
+            Segment::Explored(intents) => crate::explore::lines(intents, width),
+        })
         .collect();
     let skip = lines.len().saturating_sub(area.height as usize);
     let shown: Vec<Line> = lines.into_iter().skip(skip).collect();
