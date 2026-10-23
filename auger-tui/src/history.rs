@@ -143,15 +143,21 @@ pub fn live_lines(item: &ChatItem, width: usize, tools: &LiveTool) -> Vec<Line<'
 
 fn plain_lines(item: &ChatItem, width: usize) -> Vec<Line<'static>> {
     match item {
-        ChatItem::User { text } => wrap_text(text, width.saturating_sub(4))
-            .into_iter()
-            .map(|l| {
-                Line::from(Span::styled(
-                    format!("  > {l}"),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-                ))
-            })
-            .collect(),
+        // A full-width grey box, with a blank row above and below the text.
+        ChatItem::User { text } => {
+            let boxed = Style::default().bg(Color::Indexed(236));
+            let pad = |row: String| {
+                let fill = width.saturating_sub(row.chars().count());
+                Line::from(Span::styled(format!("{row}{}", " ".repeat(fill)), boxed))
+            };
+            let mut rows = vec![pad(String::new())];
+            for (index, line) in wrap_text(text, width.saturating_sub(4)).into_iter().enumerate() {
+                let marker = if index == 0 { "\u{203a} " } else { "  " };
+                rows.push(pad(format!("{marker}{line}")));
+            }
+            rows.push(pad(String::new()));
+            rows
+        }
         ChatItem::Assistant { text } => {
             indent_by("  ", crate::markdown::render_markdown(text, width.saturating_sub(2)))
         }
