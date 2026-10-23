@@ -36,6 +36,16 @@ pub(crate) fn parse_error(message: String) -> LlmError {
     }
 }
 
+/// A successful reply with no content. Sending the request again may work.
+pub(crate) fn empty_response() -> LlmError {
+    LlmError {
+        kind: LlmErrorKind::Transient { retry_after: None },
+        message: "model returned an empty response".to_string(),
+        status: None,
+        request_id: None,
+    }
+}
+
 pub(crate) fn stream_error(message: String, request_id: Option<String>, body_type: Option<&str>) -> LlmError {
     LlmError {
         kind: classify_status(None, body_type.and_then(classify_body_type)),
@@ -70,6 +80,7 @@ fn classify_status(status: Option<StatusCode>, body_kind: Option<LlmErrorKind>) 
 fn classify_body_type(value: &str) -> Option<LlmErrorKind> {
     match value {
         "billing_error" | "insufficient_quota" | "quota_exceeded" | "exceeded_current_quota_error" | "payment_required" => Some(LlmErrorKind::Fatal),
+        "invalid_request_error" | "authentication_error" | "permission_error" | "not_found_error" | "request_too_large" => Some(LlmErrorKind::Fatal),
         "overloaded_error" | "rate_limit_exceeded" | "rate_limit_reached_error" | "engine_overloaded_error" => Some(LlmErrorKind::Transient { retry_after: None }),
         _ => None,
     }
@@ -103,6 +114,14 @@ mod tests {
         assert!(matches!(classify_status(Some(StatusCode::SERVICE_UNAVAILABLE), None), LlmErrorKind::Transient { .. }));
         let transport = reqwest::Client::new().get("http://").build().unwrap_err();
         assert!(matches!(from_transport(transport).kind, LlmErrorKind::Transient { .. }));
+    }
+
+    #[test]
+    fn in_band_client_errors_are_fatal() {
+        let kind = stream_error("bad".to_string(), None, Some("invalid_request_error")).kind;
+        assert!(matches!(kind, LlmErrorKind::Fatal));
+        let kind = stream_error("busy".to_string(), None, Some("overloaded_error")).kind;
+        assert!(matches!(kind, LlmErrorKind::Transient { .. }));
     }
 
     #[test]

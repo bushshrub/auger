@@ -181,7 +181,8 @@ enum ReasoningPart {
 struct ResponseUsage {
     input_tokens: i32,
     output_tokens: i32,
-    total_tokens: i32,
+    // Some compatible servers omit this; see map_usage.
+    total_tokens: Option<i32>,
     input_tokens_details: Option<InputTokenDetails>,
 }
 
@@ -206,6 +207,7 @@ struct SseEvent {
     response: Option<CompletedResponse>,
     // Set on a top level `error` event.
     message: Option<String>,
+    code: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -243,26 +245,19 @@ fn messages_to_input(messages: &[provider::Message]) -> Vec<Value> {
             }
             provider::Message::Assistant { response } => {
                 let blocks = response.blocks();
-                let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
+                let text = blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        Block::Text(t) => Some(t.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                if !text.is_empty() {
+                    items.push(serde_json::json!({"type": "message", "role": "assistant", "content": text}));
+                }
                 for block in blocks {
                     if let Block::ToolCall(tc) = block {
-                        tool_calls.push(tc.clone());
-                    }
-                }
-                if tool_calls.is_empty() {
-                    let has_text = blocks.iter().any(|b| matches!(b, Block::Text(_)));
-                    if has_text {
-                        let text = blocks.iter()
-                            .filter_map(|b| match b {
-                                Block::Text(t) => Some(t.as_str()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("");
-                        items.push(serde_json::json!({"type": "message", "role": "assistant", "content": text}));
-                    }
-                } else {
-                    for tc in tool_calls {
                         items.push(serde_json::json!({
                             "type": "function_call",
                             "call_id": tc.id,
@@ -293,7 +288,7 @@ fn map_usage(u: ResponseUsage) -> TokenUsage {
     TokenUsage {
         prompt_tokens: Some(u.input_tokens),
         completion_tokens: Some(u.output_tokens),
-        total_tokens: Some(u.total_tokens),
+        total_tokens: u.total_tokens.or(Some(u.input_tokens + u.output_tokens)),
         cached_tokens: u.input_tokens_details.and_then(|d| d.cached_tokens),
         cache_creation_tokens: None,
     }
@@ -431,7 +426,7 @@ impl LlmProvider for OpenAiResponsesProvider {
         }
 
         Ok(CompletedLlmResponse {
-            response: provider::AssistantResponse::new(blocks).unwrap(),
+            response: provider::AssistantResponse::new(blocks).ok_or_else(errors::empty_response)?,
             usage: data.usage.map(map_usage),
             stop_reason: stop_reason(data.status.as_deref(), has_tool_calls),
         })
@@ -535,7 +530,7 @@ impl LlmProvider for OpenAiResponsesProvider {
                                         sink(StreamEvent::BlockDelta { index: idx, delta });
                                 }
                             }
-                            "response.reasoning_text.delta" => {
+                            "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
                                 if let Some(delta) = event.delta
                                     && !delta.is_empty()
                                 {
@@ -602,7 +597,7 @@ impl LlmProvider for OpenAiResponsesProvider {
                                         }
                                 }
                             }
-                            "response.completed" => {
+                            "response.completed" | "response.incomplete" => {
                                 if let Some((index, _)) = content_block.take() {
                                     sink(StreamEvent::BlockEnd { index });
                                 }
@@ -620,17 +615,16 @@ impl LlmProvider for OpenAiResponsesProvider {
                                 let message = event
                                     .message
                                     .unwrap_or_else(|| "OpenAI stream error".to_string());
-                                return Err(errors::stream_error(message, None));
+                                return Err(errors::stream_error(message, None, event.code.as_deref()));
                             }
                             "response.failed" => {
-                                let message = event
-                                    .response
-                                    .as_ref()
-                                    .and_then(|response| response.error.as_ref())
+                                let error = event.response.as_ref().and_then(|response| response.error.as_ref());
+                                let message = error
                                     .and_then(|error| error["message"].as_str())
                                     .unwrap_or("OpenAI response failed")
                                     .to_string();
-                                return Err(errors::stream_error(message, None));
+                                let code = error.and_then(|error| error["code"].as_str());
+                                return Err(errors::stream_error(message, None, code));
                             }
                             _ => {}
                         }
@@ -639,7 +633,7 @@ impl LlmProvider for OpenAiResponsesProvider {
             }
         }
 
-        Ok(StreamEnd { usage: None, stop_reason: None })
+        Err(errors::stream_error("OpenAI stream ended before response.completed".to_string(), None, None))
     }
 }
 
@@ -663,4 +657,180 @@ fn content_index(
     sink(StreamEvent::BlockStart { index, kind: kind.clone() });
     *current = Some((index, kind));
     index
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use provider::LlmErrorKind;
+    use provider::Message;
+    use provider::UserBlock;
+    use provider::fold_events;
+    use provider::ToolResult;
+    use std::io::{Read, Write};
+
+    /// Serves one HTTP response with `body` and returns the base URL.
+    fn serve(body: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut req = Vec::new();
+            let mut chunk = [0u8; 4096];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut chunk).unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&chunk[..n]);
+            }
+            let head = String::from_utf8_lossy(&req).to_lowercase();
+            let len: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .map(|v| v.trim().parse().unwrap())
+                .unwrap_or(0);
+            let body_start = req.windows(4).position(|w| w == b"\r\n\r\n").map_or(req.len(), |p| p + 4);
+            let mut have = req.len() - body_start;
+            while have < len {
+                let n = sock.read(&mut chunk).unwrap();
+                if n == 0 {
+                    break;
+                }
+                have += n;
+            }
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(resp.as_bytes()).unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    fn request() -> LlmRequest {
+        LlmRequest::new(
+            vec![Message::User { blocks: vec![UserBlock::Text("hi".to_string())] }],
+            vec![],
+        )
+    }
+
+    fn run_stream(body: &'static str) -> (Result<StreamEnd, LlmError>, Vec<StreamEvent>) {
+        let provider = OpenAiResponsesProvider::new("key", serve(body));
+        let mut events = Vec::new();
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut sink = |e: StreamEvent| events.push(e);
+                provider.stream("model", request(), &mut sink).await
+            });
+        (result, events)
+    }
+
+    fn run_complete(body: &'static str) -> Result<CompletedLlmResponse, LlmError> {
+        let provider = OpenAiResponsesProvider::new("key", serve(body));
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(provider.complete("model", request()))
+    }
+
+    #[test]
+    fn assistant_text_is_kept_alongside_tool_calls() {
+        let response = provider::AssistantResponse::new(vec![
+            Block::Text("let me look".to_string()),
+            Block::ToolCall(ToolCallRequest {
+                id: "call_1".to_string(),
+                name: "read".to_string(),
+                arguments: "{}".to_string(),
+            }),
+        ])
+        .unwrap();
+        let input = messages_to_input(&[Message::Assistant { response }]);
+        assert_eq!(input[0]["content"], "let me look");
+        assert_eq!(input[1]["type"], "function_call");
+        assert_eq!(input[1]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn incomplete_response_reports_usage_and_stop_reason() {
+        let body = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+            "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"usage\":",
+            r#"{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}"#,
+            "\n\n",
+        );
+        let (result, events) = run_stream(body);
+        let end = result.unwrap();
+        assert_eq!(end.stop_reason.as_deref(), Some("incomplete"));
+        assert_eq!(end.usage.unwrap().prompt_tokens, Some(3));
+        assert_eq!(fold_events(&events).0, vec![Block::Text("hi".to_string())]);
+    }
+
+    #[test]
+    fn usage_without_total_still_reports_usage() {
+        let body = concat!(
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":",
+            r#"{"input_tokens":3,"output_tokens":2}}}"#,
+            "\n\n",
+        );
+        let (result, _) = run_stream(body);
+        let usage = result.unwrap().usage.unwrap();
+        assert_eq!(usage.total_tokens, Some(5));
+    }
+
+    #[test]
+    fn reasoning_summary_deltas_stream_as_reasoning() {
+        let body = concat!(
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"think\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":",
+            r#"{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}"#,
+            "\n\n",
+        );
+        let (result, events) = run_stream(body);
+        result.unwrap();
+        assert_eq!(
+            fold_events(&events).0,
+            vec![Block::Reasoning { text: "think".to_string() }]
+        );
+    }
+
+    #[test]
+    fn failed_response_with_fatal_code_is_fatal() {
+        let body = concat!(
+            "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",",
+            "\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"too long\"}}}\n\n",
+        );
+        let (result, _) = run_stream(body);
+        assert!(matches!(result, Err(LlmError { kind: LlmErrorKind::Fatal, .. })));
+    }
+
+    #[test]
+    fn stream_cut_before_completed_is_an_error() {
+        let body = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n";
+        let (result, _) = run_stream(body);
+        assert!(matches!(result, Err(LlmError { kind: LlmErrorKind::Transient { .. }, .. })));
+    }
+
+    #[test]
+    fn empty_output_is_an_error_not_a_panic() {
+        let body = r#"{"status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":0,"total_tokens":1}}"#;
+        assert!(run_complete(body).is_err());
+    }
+
+    #[test]
+    fn tool_result_input_precedes_user_text() {
+        let input = messages_to_input(&[Message::User {
+            blocks: vec![
+                UserBlock::Text("more".to_string()),
+                UserBlock::ToolResult(ToolResult::new("call_1".to_string(), "out".to_string())),
+            ],
+        }]);
+        assert_eq!(input[0]["type"], "function_call_output");
+        assert_eq!(input[1]["content"], "more");
+    }
 }

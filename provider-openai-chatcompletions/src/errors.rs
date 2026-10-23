@@ -32,6 +32,16 @@ pub(crate) fn from_error(error: OpenAIError) -> LlmError {
     }
 }
 
+/// A successful reply with no content. Sending the request again may work.
+pub(crate) fn empty_response() -> LlmError {
+    LlmError {
+        kind: LlmErrorKind::Transient { retry_after: None },
+        message: "model returned an empty response".to_string(),
+        status: None,
+        request_id: None,
+    }
+}
+
 pub(crate) fn in_band(message: String, body_type: Option<&str>) -> LlmError {
     LlmError { kind: classify_body_type(body_type).unwrap_or(LlmErrorKind::Transient { retry_after: None }), message, status: None, request_id: None }
 }

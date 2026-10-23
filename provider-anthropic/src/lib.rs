@@ -186,7 +186,7 @@ fn parse_usage(u: &Value) -> Option<TokenUsage> {
     })
 }
 
-fn parse_response(data: &Value) -> CompletedLlmResponse {
+fn parse_response(data: &Value) -> Result<CompletedLlmResponse, LlmError> {
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
@@ -229,11 +229,26 @@ fn parse_response(data: &Value) -> CompletedLlmResponse {
         blocks.push(Block::ToolCall(tc));
     }
 
-    CompletedLlmResponse {
-        response: provider::AssistantResponse::new(blocks).unwrap(),
+    Ok(CompletedLlmResponse {
+        response: provider::AssistantResponse::new(blocks).ok_or_else(errors::empty_response)?,
         usage: parse_usage(&data["usage"]),
         stop_reason: data["stop_reason"].as_str().map(str::to_string),
+    })
+}
+
+/// A content block being streamed. Tool input arrives as partial JSON that
+/// can be empty for tools without arguments, so those close with "{}".
+struct OpenBlock {
+    kind: BlockKind,
+    idx: usize,
+    got_input: bool,
+}
+
+fn close_block(block: OpenBlock, sink: provider::EventSink<'_>) {
+    if matches!(block.kind, BlockKind::ToolCall { .. }) && !block.got_input {
+        sink(StreamEvent::BlockDelta { index: block.idx, delta: "{}".to_string() });
     }
+    sink(StreamEvent::BlockEnd { index: block.idx });
 }
 
 #[async_trait::async_trait]
@@ -265,7 +280,7 @@ impl LlmProvider for AnthropicProvider {
 
         let data: Value = resp.json().await.map_err(|e| errors::parse_error(format!("parse error: {}", e)))?;
 
-        Ok(parse_response(&data))
+        parse_response(&data)
     }
 
     async fn stream(
@@ -294,13 +309,8 @@ impl LlmProvider for AnthropicProvider {
             return Err(errors::from_response(status, &headers, text));
         }
 
-        struct BlockState {
-            kind: BlockKind,
-            idx: usize,
-        }
-
         let mut next_block_idx: usize = 0;
-        let mut current_block: Option<BlockState> = None;
+        let mut current_block: Option<OpenBlock> = None;
         let mut input_tokens: Option<i32> = None;
         let mut output_tokens: Option<i32> = None;
         let mut cached_tokens: Option<i32> = None;
@@ -365,11 +375,11 @@ impl LlmProvider for AnthropicProvider {
                                     _ => continue,
                                 };
                                 if let Some(previous) = current_block.take() {
-                                    sink(StreamEvent::BlockEnd { index: previous.idx });
+                                    close_block(previous, sink);
                                 }
                                 let idx = next_block_idx;
                                 next_block_idx += 1;
-                                current_block = Some(BlockState { idx, kind: kind.clone() });
+                                current_block = Some(OpenBlock { idx, kind: kind.clone(), got_input: false });
                                 sink(StreamEvent::BlockStart { index: idx, kind });
                             }
                             Some("content_block_delta") => {
@@ -387,15 +397,17 @@ impl LlmProvider for AnthropicProvider {
                                             }
                                         }
                                         BlockKind::ToolCall { .. } => {
-                                            let partial = delta["partial_json"].as_str().unwrap_or("");
-                                            sink(StreamEvent::BlockDelta { index: block.idx, delta: partial.to_string() });
+                                            if let Some(partial) = delta["partial_json"].as_str().filter(|t| !t.is_empty()) {
+                                                block.got_input = true;
+                                                sink(StreamEvent::BlockDelta { index: block.idx, delta: partial.to_string() });
+                                            }
                                         }
                                     }
                                 }
                             }
                             Some("content_block_stop") => {
                                 if let Some(block) = current_block.take() {
-                                    sink(StreamEvent::BlockEnd { index: block.idx });
+                                    close_block(block, sink);
                                 }
                             }
                             Some("message_delta") => {
@@ -419,14 +431,107 @@ impl LlmProvider for AnthropicProvider {
             }
         }
 
-        // Stream ended without message_stop
-        let usage = Some(TokenUsage {
-            prompt_tokens: input_tokens,
-            completion_tokens: output_tokens,
-            total_tokens: input_tokens.zip(output_tokens).map(|(i, o)| i + o),
-            cached_tokens,
-            cache_creation_tokens,
+        // The connection closed before message_stop, so the response is cut short.
+        Err(errors::stream_error("Anthropic stream ended before message_stop".to_string(), None, None))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use provider::UserBlock;
+    use provider::LlmErrorKind;
+    use provider::fold_events;
+    use std::io::{Read, Write};
+
+    /// Serves one HTTP response with `body` and returns the base URL.
+    fn serve(body: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut req = Vec::new();
+            let mut chunk = [0u8; 4096];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut chunk).unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&chunk[..n]);
+            }
+            let head = String::from_utf8_lossy(&req).to_lowercase();
+            let len: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .map(|v| v.trim().parse().unwrap())
+                .unwrap_or(0);
+            let body_start = req.windows(4).position(|w| w == b"\r\n\r\n").map_or(req.len(), |p| p + 4);
+            let mut have = req.len() - body_start;
+            while have < len {
+                let n = sock.read(&mut chunk).unwrap();
+                if n == 0 {
+                    break;
+                }
+                have += n;
+            }
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(resp.as_bytes()).unwrap();
         });
-        Ok(StreamEnd { usage, stop_reason })
+        format!("http://{addr}")
+    }
+
+    fn run_stream(body: &'static str) -> (Result<StreamEnd, LlmError>, Vec<StreamEvent>) {
+        let provider = AnthropicProvider::new("key", serve(body));
+        let request = LlmRequest::new(
+            vec![Message::User { blocks: vec![UserBlock::Text("hi".to_string())] }],
+            vec![],
+        );
+        let mut events = Vec::new();
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut sink = |e: StreamEvent| events.push(e);
+                provider.stream("model", request, &mut sink).await
+            });
+        (result, events)
+    }
+
+    const NO_ARG_TOOL_STREAM: &str = concat!(
+        "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"ping\",\"input\":{}}}\n\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\"}}\n\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+
+    #[test]
+    fn tool_without_input_streams_empty_object() {
+        let (result, events) = run_stream(NO_ARG_TOOL_STREAM);
+        result.unwrap();
+        let (blocks, _) = fold_events(&events);
+        match &blocks[..] {
+            [Block::ToolCall(tc)] => assert_eq!(tc.arguments, "{}"),
+            other => panic!("unexpected blocks: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_cut_before_message_stop_is_an_error() {
+        let truncated = NO_ARG_TOOL_STREAM.trim_end_matches("data: {\"type\":\"message_stop\"}\n\n");
+        let (result, _) = run_stream(Box::leak(truncated.to_string().into_boxed_str()));
+        assert!(matches!(result, Err(LlmError { kind: LlmErrorKind::Transient { .. }, .. })));
+    }
+
+    #[test]
+    fn empty_content_is_an_error_not_a_panic() {
+        let data = json!({"content": [], "stop_reason": "end_turn"});
+        assert!(parse_response(&data).is_err());
     }
 }

@@ -153,7 +153,8 @@ fn tools_to_json(tools: &[provider::ToolDefinition]) -> Vec<Value> {
 }
 
 fn extract_usage(v: &Value) -> Option<TokenUsage> {
-    let u = v.get("usage")?;
+    // Streams send "usage": null on chunks before the final usage chunk.
+    let u = v.get("usage").filter(|u| u.is_object())?;
     Some(TokenUsage {
         prompt_tokens: u["prompt_tokens"].as_i64().map(|n| n as i32),
         completion_tokens: u["completion_tokens"].as_i64().map(|n| n as i32),
@@ -229,7 +230,7 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
         }
 
         Ok(CompletedLlmResponse {
-            response: provider::AssistantResponse::new(blocks).unwrap(),
+            response: provider::AssistantResponse::new(blocks).ok_or_else(errors::empty_response)?,
             usage: extract_usage(&resp),
             stop_reason: finish_reason,
         })
@@ -419,9 +420,15 @@ impl LlmProvider for OpenAiChatCompletionsProvider {
 #[cfg(test)]
 mod tests {
     use super::extract_reasoning;
+    use super::extract_usage;
     use super::messages_to_json;
     use super::normalize_base_url;
+    use provider::LlmError;
+    use provider::LlmErrorKind;
+    use provider::LlmProvider;
+    use provider::LlmRequest;
     use provider::Message;
+    use std::io::{Read, Write};
     use provider::ToolResult;
     use provider::UserBlock;
     use serde_json::json;
@@ -467,5 +474,66 @@ mod tests {
         assert_eq!(messages[0]["tool_call_id"], "call_1");
         assert_eq!(messages[1]["role"], "user");
         assert_eq!(messages[1]["content"], "continue");
+    }
+
+    #[test]
+    fn null_usage_on_a_chunk_is_not_usage() {
+        assert!(extract_usage(&json!({"usage": null})).is_none());
+        let usage = extract_usage(&json!({"usage": {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5}})).unwrap();
+        assert_eq!(usage.prompt_tokens, Some(4));
+    }
+
+    /// Serves one HTTP response with `body` and returns the base URL.
+    fn serve(body: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut req = Vec::new();
+            let mut chunk = [0u8; 4096];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut chunk).unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&chunk[..n]);
+            }
+            let head = String::from_utf8_lossy(&req).to_lowercase();
+            let len: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .map(|v| v.trim().parse().unwrap())
+                .unwrap_or(0);
+            let body_start = req.windows(4).position(|w| w == b"\r\n\r\n").map_or(req.len(), |p| p + 4);
+            let mut have = req.len() - body_start;
+            while have < len {
+                let n = sock.read(&mut chunk).unwrap();
+                if n == 0 {
+                    break;
+                }
+                have += n;
+            }
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(resp.as_bytes()).unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
+    fn empty_completion_is_an_error_not_a_panic() {
+        let provider = super::OpenAiChatCompletionsProvider::new("key", serve(
+            r#"{"id":"x","object":"chat.completion","created":0,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}"#,
+        ));
+        let request = LlmRequest::new(vec![], vec![]);
+        let result: Result<_, LlmError> = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(provider.complete("m", request));
+        assert!(matches!(result, Err(LlmError { kind: LlmErrorKind::Transient { .. }, .. })));
     }
 }

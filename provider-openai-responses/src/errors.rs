@@ -22,8 +22,19 @@ pub(crate) fn parse_error(message: String) -> LlmError {
     LlmError { kind: LlmErrorKind::Fatal, message, status: None, request_id: None }
 }
 
-pub(crate) fn stream_error(message: String, request_id: Option<String>) -> LlmError {
-    LlmError { kind: LlmErrorKind::Transient { retry_after: None }, message, status: None, request_id }
+/// A successful reply with no content. Sending the request again may work.
+pub(crate) fn empty_response() -> LlmError {
+    LlmError {
+        kind: LlmErrorKind::Transient { retry_after: None },
+        message: "model returned an empty response".to_string(),
+        status: None,
+        request_id: None,
+    }
+}
+
+pub(crate) fn stream_error(message: String, request_id: Option<String>, code: Option<&str>) -> LlmError {
+    let kind = classify_body_type(code).unwrap_or(LlmErrorKind::Transient { retry_after: None });
+    LlmError { kind, message, status: None, request_id }
 }
 
 fn body_kind(body: &str) -> Option<LlmErrorKind> {
@@ -48,6 +59,7 @@ fn classify_status(status: Option<StatusCode>, body: Option<LlmErrorKind>, retry
 pub(crate) fn classify_body_type(value: Option<&str>) -> Option<LlmErrorKind> {
     match value? {
         "insufficient_quota" | "quota_exceeded" | "exceeded_current_quota_error" | "payment_required" => Some(LlmErrorKind::Fatal),
+        "context_length_exceeded" | "invalid_prompt" | "invalid_request_error" => Some(LlmErrorKind::Fatal),
         "rate_limit_exceeded" | "rate_limit_reached_error" | "engine_overloaded_error" => Some(LlmErrorKind::Transient { retry_after: None }),
         _ => None,
     }
@@ -71,6 +83,12 @@ mod tests {
         assert!(matches!(classify_status(Some(StatusCode::SERVICE_UNAVAILABLE), None, None), LlmErrorKind::Transient { .. }));
         let transport = reqwest::Client::new().get("http://").build().unwrap_err();
         assert!(matches!(from_transport(transport).kind, LlmErrorKind::Transient { .. }));
+    }
+
+    #[test]
+    fn in_band_stream_codes_are_classified() {
+        assert!(matches!(stream_error("too long".to_string(), None, Some("context_length_exceeded")).kind, LlmErrorKind::Fatal));
+        assert!(matches!(stream_error("busy".to_string(), None, Some("server_error")).kind, LlmErrorKind::Transient { .. }));
     }
 
     #[test]
