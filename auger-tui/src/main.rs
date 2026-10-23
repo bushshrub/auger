@@ -228,6 +228,26 @@ async fn run_command(command: Command, app: &mut App, tx: &mpsc::Sender<TuiEvent
 
         Command::Help => app.push_notice(command::help_text()),
 
+        Command::Statusline { fields: None } => app.push_notice(format!(
+            "Statusline: {}\n\nAvailable: {}\n\nSet with `/statusline model input output status`.",
+            config::names(&app.statusline),
+            config::StatusItem::ALL_NAMES.join(" "),
+        )),
+        Command::Statusline { fields: Some(fields) } => match config::parse_items(&fields) {
+            Ok(items) => {
+                app.statusline = items;
+                match config::save_statusline(&app.statusline) {
+                    Ok(path) => app.push_notice(format!(
+                        "Statusline: {} (saved to {})",
+                        config::names(&app.statusline),
+                        path.display()
+                    )),
+                    Err(e) => app.push_error(format!("Statusline set, but not saved: {e}")),
+                }
+            }
+            Err(e) => app.push_error(e),
+        },
+
         Command::Quit => app.should_quit = true,
 
         Command::Unknown { name } => {

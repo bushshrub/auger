@@ -21,6 +21,64 @@ pub enum StatusItem {
     Context,
 }
 
+impl StatusItem {
+    const ALL: [(StatusItem, &'static str); 6] = [
+        (StatusItem::Model, "model"),
+        (StatusItem::Effort, "effort"),
+        (StatusItem::Input, "input"),
+        (StatusItem::Output, "output"),
+        (StatusItem::Status, "status"),
+        (StatusItem::Context, "context"),
+    ];
+    pub const ALL_NAMES: [&'static str; 6] = ["model", "effort", "input", "output", "status", "context"];
+
+    fn name(self) -> &'static str {
+        Self::ALL.iter().find(|(item, _)| *item == self).map_or("?", |(_, n)| n)
+    }
+}
+
+/// Space-separated field names, e.g. "model input status".
+pub fn names(items: &[StatusItem]) -> String {
+    items.iter().map(|i| i.name()).collect::<Vec<_>>().join(" ")
+}
+
+/// Parse space- or comma-separated field names.
+pub fn parse_items(text: &str) -> Result<Vec<StatusItem>, String> {
+    text.split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|w| !w.is_empty())
+        .map(|word| {
+            StatusItem::ALL
+                .iter()
+                .find(|(_, n)| *n == word)
+                .map(|(item, _)| *item)
+                .ok_or_else(|| {
+                    format!("unknown statusline field `{word}`; try: {}", StatusItem::ALL_NAMES.join(" "))
+                })
+        })
+        .collect()
+}
+
+/// Write `items` to `[tui] statusline` in the config file, keeping the rest
+/// of the file (comments included) as it is.
+pub fn save_statusline(items: &[StatusItem]) -> anyhow::Result<PathBuf> {
+    let path = config_path().ok_or_else(|| anyhow::anyhow!("no HOME or XDG_CONFIG_HOME"))?;
+    let contents = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = contents.parse()?;
+    let mut array = toml_edit::Array::new();
+    for item in items {
+        array.push(item.name());
+    }
+    if !doc.contains_table("tui") {
+        doc["tui"] = toml_edit::table();
+    }
+    doc["tui"]["statusline"] = toml_edit::value(array);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, doc.to_string())?;
+    Ok(path)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TuiConfig {

@@ -19,3 +19,4 @@ similar = { version = "3.1.1", default-features = false, features = ["text"] }
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 agent-server = { version = "0.1.0", path = "../agent-server" }
 toml = "1.1.8"
+toml_edit = "0.25.17"

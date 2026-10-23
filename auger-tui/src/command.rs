@@ -16,6 +16,8 @@ pub enum Command {
     Model { name: Option<String> },
     /// List the available commands.
     Help,
+    /// Show the statusline fields, or set them.
+    Statusline { fields: Option<String> },
     /// Exit the TUI.
     Quit,
     /// Typed something starting with `/` that isn't a command.
@@ -31,6 +33,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "/model [name]",
         "show the model, or start a session on another",
     ),
+    ("/statusline [fields]", "show or set the statusline fields"),
     ("/help", "show this list"),
     ("/quit", "exit auger"),
 ];
@@ -59,6 +62,9 @@ pub fn parse(input: &str) -> Option<Command> {
             name: argument.map(str::to_string),
         },
         "help" | "?" => Command::Help,
+        "statusline" => Command::Statusline {
+            fields: argument.map(str::to_string),
+        },
         "quit" | "exit" | "q" => Command::Quit,
         other => Command::Unknown {
             name: other.to_string(),
