@@ -54,7 +54,9 @@ const FIND_BANNED: &[&str] = &[
 const RG_BANNED: &[&str] = &["--pre", "--pre-glob", "--hostname-bin"];
 const SORT_BANNED: &[&str] = &["-o", "--output", "--compress-program"];
 const GIT_BANNED: &[&str] = &["--output", "--ext-diff", "--textconv"];
-const GIT_SUBCOMMANDS: &[&str] = &["status", "diff", "log", "show", "rev-parse", "ls-files", "blame"];
+const GIT_SUBCOMMANDS: &[&str] = &[
+    "status", "diff", "log", "show", "rev-parse", "ls-files", "blame", "shortlog",
+];
 
 fn rule(program: &str) -> Option<Rule> {
     Some(match program {
@@ -130,6 +132,9 @@ fn command_ok(argv: &[Arg], cwd: &Path, workspace: &Path) -> bool {
     if program.text == "git" {
         return git_ok(args, cwd, workspace);
     }
+    if program.text == "sed" {
+        return sed_ok(args, cwd, workspace);
+    }
     match rule(&program.text) {
         Some(Rule::Free) => true,
         Some(Rule::Paths) => args.iter().all(|a| path_ok(a, cwd, workspace)),
@@ -154,10 +159,29 @@ fn git_ok(args: &[Arg], cwd: &Path, workspace: &Path) -> bool {
     let Some((subcommand, rest)) = args.split_first() else {
         return false;
     };
+    // `git branch` with only listing flags; a name would create a branch.
+    if subcommand.text == "branch" {
+        return rest
+            .iter()
+            .all(|a| matches!(a.text.as_str(), "-a" | "-r" | "-v" | "-vv" | "--all" | "--list"));
+    }
     GIT_SUBCOMMANDS.contains(&subcommand.text.as_str())
         && rest.iter().all(|a| {
             !a.expands && !is_banned(&a.text, GIT_BANNED) && path_ok(a, cwd, workspace)
         })
+}
+
+/// `sed -n '<lines>p' files...`: printing a line range only. Any other sed
+/// script can write files (`w`) or run commands (`e`).
+fn sed_ok(args: &[Arg], cwd: &Path, workspace: &Path) -> bool {
+    let [quiet, script, files @ ..] = args else {
+        return false;
+    };
+    let range = script.text.strip_suffix('p').unwrap_or("");
+    quiet.text == "-n"
+        && !range.is_empty()
+        && range.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '$')
+        && files.iter().all(|a| !a.expands && !a.text.starts_with('-') && path_ok(a, cwd, workspace))
 }
 
 fn is_banned(arg: &str, banned: &[&str]) -> bool {
@@ -209,6 +233,8 @@ mod tests {
             "git diff --stat 2>&1 | tail -40",
             "find . -name '*.rs' | wc -l",
             "ls -la src >/dev/null",
+            "git branch -a && git shortlog -sn | head",
+            "cd $WS && sed -n 110,180p src/a.rs && echo '=== x ===' && head -70 src/b.rs",
         ] {
             assert!(allowed(cmd), "denied: {cmd}");
         }
@@ -230,11 +256,16 @@ mod tests {
             "sort -ro out in",
             "git -c core.pager=sh log",
             "git commit -m x",
+            "git branch new-feature",
+            "git branch -D main",
             "git diff --output=x",
             "cd /tmp && ls",
             "cd src; ls",
             "ls | sh",
             "xargs cat",
+            "sed -i s/a/b/ src/a.rs",
+            "sed -n 1w/tmp/x src/a.rs",
+            "sed -n 1p /etc/hosts",
         ] {
             assert!(!allowed(cmd), "allowed: {cmd}");
         }
