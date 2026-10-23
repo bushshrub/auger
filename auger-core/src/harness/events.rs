@@ -1,5 +1,6 @@
 //! Events and command types for a session
 
+use crate::harness::tool_engine::ToolMessage;
 use crate::harness::tool_engine::result::ToolCallResult;
 use crate::record::SessionRecord;
 use auger_driver::StreamResult;
@@ -59,4 +60,6 @@ pub(crate) enum LoopMessage {
     Cmd(SessionCommand),
     /// A streaming future completed.
     StreamResult(StreamResult),
+    /// A message from a tool task, forwarded to the tool phase engine.
+    Tool(ToolMessage),
 }

@@ -1,6 +1,5 @@
+use crate::harness::tool_engine::ToolPhaseEngine;
 use auger_driver::LlmStreamingInterrupted;
-use auger_driver::RestoredAgent;
-use auger_driver::StreamResult;
 use auger_driver::TypedAgent;
 use auger_driver::WaitingForToolResponses;
 use auger_driver::WaitingForUserMessage;
@@ -29,30 +28,6 @@ pub(crate) enum HarnessState {
     /// results go back to the model.
     ToolPhase {
         agent: TypedAgent<WaitingForToolResponses>,
+        engine: ToolPhaseEngine,
     },
-}
-
-impl From<StreamResult> for HarnessState {
-    fn from(result: StreamResult) -> Self {
-        match result {
-            StreamResult::Interrupted(agent) => Self::StreamingInterrupted { agent },
-            StreamResult::Failed { agent, .. } => Self::StreamingFailed { agent },
-            StreamResult::WaitingForUserMessage { agent, .. } => Self::WaitingForUserMessage { agent },
-            StreamResult::WaitingForToolResponses { agent, .. } => Self::ToolPhase { agent },
-        }
-    }
-}
-
-impl From<RestoredAgent> for HarnessState {
-    fn from(agent: RestoredAgent) -> Self {
-        match agent {
-            RestoredAgent::WaitingForUserMessage(agent) => {
-                HarnessState::WaitingForUserMessage { agent }
-            }
-            RestoredAgent::WaitingForToolResponses(agent) => {
-                HarnessState::ToolPhase { agent }
-            }
-            RestoredAgent::Interrupted(agent) => HarnessState::StreamingInterrupted { agent },
-        }
-    }
 }

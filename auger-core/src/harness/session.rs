@@ -3,6 +3,9 @@ use crate::harness::events::LoopMessage;
 use crate::harness::events::SessionCommand;
 use crate::harness::events::SessionEvent;
 use crate::harness::states::HarnessState;
+use crate::harness::tool_engine::Phase;
+use crate::harness::tool_engine::ToolMessageSender;
+use crate::harness::tool_engine::ToolPhaseEngine;
 use crate::harness::tool_engine::registry::ToolRegistry;
 use crate::record::recorder::SessionRecorder;
 use crate::record::session::SessionId;
@@ -14,6 +17,7 @@ use auger_driver::ReadyToStream;
 use auger_driver::RestoredAgent;
 use auger_driver::StreamResult;
 use auger_driver::TypedAgent;
+use auger_driver::WaitingForToolResponses;
 use auger_driver::restore;
 use chrono::DateTime;
 use chrono::Utc;
@@ -144,9 +148,45 @@ impl Session {
         HarnessState::Streaming { cancel }
     }
 
+    /// Run the tool calls of `agent`. Streams again at once if there is
+    /// nothing to wait for.
+    fn start_tool_phase(
+        &self,
+        agent: TypedAgent<WaitingForToolResponses>,
+        rt: &Handle,
+    ) -> HarnessState {
+        let inbox_tx = self.harness_internal_event_tx.clone();
+        let send: ToolMessageSender = Arc::new(move |msg| {
+            let _ = inbox_tx.send(LoopMessage::Tool(msg));
+        });
+        let phase = ToolPhaseEngine::start(agent.get_batch(), self.tool_registry.clone(), rt, send);
+        self.continue_tool_phase(agent, phase, rt)
+    }
+
+    fn continue_tool_phase(
+        &self,
+        agent: TypedAgent<WaitingForToolResponses>,
+        phase: Phase,
+        rt: &Handle,
+    ) -> HarnessState {
+        match phase {
+            Phase::Pending(engine) => HarnessState::ToolPhase { agent, engine },
+            Phase::Done(batch) => {
+                info!(session_id = %self.id, "Sending tool results back to the model");
+                self.start_stream(agent.add_all_tool_responses(batch), rt)
+            }
+        }
+    }
+
     fn run(mut self, rt: Handle, init_agent: RestoredAgent) {
         info!(session_id = %self.id, "Session started");
-        let mut curr_state = init_agent.into();
+        let mut curr_state = match init_agent {
+            RestoredAgent::WaitingForUserMessage(agent) => {
+                HarnessState::WaitingForUserMessage { agent }
+            }
+            RestoredAgent::WaitingForToolResponses(agent) => self.start_tool_phase(agent, &rt),
+            RestoredAgent::Interrupted(agent) => HarnessState::StreamingInterrupted { agent },
+        };
         'session_loop: while let Ok(msg) = self.cmd_rx.recv() {
             match msg {
                 LoopMessage::Cmd(cmd) => match cmd {
@@ -252,8 +292,7 @@ impl Session {
                                 StreamResult::WaitingForToolResponses { agent, end } => {
                                     info!(session_id = %self.id, "stream finished: agent has called tools");
 
-                                    let turn_id = self
-                                        .recorder
+                                    self.recorder
                                         .record_assistant(AssistantTurnOutcome::Completed {
                                             response: agent.previous_message().clone(),
                                         })
@@ -263,8 +302,7 @@ impl Session {
                                         stop_reason: end.stop_reason,
                                     });
 
-                                    let _ = (agent, turn_id);
-                                    todo!("start the tool phase")
+                                    self.start_tool_phase(agent, &rt)
                                 }
                                 StreamResult::WaitingForUserMessage { agent, end } => {
                                     info!(session_id=%self.id, "Stream has returned: No tools called");
@@ -312,6 +350,20 @@ impl Session {
                             }
                         },
                         _ => curr_state,
+                    };
+                }
+                LoopMessage::Tool(msg) => {
+                    curr_state = match curr_state {
+                        HarnessState::ToolPhase { agent, engine } => {
+                            let received = engine.receive(msg);
+                            if let Some(result) = received.finished {
+                                self.recorder.record_tool_result(result.clone());
+                                let _ = self.event_tx.send(SessionEvent::ToolCallResult(result));
+                            }
+                            self.continue_tool_phase(agent, received.phase, &rt)
+                        }
+                        // The phase is over: a late result, drop it.
+                        other => other,
                     };
                 }
             }

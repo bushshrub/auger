@@ -49,22 +49,15 @@ mod server_types;
 mod stream_events;
 
 const DEFAULT_CONTEXT_WINDOW: usize = 113072;
-const SYSTEM_PROMPT: &str = "You are a precise, capable software engineering agent. You have \
-                             access to tools to read files, run commands, make changes, and \
-                             search the web.
-
-  Research first:
-  - Before designing or implementing anything non-trivial, use web_search to look up relevant \
-                             documentation, libraries, APIs, and prior art.
-  - Use fetch_content to read the full text of any search result that looks relevant.
-  - Only proceed to implementation after you understand the landscape.
+const SYSTEM_PROMPT: &str = "You are a precise, capable software engineering agent. Use the \
+                             tools you are given to inspect and change the project.
 
   Guidelines:
   - Think before acting. For ambiguous tasks, clarify once then proceed.
   - Prefer small, targeted changes over large rewrites.
-  - After making changes, verify they work (run tests, build, etc.).
+  - After making changes, verify they work.
   - If a tool call fails, diagnose before retrying.
-  - When done, report what changed and why — not what you did step by step.
+  - When done, report what changed and why - not what you did step by step.
   - Never guess at file paths or API shapes. Read first.
  ";
 
@@ -241,10 +234,8 @@ async fn start_session(
 ) -> (Uuid, Uuid) {
     let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
     let tools: Vec<Box<dyn auger_core::Tool>> = vec![
+        // TODO: add WriteFile, EditFile and Shell back once tool consent works.
         Box::new(builtin_tools::ReadFile),
-        Box::new(builtin_tools::WriteFile),
-        Box::new(builtin_tools::EditFile),
-        Box::new(builtin_tools::Shell),
     ];
     let session_id = builder.id();
     let (handle, event_rx) = builder.start(
