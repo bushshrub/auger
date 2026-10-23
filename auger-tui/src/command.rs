@@ -10,8 +10,8 @@
 pub enum Command {
     /// Start a new session, optionally with a specific model.
     New { model: Option<String> },
-    /// Return to the session list.
-    Sessions,
+    /// Pick a past session to continue.
+    Resume,
     /// Show the current model, or start a new session on a different one.
     Model { name: Option<String> },
     /// List the available commands.
@@ -26,7 +26,7 @@ pub enum Command {
 /// sync with what `parse` accepts.
 pub const COMMANDS: &[(&str, &str)] = &[
     ("/new [model]", "start a new session"),
-    ("/sessions", "back to the session list"),
+    ("/resume", "continue a past session"),
     (
         "/model [name]",
         "show the model, or start a session on another",
@@ -54,7 +54,7 @@ pub fn parse(input: &str) -> Option<Command> {
         "new" => Command::New {
             model: argument.map(str::to_string),
         },
-        "sessions" | "list" => Command::Sessions,
+        "resume" => Command::Resume,
         "model" => Command::Model {
             name: argument.map(str::to_string),
         },
@@ -119,7 +119,7 @@ mod tests {
     fn aliases_resolve() {
         assert_eq!(parse("/q"), Some(Command::Quit));
         assert_eq!(parse("/exit"), Some(Command::Quit));
-        assert_eq!(parse("/list"), Some(Command::Sessions));
+        assert_eq!(parse("/resume"), Some(Command::Resume));
         assert_eq!(parse("/?"), Some(Command::Help));
     }
 

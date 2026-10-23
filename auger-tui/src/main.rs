@@ -1,36 +1,47 @@
-use crossterm::event::DisableMouseCapture;
-use crossterm::event::EnableMouseCapture;
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
-use crossterm::event::MouseButton;
-use crossterm::event::MouseEvent;
-use crossterm::event::MouseEventKind;
-use crossterm::execute;
-use crossterm::terminal::EnterAlternateScreen;
-use crossterm::terminal::LeaveAlternateScreen;
-use crossterm::terminal::disable_raw_mode;
-use crossterm::terminal::enable_raw_mode;
+use ratatui::TerminalOptions;
+use ratatui::Viewport;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
 mod api;
 mod app;
+mod approval;
 mod command;
 mod completion;
+mod config;
 mod diff;
+mod history;
 mod markdown;
+mod shell;
+mod statusline;
 mod toolargs;
 mod types;
 mod ui;
+mod working;
 
 use app::App;
-use app::View;
+use approval::Choice;
+use types::Status;
 use command::Command;
 use types::AppEvent;
 use types::TuiEvent;
+
+/// Run the agent server in this process on a free local port and return its URL.
+async fn start_embedded_server() -> anyhow::Result<String> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    tokio::spawn(async move {
+        if let Err(error) = agent_server::serve(listener).await {
+            eprintln!("embedded agent server stopped: {error}");
+        }
+    });
+    Ok(format!("http://{addr}"))
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -45,10 +56,14 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             None
-        })
-        .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
+        });
+    let server = match server {
+        Some(server) => server,
+        None => start_embedded_server().await?,
+    };
 
     let mut app = App::new();
+    app.statusline = config::TuiConfig::load()?.statusline;
 
     // Unified event channel: terminal input + async app events.
     // Large buffer so fast SSE streams don't block the producer.
@@ -56,8 +71,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn terminal event reader
     let term_tx = tx.clone();
+    // Stops once the app drops the receiver; the runtime waits for this
+    // thread on shutdown.
     tokio::task::spawn_blocking(move || {
-        loop {
+        while !term_tx.is_closed() {
+            if shell::INPUT_PAUSED.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
             if crossterm::event::poll(Duration::from_millis(50)).unwrap_or(false) {
                 if let Ok(ev) = crossterm::event::read() {
                     if term_tx.blocking_send(TuiEvent::Terminal(ev)).is_err() {
@@ -68,39 +89,26 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Load sessions on startup
-    let startup_tx = tx.clone();
-    let startup_server = server.clone();
-    tokio::spawn(async move {
-        match api::list_sessions(&startup_server).await {
-            Ok(sessions) => {
-                let _ = startup_tx
-                    .send(TuiEvent::App(AppEvent::SessionsLoaded(sessions)))
-                    .await;
-            }
-            Err(e) => {
-                let _ = startup_tx
-                    .send(TuiEvent::App(AppEvent::NetworkError(e.to_string())))
-                    .await;
-            }
-        }
+    spawn_create_session(None, &tx, &server);
+
+    // In raw mode Ctrl-C is a key, but while a `!` command runs the terminal
+    // is cooked and SIGINT reaches this process too. Swallow it so only the
+    // command stops.
+    tokio::spawn(async {
+        while tokio::signal::ctrl_c().await.is_ok() {}
     });
 
-    // Set up terminal
-    enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    // Mouse capture drives click-to-expand and wheel scrolling. It also takes
-    // over the terminal's own selection; most terminals still select on
-    // shift-drag.
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let mut terminal = ratatui::init();
+    // Inline viewport: finished items are printed above it into the
+    // terminal's own scrollback.
+    let mut terminal = ratatui::init_with_options(TerminalOptions {
+        viewport: Viewport::Inline(ui::VIEWPORT_HEIGHT),
+    });
 
     let result = run(&mut terminal, &mut app, &mut rx, &tx, &server).await;
 
-    // Restore terminal
+    // Leave the transcript in scrollback and the shell prompt below it.
+    let _ = terminal.clear();
     ratatui::restore();
-    execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
-    disable_raw_mode()?;
 
     result
 }
@@ -115,6 +123,10 @@ async fn run(
     server: &str,
 ) -> anyhow::Result<()> {
     loop {
+        ui::flush_finished(terminal, app)?;
+        if let Some(command) = app.shell_request.take() {
+            shell::run(terminal, &command, ui::VIEWPORT_HEIGHT)?;
+        }
         terminal.draw(|f| ui::render(f, app))?;
 
         // Wait for the first event, then drain everything that arrived in the
@@ -136,6 +148,7 @@ async fn run(
             _ = tokio::time::sleep_until(deadline.into()) => {}
         }
 
+        app.track_working();
         if app.should_quit {
             break;
         }
@@ -167,11 +180,13 @@ async fn handle_terminal_event(
     server: &str,
 ) {
     match ev {
-        Event::Key(key) if key.kind == KeyEventKind::Press => match app.view {
-            View::SessionList => handle_session_list_key(key, app, tx, server).await,
-            View::Chat => handle_chat_key(key, app, tx, server).await,
-        },
-        Event::Mouse(mouse) if app.view == View::Chat => handle_chat_mouse(mouse, app),
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            if app.picker.is_some() {
+                handle_picker_key(key, app, tx, server);
+            } else {
+                handle_chat_key(key, app, tx, server).await;
+            }
+        }
         _ => {}
     }
 }
@@ -182,8 +197,8 @@ async fn run_command(command: Command, app: &mut App, tx: &mpsc::Sender<TuiEvent
     match command {
         Command::New { model } => {
             app.push_notice(match &model {
-                Some(m) => format!("Starting a new session on {m}…"),
-                None => "Starting a new session…".to_string(),
+                Some(m) => format!("Starting a new session on {m}..."),
+                None => "Starting a new session...".to_string(),
             });
             spawn_create_session(model, tx, server);
         }
@@ -192,7 +207,7 @@ async fn run_command(command: Command, app: &mut App, tx: &mpsc::Sender<TuiEvent
             // The API has no way to change a running session's model, so the
             // only honest action is to start a fresh one.
             Some(model) => {
-                app.push_notice(format!("Starting a new session on {model}…"));
+                app.push_notice(format!("Starting a new session on {model}..."));
                 spawn_create_session(Some(model), tx, server);
             }
             None => {
@@ -203,23 +218,20 @@ async fn run_command(command: Command, app: &mut App, tx: &mpsc::Sender<TuiEvent
                     .unwrap_or_else(|| "unknown".to_string());
                 app.push_notice(format!(
                     "Model: {current}\n\n\
-                     `/model <name>` starts a *new* session — a running session's \
+                     `/model <name>` starts a *new* session; a running session's \
                      model can't be changed."
                 ));
             }
         },
 
-        Command::Sessions => {
-            app.view = View::SessionList;
-            refresh_sessions(tx, server);
-        }
+        Command::Resume => refresh_sessions(tx, server),
 
         Command::Help => app.push_notice(command::help_text()),
 
         Command::Quit => app.should_quit = true,
 
         Command::Unknown { name } => {
-            app.push_error(format!("Unknown command: /{name} — try /help"));
+            app.push_error(format!("Unknown command: /{name}, try /help"));
         }
     }
 }
@@ -280,36 +292,50 @@ fn respond_to_tools(
     });
 }
 
-fn handle_chat_mouse(mouse: MouseEvent, app: &mut App) {
-    match mouse.kind {
-        MouseEventKind::Down(MouseButton::Left) => {
-            app.click(mouse.column, mouse.row);
-        }
-        MouseEventKind::ScrollUp => app.scroll_up(3),
-        MouseEventKind::ScrollDown => app.scroll_down(3),
-        _ => {}
+/// Keys while the approval panel is open: arrows and Enter pick a row,
+/// y/a/n/d and Esc choose directly. Every queued call needs its own answer.
+fn handle_approval_key(
+    key: crossterm::event::KeyEvent,
+    app: &mut App,
+    tx: &mpsc::Sender<TuiEvent>,
+    server: &str,
+) {
+    let choice = match key.code {
+        KeyCode::Up | KeyCode::Char('k') => return app.approval_prev(),
+        KeyCode::Down | KeyCode::Char('j') => return app.approval_next(),
+        KeyCode::Enter => app.approval_choice(),
+        KeyCode::Char('y') => Some(Choice::Approve),
+        KeyCode::Char('a') => Some(Choice::ApproveAll),
+        KeyCode::Char('n') | KeyCode::Esc => Some(Choice::Deny),
+        KeyCode::Char('d') => Some(Choice::DenyAll),
+        _ => None,
+    };
+    if let Some((sid, token, ids)) = choice.and_then(|c| app.decide(c).map(|d| (d, c))).map(
+        |((sid, token, ids), c)| (sid, token, (ids, c.approved())),
+    ) {
+        let (ids, approved) = ids;
+        respond_to_tools(sid, token, ids, approved, tx, server);
     }
 }
 
-async fn handle_session_list_key(
+/// Keys while the `/resume` picker is open.
+fn handle_picker_key(
     key: crossterm::event::KeyEvent,
     app: &mut App,
     tx: &mpsc::Sender<TuiEvent>,
     server: &str,
 ) {
     match key.code {
-        KeyCode::Char('q') => {
-            app.should_quit = true;
-        }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
-        KeyCode::Down | KeyCode::Char('j') => app.session_list_next(),
-        KeyCode::Up | KeyCode::Char('k') => app.session_list_prev(),
+        KeyCode::Down | KeyCode::Char('j') => app.picker_next(),
+        KeyCode::Up | KeyCode::Char('k') => app.picker_prev(),
+        KeyCode::Esc => app.picker = None,
         KeyCode::Enter => {
-            if let Some(info) = app.selected_session().cloned() {
+            if let Some(info) = app.take_picked() {
                 app.open_session(&info);
-                // spawn_event_stream loads snapshot first, then subscribes to live events
+                // Loads the snapshot first, then subscribes to live events.
                 api::spawn_event_stream(
                     server.to_string(),
                     info.session_id,
@@ -317,22 +343,6 @@ async fn handle_session_list_key(
                     tx.clone(),
                 );
             }
-        }
-        KeyCode::Char('n') => {
-            let app_tx = tx.clone();
-            let s = server.to_string();
-            tokio::spawn(async move {
-                match api::create_session(&s, None).await {
-                    Ok(ev) => {
-                        let _ = app_tx.send(TuiEvent::App(ev)).await;
-                    }
-                    Err(e) => {
-                        let _ = app_tx
-                            .send(TuiEvent::App(AppEvent::NetworkError(e.to_string())))
-                            .await;
-                    }
-                }
-            });
         }
         _ => {}
     }
@@ -359,59 +369,18 @@ async fn handle_chat_key(
             app.accept_completion();
         }
         KeyCode::Esc if app.completion_open() => app.completion.dismiss(),
-
-        KeyCode::Esc => {
-            app.view = View::SessionList;
-            // Refresh session list
-            let app_tx = tx.clone();
-            let s = server.to_string();
-            tokio::spawn(async move {
-                match api::list_sessions(&s).await {
-                    Ok(sessions) => {
-                        let _ = app_tx
-                            .send(TuiEvent::App(AppEvent::SessionsLoaded(sessions)))
-                            .await;
-                    }
-                    Err(e) => {
-                        let _ = app_tx
-                            .send(TuiEvent::App(AppEvent::NetworkError(e.to_string())))
-                            .await;
-                    }
-                }
-            });
+        // The approval panel owns every other key while it is open.
+        _ if app.has_pending_tool() => handle_approval_key(key, app, tx, server),
+        KeyCode::Esc if app.status == Status::Running => {
+            if let (Some(sid), Some(token)) = (app.session_id, app.write_token.clone()) {
+                let server = server.to_string();
+                tokio::spawn(async move {
+                    let _ = api::interrupt(&server, sid, &token).await;
+                });
+            }
         }
-        KeyCode::Up => app.scroll_up(3),
-        KeyCode::Down => app.scroll_down(3),
-        KeyCode::PageUp => app.scroll_up(20),
-        KeyCode::PageDown => app.scroll_down(20),
-        // End edits the input line; jumping the transcript to the bottom moves
-        // to Ctrl+End so both are reachable.
-        KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => app.scroll_to_bottom(),
+
         KeyCode::End => app.cursor_end(),
-
-        // Tool approval. A turn can ask for several calls at once and the
-        // server needs a response for every one of them, so y/n answer the
-        // head of the queue and a/d answer the rest in one go.
-        KeyCode::Char('y') if app.has_pending_tool() => {
-            if let Some((sid, token, id)) = app.decide_tool(true) {
-                respond_to_tools(sid, token, vec![id], true, tx, server);
-            }
-        }
-        KeyCode::Char('n') if app.has_pending_tool() => {
-            if let Some((sid, token, id)) = app.decide_tool(false) {
-                respond_to_tools(sid, token, vec![id], false, tx, server);
-            }
-        }
-        KeyCode::Char('a') if app.has_pending_tool() => {
-            if let Some((sid, token, ids)) = app.decide_all_tools(true) {
-                respond_to_tools(sid, token, ids, true, tx, server);
-            }
-        }
-        KeyCode::Char('d') if app.has_pending_tool() => {
-            if let Some((sid, token, ids)) = app.decide_all_tools(false) {
-                respond_to_tools(sid, token, ids, false, tx, server);
-            }
-        }
 
         // Text input and cursor movement
         KeyCode::Char(c) if !app.has_pending_tool() => {
@@ -426,6 +395,10 @@ async fn handle_chat_key(
             // Enter on the popup takes the highlighted command and runs it.
             if app.completion_open() {
                 app.accept_completion();
+            }
+            // `!command` runs on the terminal; the main loop picks it up.
+            if app.status == Status::Idle && app.take_shell() {
+                return;
             }
             // Slash commands are handled locally and never sent to the model.
             if !app.has_pending_tool() {

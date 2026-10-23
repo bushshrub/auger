@@ -27,7 +27,9 @@ pub enum ChatItem {
     },
     Reasoning {
         text: String,
-        collapsed: bool,
+        /// When the first reasoning delta arrived; `None` when restored from a
+        /// snapshot, where the duration is unknown.
+        started: Option<std::time::Instant>,
     },
     Tool {
         id: String,
@@ -35,8 +37,6 @@ pub enum ChatItem {
         args: String,
         result: Option<String>,
         decision: Option<ToolDecision>,
-        /// Whether the full diff / file content is shown.
-        expanded: bool,
     },
     Error {
         text: String,
@@ -62,6 +62,7 @@ pub enum AppEvent {
     SessionsLoaded(Vec<SessionInfo>),
     SessionCreated {
         session_id: Uuid,
+        model: String,
         write_token: String,
         read_token: String,
         context_window: u64,
@@ -107,10 +108,13 @@ pub enum SseEvent {
     },
     Metrics {
         prompt_tokens: Option<u64>,
+        cached_tokens: Option<u64>,
         completion_tokens: Option<u64>,
         total_tokens: Option<u64>,
     },
     TurnComplete,
+    /// A call was denied: the session waits for the next user message.
+    ToolResultsWithheld,
     Interrupted,
     StreamClosed,
     StreamError {
@@ -150,6 +154,7 @@ pub enum RawSessionEvent {
         id: String,
         result: RawToolCallResult,
     },
+    ToolResultsWithheld,
     Interrupted,
     StreamError {
         error: String,
@@ -214,6 +219,7 @@ impl RawToolOutcome {
 #[derive(Debug, Deserialize)]
 pub struct RawUsage {
     pub prompt_tokens: Option<u64>,
+    pub cached_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
 }
@@ -248,6 +254,7 @@ pub fn transform_raw_event(ev: RawSessionEvent) -> Vec<SseEvent> {
             if let Some(u) = usage {
                 out.push(SseEvent::Metrics {
                     prompt_tokens: u.prompt_tokens,
+                    cached_tokens: u.cached_tokens,
                     completion_tokens: u.completion_tokens,
                     total_tokens: u.total_tokens,
                 });
@@ -273,6 +280,7 @@ pub fn transform_raw_event(ev: RawSessionEvent) -> Vec<SseEvent> {
             }]
         }
         RawSessionEvent::Interrupted => vec![SseEvent::Interrupted],
+        RawSessionEvent::ToolResultsWithheld => vec![SseEvent::ToolResultsWithheld],
         RawSessionEvent::StreamError { error } => {
             vec![SseEvent::StreamError { message: error }]
         }

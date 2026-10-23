@@ -1,4 +1,6 @@
+use crate::approval::Choice;
 use crate::command::Command;
+use crate::config::StatusItem;
 use crate::completion::Completion;
 use crate::types::AppEvent;
 use crate::types::ChatItem;
@@ -6,9 +8,7 @@ use crate::types::SessionInfo;
 use crate::types::SseEvent;
 use crate::types::Status;
 use crate::types::ToolDecision;
-use ratatui::layout::Rect;
 use unicode_width::UnicodeWidthStr;
-use ratatui::widgets::ListState;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -43,46 +43,42 @@ fn trace_tool_result_text(result: &Value) -> String {
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum View {
-    SessionList,
-    Chat,
-}
-
-/// Where the message pane's rendered rows landed on screen, recorded each
-/// frame so mouse clicks can be mapped back to the chat item that produced
-/// them. Rendering is the only place that knows how items wrap into rows.
-#[derive(Default)]
-pub struct MsgLayout {
-    /// The pane rect, borders included.
-    pub area: Rect,
-    /// Index of the first rendered row visible at the top of the pane.
-    pub scroll_top: u16,
-    /// Chat item index behind each rendered row; `None` for spacer rows.
-    pub row_items: Vec<Option<usize>>,
-}
-
 pub struct App {
-    pub view: View,
     pub should_quit: bool,
 
-    // Session list
+    /// Sessions offered by `/resume`.
     pub sessions: Vec<SessionInfo>,
-    pub session_list_state: ListState,
+    /// Highlighted row of the `/resume` picker; `None` while it is closed.
+    pub picker: Option<usize>,
 
     // Chat
     pub session_id: Option<Uuid>,
+    pub model: String,
     pub write_token: Option<String>,
     pub read_token: Option<String>,
     pub ctx_window: u64,
     pub ctx_used: u64,
     pub items: Vec<ChatItem>,
+    /// Items already printed into the terminal's scrollback. Everything from
+    /// here on is drawn in the live area.
+    pub flushed: usize,
     /// Tool calls awaiting a decision, oldest first. The server wants one
     /// response per call, so a batch has to be answered one at a time.
     pub pending_tools: Vec<String>,
+    /// When the running turn started, for the working indicator. `None`
+    /// while idle or waiting on an approval.
+    pub working_since: Option<std::time::Instant>,
+    /// A `!command` waiting for the main loop to run it on the terminal.
+    pub shell_request: Option<String>,
+    /// Highlighted row of the approval panel.
+    pub approval_selected: usize,
+    /// Fields shown in the bottom statusline, in order.
+    pub statusline: Vec<StatusItem>,
     /// Token counters shown live in the header. `tokens_out` is reconciled
     /// with the server's usage at the end of each turn.
     pub tokens_in: u64,
+    /// Input tokens served from the provider's prompt cache.
+    pub tokens_cached: u64,
     pub tokens_out: u64,
     /// Characters streamed during the in-flight turn, used to estimate output
     /// tokens before usage arrives.
@@ -93,10 +89,6 @@ pub struct App {
     pub cursor: usize,
     /// Slash-command popup state; the match list itself comes from `input`.
     pub completion: Completion,
-    /// Lines above the bottom that the user has scrolled. 0 = pinned to bottom.
-    pub scroll_from_bottom: u16,
-    /// Rendered-row → chat-item map from the last frame, used for click hits.
-    pub msg_layout: MsgLayout,
 
     // In-progress streaming indices
     pub assistant_idx: Option<usize>,
@@ -107,29 +99,31 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
-        let mut session_list_state = ListState::default();
-        session_list_state.select(Some(0));
         Self {
-            view: View::SessionList,
             should_quit: false,
             sessions: vec![],
-            session_list_state,
+            picker: None,
             session_id: None,
+            model: String::new(),
             write_token: None,
             read_token: None,
             ctx_window: 0,
             ctx_used: 0,
             items: vec![],
+            flushed: 0,
             pending_tools: vec![],
+            approval_selected: 0,
+            shell_request: None,
+            working_since: None,
+            statusline: crate::config::TuiConfig::default().statusline,
             tokens_in: 0,
+            tokens_cached: 0,
             tokens_out: 0,
             live_chars: 0,
             status: Status::Connecting,
             input: String::new(),
             cursor: 0,
             completion: Completion::default(),
-            scroll_from_bottom: 0,
-            msg_layout: MsgLayout::default(),
             assistant_idx: None,
             reasoning_idx: None,
             error_msg: None,
@@ -166,32 +160,27 @@ impl App {
             AppEvent::SessionsLoaded(sessions) => {
                 self.sessions = sessions;
                 if self.sessions.is_empty() {
-                    self.session_list_state.select(None);
+                    self.push_notice("No sessions to resume.");
                 } else {
-                    self.session_list_state.select(Some(0));
+                    self.picker = Some(0);
                 }
             }
 
             AppEvent::SessionCreated {
                 session_id,
+                model,
                 write_token,
                 read_token,
                 context_window,
             } => {
                 self.session_id = Some(session_id);
+                self.model = model;
                 self.write_token = Some(write_token);
                 self.read_token = Some(read_token);
                 self.ctx_window = context_window;
                 self.ctx_used = 0;
-                self.items.clear();
-                self.pending_tools.clear();
-                self.tokens_in = 0;
-                self.tokens_out = 0;
-                self.live_chars = 0;
+                self.reset_chat();
                 self.status = Status::Idle;
-                self.assistant_idx = None;
-                self.reasoning_idx = None;
-                self.view = View::Chat;
             }
 
             AppEvent::SnapshotLines(lines) => {
@@ -234,7 +223,6 @@ impl App {
                     args: String::new(),
                     result: None,
                     decision: None,
-                    expanded: false,
                 });
                 self.items.len() - 1
             }
@@ -271,7 +259,7 @@ impl App {
                     None => {
                         self.items.push(ChatItem::Reasoning {
                             text,
-                            collapsed: true,
+                            started: Some(std::time::Instant::now()),
                         });
                         self.reasoning_idx = Some(self.items.len() - 1);
                     }
@@ -287,6 +275,7 @@ impl App {
             } => {
                 self.assistant_idx = None;
                 self.reasoning_idx = None;
+                self.live_chars += arguments.chars().count();
                 let idx = self.tool_item(&id, &name);
                 if let Some(ChatItem::Tool {
                     name: n, args, ..
@@ -334,6 +323,10 @@ impl App {
                 self.status = Status::Idle;
             }
 
+            SseEvent::ToolResultsWithheld => {
+                self.status = Status::Idle;
+            }
+
             SseEvent::StreamClosed => {
                 self.status = Status::Idle;
             }
@@ -366,6 +359,7 @@ impl App {
 
             SseEvent::Metrics {
                 prompt_tokens,
+                cached_tokens,
                 completion_tokens,
                 total_tokens,
             } => {
@@ -374,6 +368,7 @@ impl App {
                     .unwrap_or(self.ctx_used);
                 // Real usage supersedes the streaming estimate for this turn.
                 self.tokens_in = prompt_tokens.unwrap_or(self.tokens_in);
+                self.tokens_cached = cached_tokens.unwrap_or(self.tokens_cached);
                 self.tokens_out += completion_tokens.unwrap_or((self.live_chars / 4) as u64);
                 self.live_chars = 0;
             }
@@ -394,111 +389,80 @@ impl App {
                 self.status = Status::Idle;
             }
         }
-        // Only auto-follow the bottom if the user hasn't manually scrolled up.
-        if self.scroll_from_bottom == 0 {
-            self.scroll_to_bottom();
-        }
     }
 
     pub fn open_session(&mut self, info: &SessionInfo) {
         self.session_id = Some(info.session_id);
+        self.model = info.model.clone();
         self.write_token = Some(info.write_token.clone());
         self.read_token = Some(info.read_token.clone());
         self.ctx_window = info.context_window;
+        self.reset_chat();
+        self.status = Status::Connecting;
+    }
+
+    /// Forget the current conversation. Items already in scrollback stay
+    /// there; the next session's items print below them.
+    fn reset_chat(&mut self) {
         self.ctx_used = 0;
         self.items.clear();
+        self.flushed = 0;
         self.pending_tools.clear();
         self.tokens_in = 0;
+        self.tokens_cached = 0;
         self.tokens_out = 0;
         self.live_chars = 0;
-        self.status = Status::Connecting;
         self.assistant_idx = None;
         self.reasoning_idx = None;
-        self.scroll_from_bottom = 0;
-        self.view = View::Chat;
     }
 
-    pub fn scroll_to_bottom(&mut self) {
-        self.scroll_from_bottom = 0;
-    }
-
-    pub fn scroll_up(&mut self, lines: u16) {
-        self.scroll_from_bottom = self.scroll_from_bottom.saturating_add(lines);
-    }
-
-    pub fn scroll_down(&mut self, lines: u16) {
-        self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(lines);
-    }
-
-    /// Chat item under a screen cell, using the last frame's layout.
-    pub fn item_at(&self, column: u16, row: u16) -> Option<usize> {
-        let area = self.msg_layout.area;
-        if area.width < 2 || area.height < 2 {
-            return None;
-        }
-        // The pane is bordered, so the inner region is inset by one cell.
-        let inside = column > area.x
-            && column < area.x + area.width - 1
-            && row > area.y
-            && row < area.y + area.height - 1;
-        if !inside {
-            return None;
-        }
-
-        let offset = row - area.y - 1;
-        let index = self.msg_layout.scroll_top as usize + offset as usize;
-        self.msg_layout.row_items.get(index).copied().flatten()
-    }
-
-    /// Expand or collapse the item at `index`. Returns whether anything
-    /// changed, so callers can ignore clicks on item kinds that don't expand.
-    pub fn toggle_expanded(&mut self, index: usize) -> bool {
-        match self.items.get_mut(index) {
-            Some(ChatItem::Reasoning { collapsed, .. }) => {
-                *collapsed = !*collapsed;
-                true
+    /// Whether item `index` will not change again and can go to scrollback.
+    /// A tool call waits for its result; streamed text waits until something
+    /// follows it or the turn ends.
+    fn is_finished(&self, index: usize) -> bool {
+        match &self.items[index] {
+            ChatItem::Tool { result, .. } => result.is_some(),
+            ChatItem::User { .. } | ChatItem::Error { .. } => true,
+            ChatItem::Assistant { .. } | ChatItem::Reasoning { .. } => {
+                index + 1 < self.items.len() || self.status == Status::Idle
             }
-            Some(ChatItem::Tool { expanded, .. }) => {
-                *expanded = !*expanded;
-                true
-            }
-            _ => false,
         }
     }
 
-    /// Handle a left click in the chat view. Returns whether it hit anything.
-    pub fn click(&mut self, column: u16, row: u16) -> bool {
-        match self.item_at(column, row) {
-            Some(index) => self.toggle_expanded(index),
-            None => false,
+    /// Items that just finished, in order. Stops at the first unfinished item
+    /// so scrollback keeps the conversation's order.
+    pub fn take_finished(&mut self) -> &[ChatItem] {
+        let start = self.flushed;
+        let mut end = start;
+        while end < self.items.len() && self.is_finished(end) {
+            end += 1;
+        }
+        self.flushed = end;
+        &self.items[start..end]
+    }
+
+    /// Items not yet in scrollback.
+    pub fn live_items(&self) -> &[ChatItem] {
+        &self.items[self.flushed..]
+    }
+
+    pub fn picker_next(&mut self) {
+        if let Some(i) = self.picker {
+            self.picker = Some((i + 1) % self.sessions.len().max(1));
         }
     }
 
-    pub fn session_list_next(&mut self) {
-        if self.sessions.is_empty() {
-            return;
+    pub fn picker_prev(&mut self) {
+        if let Some(i) = self.picker {
+            let len = self.sessions.len().max(1);
+            self.picker = Some((i + len - 1) % len);
         }
-        let i = self.session_list_state.selected().unwrap_or(0);
-        self.session_list_state
-            .select(Some((i + 1) % self.sessions.len()));
     }
 
-    pub fn session_list_prev(&mut self) {
-        if self.sessions.is_empty() {
-            return;
-        }
-        let i = self.session_list_state.selected().unwrap_or(0);
-        self.session_list_state.select(Some(if i == 0 {
-            self.sessions.len() - 1
-        } else {
-            i - 1
-        }));
-    }
-
-    pub fn selected_session(&self) -> Option<&SessionInfo> {
-        self.session_list_state
-            .selected()
-            .and_then(|i| self.sessions.get(i))
+    /// Close the picker, returning the highlighted session if any.
+    pub fn take_picked(&mut self) -> Option<SessionInfo> {
+        let index = self.picker.take()?;
+        self.sessions.get(index).cloned()
     }
 
     // ── input editing ────────────────────────────────────────────────────
@@ -577,6 +541,22 @@ impl App {
         self.completion.reset();
     }
 
+    /// Whether the input is a `!command` for the shell.
+    pub fn shell_mode(&self) -> bool {
+        self.input.starts_with('!')
+    }
+
+    /// Take a `!command` out of the input for the main loop to run.
+    pub fn take_shell(&mut self) -> bool {
+        let command = match self.input.strip_prefix('!') {
+            Some(command) if !command.trim().is_empty() => command.trim().to_string(),
+            _ => return false,
+        };
+        self.clear_input();
+        self.shell_request = Some(command);
+        true
+    }
+
     /// Take the current input as a command, clearing the input if it was one.
     pub fn take_command(&mut self) -> Option<Command> {
         let command = crate::command::parse(&self.input)?;
@@ -586,14 +566,12 @@ impl App {
 
     pub fn push_error(&mut self, text: impl Into<String>) {
         self.items.push(ChatItem::Error { text: text.into() });
-        self.scroll_to_bottom();
     }
 
     /// Show text in the chat pane without sending it to the server.
     pub fn push_notice(&mut self, text: impl Into<String>) {
         self.items.push(ChatItem::Assistant { text: text.into() });
         self.assistant_idx = None;
-        self.scroll_to_bottom();
     }
 
     pub fn send_message(&mut self) -> Option<(Uuid, String, String)> {
@@ -608,7 +586,6 @@ impl App {
         self.status = Status::Running;
         self.assistant_idx = None;
         self.reasoning_idx = None;
-        self.scroll_to_bottom();
         Some((session_id, write_token, text))
     }
 
@@ -618,6 +595,7 @@ impl App {
     /// actual payload nested under `"turn"` or `"event"`.
     pub fn apply_snapshot_lines(&mut self, lines: &[String]) {
         self.items.clear();
+        self.flushed = 0;
         self.assistant_idx = None;
         self.reasoning_idx = None;
 
@@ -692,7 +670,7 @@ impl App {
                                     {
                                         self.items.push(ChatItem::Reasoning {
                                             text: text.to_string(),
-                                            collapsed: true,
+                                            started: None,
                                         });
                                     } else if let Some(text) = block.get("text")
                                         .or_else(|| block.get("Text"))
@@ -724,7 +702,6 @@ impl App {
                                                 args: args_str,
                                                 result: None,
                                                 decision: None,
-                                                expanded: false,
                                             });
                                         }
                                     }
@@ -816,11 +793,65 @@ impl App {
             }
         }
 
-        self.scroll_to_bottom();
     }
 
     /// Decide the tool call at the head of the queue. Returns the call to
     /// answer, or `None` if nothing is pending.
+    /// Name and arguments of the tool call the approval panel asks about.
+    pub fn pending_tool_call(&self) -> Option<(&str, &str)> {
+        let id = self.pending_tool()?;
+        self.items.iter().find_map(|item| match item {
+            ChatItem::Tool { id: tid, name, args, .. } if tid == id => {
+                Some((name.as_str(), args.as_str()))
+            }
+            _ => None,
+        })
+    }
+
+    /// Start or stop the working clock to match the current status.
+    pub fn track_working(&mut self) {
+        let working = self.status == Status::Running && !self.has_pending_tool();
+        match (working, self.working_since) {
+            (true, None) => self.working_since = Some(std::time::Instant::now()),
+            (false, Some(_)) => self.working_since = None,
+            _ => {}
+        }
+    }
+
+    pub fn approval_next(&mut self) {
+        let count = crate::approval::choices(self.pending_tools.len()).len();
+        if count > 0 {
+            self.approval_selected = (self.approval_selected + 1) % count;
+        }
+    }
+
+    pub fn approval_prev(&mut self) {
+        let count = crate::approval::choices(self.pending_tools.len()).len();
+        if count > 0 {
+            self.approval_selected = (self.approval_selected + count - 1) % count;
+        }
+    }
+
+    /// The highlighted approval choice.
+    pub fn approval_choice(&self) -> Option<Choice> {
+        let choices = crate::approval::choices(self.pending_tools.len());
+        choices.get(self.approval_selected).copied()
+    }
+
+    /// Apply `choice` to the queue. Returns the calls to answer.
+    pub fn decide(&mut self, choice: Choice) -> Option<(Uuid, String, Vec<String>)> {
+        if !crate::approval::choices(self.pending_tools.len()).contains(&choice) {
+            return None;
+        }
+        self.approval_selected = 0;
+        match choice.all() {
+            true => self.decide_all_tools(choice.approved()),
+            false => self
+                .decide_tool(choice.approved())
+                .map(|(sid, token, id)| (sid, token, vec![id])),
+        }
+    }
+
     pub fn decide_tool(&mut self, approved: bool) -> Option<(Uuid, String, String)> {
         let (session_id, write_token, mut ids) = self.decide_tools(approved, 1)?;
         Some((session_id, write_token, ids.remove(0)))
@@ -872,46 +903,11 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    /// Build a chat app and render it once, so `msg_layout` holds a real
-    /// row → item map produced by the actual rendering path.
-    fn rendered(items: Vec<ChatItem>, width: u16, height: u16) -> App {
-        let mut app = App::new();
-        app.view = View::Chat;
-        app.status = Status::Idle;
-        app.items = items;
-
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|frame| crate::ui::render(frame, &mut app))
-            .unwrap();
-        app
-    }
-
     fn reasoning(text: &str) -> ChatItem {
         ChatItem::Reasoning {
             text: text.to_string(),
-            collapsed: true,
+            started: None,
         }
-    }
-
-    fn is_collapsed(app: &App, index: usize) -> bool {
-        match &app.items[index] {
-            ChatItem::Reasoning { collapsed, .. } => *collapsed,
-            other => panic!("item {index} is not reasoning: {other:?}"),
-        }
-    }
-
-    /// Screen row of the first row belonging to `index`, if it is on screen.
-    fn row_of(app: &App, index: usize) -> u16 {
-        let offset = app
-            .msg_layout
-            .row_items
-            .iter()
-            .position(|i| *i == Some(index))
-            .expect("item was not rendered");
-        let scroll_top = app.msg_layout.scroll_top as usize;
-        assert!(offset >= scroll_top, "item is scrolled off the top");
-        app.msg_layout.area.y + 1 + (offset - scroll_top) as u16
     }
 
     fn tool_of(app: &App, index: usize) -> (String, String) {
@@ -1097,7 +1093,6 @@ mod tests {
     #[test]
     fn a_batch_prompt_offers_the_bulk_keys() {
         let mut app = App::new();
-        app.view = View::Chat;
         with_session(&mut app);
         for id in ["c1", "c2"] {
             app.handle_app_event(consent(id));
@@ -1114,8 +1109,8 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect();
-        assert!(screen.contains("[a] approve all 2"), "screen was:\n{screen}");
-        assert!(screen.contains("[d] deny all 2"));
+        assert!(screen.contains("approve all 2 pending calls (a)"), "screen was:\n{screen}");
+        assert!(screen.contains("No to all 2 pending calls (d)"));
     }
 
     #[test]
@@ -1182,6 +1177,7 @@ mod tests {
         }));
         app.handle_app_event(AppEvent::Sse(SseEvent::Metrics {
             prompt_tokens: Some(1200),
+            cached_tokens: None,
             completion_tokens: Some(80),
             total_tokens: Some(1280),
         }));
@@ -1195,6 +1191,7 @@ mod tests {
         for _ in 0..2 {
             app.handle_app_event(AppEvent::Sse(SseEvent::Metrics {
                 prompt_tokens: Some(10),
+                cached_tokens: None,
                 completion_tokens: Some(50),
                 total_tokens: Some(60),
             }));
@@ -1302,137 +1299,40 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_tool_call_toggles_its_diff() {
-        let mut app = rendered(
-            vec![ChatItem::Tool {
+    fn items_flush_in_order_once_finished() {
+        let mut app = App::new();
+        app.status = Status::Running;
+        app.items = vec![
+            ChatItem::User { text: "hi".into() },
+            reasoning("hmm"),
+            ChatItem::Assistant { text: "streaming".into() },
+        ];
+        assert_eq!(app.take_finished().len(), 2, "user and reasoning are done");
+        assert_eq!(app.live_items().len(), 1, "the streaming answer stays live");
+
+        app.status = Status::Idle;
+        assert_eq!(app.take_finished().len(), 1);
+        assert!(app.live_items().is_empty());
+    }
+
+    #[test]
+    fn a_tool_call_holds_back_later_items_until_it_has_a_result() {
+        let mut app = App::new();
+        app.status = Status::Idle;
+        app.items = vec![
+            ChatItem::Tool {
                 id: "t".into(),
-                name: "edit_file".into(),
-                args: r#"{"path":"/a.rs","old_string":"a","new_string":"b"}"#.into(),
+                name: "shell".into(),
+                args: "{}".into(),
                 result: None,
                 decision: None,
-                expanded: false,
-            }],
-            60,
-            20,
-        );
-        let row = row_of(&app, 0);
-        assert!(app.click(4, row));
-        match &app.items[0] {
-            ChatItem::Tool { expanded, .. } => assert!(*expanded),
-            other => panic!("expected a tool: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn clicking_reasoning_expands_it() {
-        let mut app = rendered(vec![reasoning("deep thoughts")], 40, 20);
-        assert!(is_collapsed(&app, 0));
-
-        let row = row_of(&app, 0);
-        assert!(app.click(4, row));
-        assert!(!is_collapsed(&app, 0));
-    }
-
-    #[test]
-    fn clicking_an_expanded_block_collapses_it_again() {
-        let mut app = rendered(vec![reasoning("deep thoughts")], 40, 20);
-        let row = row_of(&app, 0);
-
-        assert!(app.click(4, row));
-        assert!(!is_collapsed(&app, 0));
-        assert!(app.click(4, row));
-        assert!(is_collapsed(&app, 0));
-    }
-
-    #[test]
-    fn expanding_shows_the_full_text() {
-        let mut app = rendered(vec![reasoning("secret reasoning")], 40, 20);
-        let row = row_of(&app, 0);
-        app.click(4, row);
-
-        let app = rendered(app.items, 40, 20);
-        let rows = app.msg_layout.row_items.len();
-        assert!(rows > 1, "expanded block should occupy more than one row");
-    }
-
-    #[test]
-    fn clicking_a_non_reasoning_item_does_nothing() {
-        let mut app = rendered(
-            vec![ChatItem::User {
-                text: "hello".to_string(),
-            }],
-            40,
-            20,
-        );
-        let row = row_of(&app, 0);
-        assert!(!app.click(4, row));
-    }
-
-    #[test]
-    fn clicking_the_spacer_row_does_nothing() {
-        let mut app = rendered(vec![reasoning("thoughts")], 40, 20);
-        // The first rendered row is the spacer that precedes every item.
-        let spacer = app.msg_layout.area.y + 1;
-        let top = app.msg_layout.scroll_top as usize;
-        assert_eq!(app.msg_layout.row_items[top], None);
-        assert!(!app.click(4, spacer));
-        assert!(is_collapsed(&app, 0));
-    }
-
-    #[test]
-    fn clicking_outside_the_pane_does_nothing() {
-        let mut app = rendered(vec![reasoning("thoughts")], 40, 20);
-        let row = row_of(&app, 0);
-        // On the border, and above the pane entirely.
-        assert!(!app.click(app.msg_layout.area.x, row));
-        assert!(!app.click(4, 0));
-        assert!(is_collapsed(&app, 0));
-    }
-
-    #[test]
-    fn clicks_hit_the_right_item_among_several() {
-        let mut app = rendered(
-            vec![
-                ChatItem::User {
-                    text: "q".to_string(),
-                },
-                reasoning("first"),
-                ChatItem::Assistant {
-                    text: "a".to_string(),
-                },
-                reasoning("second"),
-            ],
-            40,
-            30,
-        );
-
-        let row = row_of(&app, 3);
-        assert!(app.click(4, row));
-        assert!(!is_collapsed(&app, 3), "clicked block should expand");
-        assert!(is_collapsed(&app, 1), "other block should be untouched");
-    }
-
-    #[test]
-    fn clicks_account_for_scrolling() {
-        // More content than fits, so the pane is scrolled and screen rows no
-        // longer line up with row indices.
-        let items = vec![
-            ChatItem::Assistant {
-                text: "filler\n\nfiller\n\nfiller\n\nfiller".to_string(),
             },
-            reasoning("target"),
+            ChatItem::Error { text: "x".into() },
         ];
-        let mut app = rendered(items, 40, 10);
-
-        let row = row_of(&app, 1);
-        assert!(app.msg_layout.scroll_top > 0, "expected the pane to scroll");
-        assert!(app.click(4, row));
-        assert!(!is_collapsed(&app, 1));
-    }
-
-    #[test]
-    fn stale_layout_from_an_empty_pane_is_not_clickable() {
-        let mut app = rendered(vec![], 40, 20);
-        assert!(!app.click(4, 5));
+        assert!(app.take_finished().is_empty());
+        if let ChatItem::Tool { result, .. } = &mut app.items[0] {
+            *result = Some("ok".into());
+        }
+        assert_eq!(app.take_finished().len(), 2);
     }
 }

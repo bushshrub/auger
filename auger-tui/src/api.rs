@@ -74,9 +74,11 @@ pub async fn create_session(server: &str, model: Option<&str>) -> anyhow::Result
     let write_token = resp["tokens"]["write"].as_str().unwrap_or("").to_string();
     let read_token = resp["tokens"]["read"].as_str().unwrap_or("").to_string();
     let context_window = resp["context_window"].as_u64().unwrap_or(8192);
+    let model = resp["model"].as_str().unwrap_or("").to_string();
 
     Ok(AppEvent::SessionCreated {
         session_id,
+        model,
         write_token,
         read_token,
         context_window,
@@ -211,4 +213,14 @@ pub fn spawn_event_stream(
             }
         }
     });
+}
+
+/// Interrupt whatever the session is doing.
+pub async fn interrupt(server: &str, session_id: Uuid, _write_token: &str) -> anyhow::Result<()> {
+    Client::new()
+        .post(format!("{server}/sessions/{session_id}/interrupt"))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
 }
