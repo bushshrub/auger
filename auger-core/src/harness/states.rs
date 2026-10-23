@@ -1,5 +1,7 @@
 use crate::harness::tool_engine::ToolPhaseEngine;
 use auger_driver::LlmStreamingInterrupted;
+use auger_driver::Resolved;
+use auger_driver::ToolBatch;
 use auger_driver::TypedAgent;
 use auger_driver::WaitingForToolResponses;
 use auger_driver::WaitingForUserMessage;
@@ -29,5 +31,11 @@ pub(crate) enum HarnessState {
     ToolPhase {
         agent: TypedAgent<WaitingForToolResponses>,
         engine: ToolPhaseEngine,
+    },
+    /// The tool phase ended with a denied or interrupted call. The results
+    /// go back to the model with the next user message.
+    ToolResultsWithheld {
+        agent: TypedAgent<WaitingForToolResponses>,
+        batch: ToolBatch<Resolved>,
     },
 }

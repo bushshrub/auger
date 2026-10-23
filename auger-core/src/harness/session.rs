@@ -4,6 +4,7 @@ use crate::harness::events::SessionCommand;
 use crate::harness::events::SessionEvent;
 use crate::harness::states::HarnessState;
 use crate::harness::tool_engine::Phase;
+use crate::harness::tool_engine::Step;
 use crate::harness::tool_engine::ToolMessageSender;
 use crate::harness::tool_engine::ToolPhaseEngine;
 use crate::harness::tool_engine::registry::ToolRegistry;
@@ -170,12 +171,40 @@ impl Session {
         rt: &Handle,
     ) -> HarnessState {
         match phase {
-            Phase::Pending(engine) => HarnessState::ToolPhase { agent, engine },
+            Phase::Pending {
+                engine,
+                needs_consent,
+            } => {
+                if !needs_consent.is_empty() {
+                    let _ = self.event_tx.send(SessionEvent::ToolConsentRequired {
+                        tool_calls: needs_consent,
+                    });
+                }
+                HarnessState::ToolPhase { agent, engine }
+            }
             Phase::Done(batch) => {
                 info!(session_id = %self.id, "Sending tool results back to the model");
                 self.start_stream(agent.add_all_tool_responses(batch), rt)
             }
+            Phase::Withheld(batch) => {
+                info!(session_id = %self.id, "Tool results withheld until the next user message");
+                HarnessState::ToolResultsWithheld { agent, batch }
+            }
         }
+    }
+
+    /// Apply a step of the tool phase: report the finished call, then move on.
+    fn apply_tool_step(
+        &mut self,
+        agent: TypedAgent<WaitingForToolResponses>,
+        step: Step,
+        rt: &Handle,
+    ) -> HarnessState {
+        if let Some(result) = step.finished {
+            self.recorder.record_tool_result(result.clone());
+            let _ = self.event_tx.send(SessionEvent::ToolCallResult(result));
+        }
+        self.continue_tool_phase(agent, step.phase, rt)
     }
 
     fn run(mut self, rt: Handle, init_agent: RestoredAgent) {
@@ -209,6 +238,9 @@ impl Session {
                             HarnessState::StreamingInterrupted { agent }
                             | HarnessState::StreamingFailed { agent } => {
                                 agent.seal_and_continue(prompt.clone())
+                            }
+                            HarnessState::ToolResultsWithheld { agent, batch } => {
+                                agent.inject(prompt.clone()).add_all_tool_responses(batch)
                             }
                             HarnessState::InterruptingStream {
                                 pending_message: None,
@@ -249,9 +281,9 @@ impl Session {
                         message,
                     } => {
                         curr_state = match curr_state {
-                            HarnessState::ToolPhase { .. } => {
-                                let _ = (id, approved, message);
-                                todo!("forward the decision to the tool phase engine")
+                            HarnessState::ToolPhase { agent, engine } => {
+                                let step = engine.decide(&id, approved, message);
+                                self.apply_tool_step(agent, step, &rt)
                             }
                             _ => {
                                 warn!(session_id = %self.id, command = "tool_decision", "Ignoring command in invalid harness state");
@@ -355,12 +387,8 @@ impl Session {
                 LoopMessage::Tool(msg) => {
                     curr_state = match curr_state {
                         HarnessState::ToolPhase { agent, engine } => {
-                            let received = engine.receive(msg);
-                            if let Some(result) = received.finished {
-                                self.recorder.record_tool_result(result.clone());
-                                let _ = self.event_tx.send(SessionEvent::ToolCallResult(result));
-                            }
-                            self.continue_tool_phase(agent, received.phase, &rt)
+                            let step = engine.receive(msg);
+                            self.apply_tool_step(agent, step, &rt)
                         }
                         // The phase is over: a late result, drop it.
                         other => other,

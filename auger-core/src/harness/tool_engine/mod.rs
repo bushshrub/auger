@@ -28,6 +28,8 @@ pub(crate) struct ToolMessage {
 }
 
 enum CallState {
+    /// Waiting for the user to approve or deny.
+    Undecided,
     Running,
     Done(ToolOutcome),
 }
@@ -41,42 +43,83 @@ pub(crate) struct ToolPhaseEngine {
 }
 
 pub(crate) enum Phase {
-    /// Some calls have no answer yet.
-    Pending(ToolPhaseEngine),
+    /// Some calls have no answer yet. `needs_consent` lists the calls that
+    /// just started waiting for a user decision.
+    Pending {
+        engine: ToolPhaseEngine,
+        needs_consent: Vec<ToolCallRequest>,
+    },
     /// Every call has an answer.
     Done(ToolBatch<Resolved>),
+    /// Every call has an answer, but some were denied or interrupted. The
+    /// results wait for the next user message.
+    Withheld(ToolBatch<Resolved>),
 }
 
-pub(crate) struct Received {
-    /// The call that finished, if the message was not dropped.
+pub(crate) struct Step {
+    /// The call that finished, if the input was not dropped.
     pub(crate) finished: Option<ToolCallResult>,
     pub(crate) phase: Phase,
 }
 
 impl ToolPhaseEngine {
-    /// Spawn every call in `batch`.
+    /// Start a phase for `batch`. Every call waits for a user decision.
     pub(crate) fn start(
         batch: ToolBatch<Unresolved>,
         registry: Arc<ToolRegistry>,
         rt: &Handle,
         send: ToolMessageSender,
     ) -> Phase {
-        let calls = batch.calls().to_vec();
-        let mut engine = Self {
+        let needs_consent = batch.calls().to_vec();
+        let calls = needs_consent
+            .iter()
+            .map(|call| (call.id.clone(), CallState::Undecided))
+            .collect();
+        let engine = Self {
             batch,
-            calls: HashMap::new(),
+            calls,
             registry,
             rt: rt.clone(),
             send,
         };
-        for call in calls {
-            engine.run(call);
+        match engine.into_phase() {
+            Phase::Pending { engine, .. } => Phase::Pending {
+                engine,
+                needs_consent,
+            },
+            phase => phase,
         }
-        engine.into_phase()
+    }
+
+    /// Apply a user decision. Dropped unless the call is undecided. A denial
+    /// uses `message` as the reason.
+    pub(crate) fn decide(mut self, call_id: &str, approved: bool, message: Option<String>) -> Step {
+        let finished = match self.calls.get(call_id) {
+            Some(CallState::Undecided) if approved => {
+                let call = self.batch.calls().iter().find(|c| c.id == call_id).cloned();
+                if let Some(call) = call {
+                    self.run(call);
+                }
+                None
+            }
+            Some(CallState::Undecided) => {
+                let outcome = ToolOutcome::Denied { reason: message };
+                self.calls.insert(call_id.to_string(), CallState::Done(outcome.clone()));
+                Some(ToolCallResult {
+                    tool_call_id: call_id.to_string().into(),
+                    outcome,
+                })
+            }
+            _ => None,
+        };
+        Step {
+            finished,
+            phase: self.into_phase(),
+        }
     }
 
     /// Apply a message from a tool task.
-    pub(crate) fn receive(mut self, msg: ToolMessage) -> Received {
+    pub(crate) fn receive(mut self, msg: ToolMessage) -> Step {
         let finished = match self.calls.get_mut(&msg.call_id) {
             Some(state @ CallState::Running) => {
                 *state = CallState::Done(msg.outcome.clone());
@@ -87,7 +130,7 @@ impl ToolPhaseEngine {
             }
             _ => None,
         };
-        Received {
+        Step {
             finished,
             phase: self.into_phase(),
         }
@@ -117,14 +160,32 @@ impl ToolPhaseEngine {
     }
 
     fn into_phase(mut self) -> Phase {
-        if self.calls.values().any(|state| matches!(state, CallState::Running)) {
-            return Phase::Pending(self);
+        if self
+            .calls
+            .values()
+            .any(|state| !matches!(state, CallState::Done(_)))
+        {
+            return Phase::Pending {
+                engine: self,
+                needs_consent: Vec::new(),
+            };
         }
-        Phase::Done(self.batch.resolve(|call| {
+        let withheld = self.calls.values().any(|state| {
+            matches!(
+                state,
+                CallState::Done(ToolOutcome::Denied { .. } | ToolOutcome::Interrupted)
+            )
+        });
+        let batch = self.batch.resolve(|call| {
             match self.calls.remove(&call.id) {
                 Some(CallState::Done(outcome)) => outcome.into_text(),
                 _ => unreachable!("every call is done"),
             }
-        }))
+        });
+        if withheld {
+            Phase::Withheld(batch)
+        } else {
+            Phase::Done(batch)
+        }
     }
 }

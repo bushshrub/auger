@@ -234,8 +234,10 @@ async fn start_session(
 ) -> (Uuid, Uuid) {
     let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
     let tools: Vec<Box<dyn auger_core::Tool>> = vec![
-        // TODO: add WriteFile, EditFile and Shell back once tool consent works.
         Box::new(builtin_tools::ReadFile),
+        Box::new(builtin_tools::WriteFile),
+        Box::new(builtin_tools::EditFile),
+        Box::new(builtin_tools::Shell),
     ];
     let session_id = builder.id();
     let (handle, event_rx) = builder.start(
