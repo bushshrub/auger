@@ -188,6 +188,7 @@ impl Session {
             }
             Phase::Withheld(batch) => {
                 info!(session_id = %self.id, "Tool results withheld until the next user message");
+                let _ = self.event_tx.send(SessionEvent::ToolResultsWithheld);
                 HarnessState::ToolResultsWithheld { agent, batch }
             }
         }

@@ -46,6 +46,10 @@ pub enum SessionEvent {
         usage: Option<TokenUsage>,
         stop_reason: Option<String>,
     },
+    /// The tool phase ended with a denied or interrupted call. The results go
+    /// back to the model with the next user message; until then the session
+    /// waits for input.
+    ToolResultsWithheld,
     /// The in-flight LLM stream was interrupted; the session is waiting for
     /// user input with the partial response retained.
     Interrupted,

@@ -46,6 +46,9 @@ impl BlockTracker {
                 "stop_reason": stop_reason,
             })],
             SessionEvent::Interrupted => vec![json!({ "type": "interrupted" })],
+            SessionEvent::ToolResultsWithheld => {
+                vec![json!({ "type": "tool_results_withheld" })]
+            }
             SessionEvent::StreamError { error } => {
                 vec![json!({ "type": "stream_error", "error": error })]
             }
