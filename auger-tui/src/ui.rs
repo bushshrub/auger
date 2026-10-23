@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::types::ChatItem;
 use crate::explore::Segment;
 use crate::history::LiveTool;
 use crate::types::Status;
@@ -28,19 +29,50 @@ pub const VIEWPORT_HEIGHT: u16 = 16;
 /// scrollback.
 pub fn flush_finished(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
     let width = terminal.size()?.width as usize;
-    let lines: Vec<Line> = crate::explore::segments(app.take_finished())
-        .iter()
-        .flat_map(|segment| match segment {
+    let start = app.flushed;
+    // Rows of the first item that were already printed while it streamed.
+    let mut skip = app.committed.filter(|(index, _)| *index == start).map_or(0, |(_, rows)| rows);
+    let mut lines: Vec<Line> = Vec::new();
+    for segment in crate::explore::segments(app.take_finished()) {
+        let rows = match segment {
             Segment::Item(item) => crate::history::final_lines(item, width),
-            Segment::Explored(intents) => crate::explore::lines(intents, width),
-        })
-        .collect();
+            Segment::Explored(intents) => crate::explore::lines(&intents, width),
+        };
+        lines.extend(rows.into_iter().skip(std::mem::take(&mut skip)));
+    }
+    if app.flushed > start {
+        app.committed = None;
+    }
+    lines.extend(stable_rows(app, width));
     if lines.is_empty() {
         return Ok(());
     }
     terminal.insert_before(lines.len() as u16, |buf| {
         Paragraph::new(lines).render(buf.area, buf);
     })
+}
+
+/// New rows of a streaming reply that can go to scrollback: everything up to
+/// its last paragraph break, which later text can no longer change. Keeps a
+/// long reply flowing instead of being cut at the live area's height.
+fn stable_rows(app: &mut App, width: usize) -> Vec<Line<'static>> {
+    let index = app.flushed;
+    let Some(ChatItem::Assistant { text }) = app.items.get(index) else {
+        return Vec::new();
+    };
+    let Some(cut) = text.rfind("\n\n") else {
+        return Vec::new();
+    };
+    let stable = ChatItem::Assistant {
+        text: text[..cut].to_string(),
+    };
+    let rows = crate::history::final_lines(&stable, width);
+    let done = app.committed.filter(|(i, _)| *i == index).map_or(0, |(_, n)| n);
+    if rows.len() <= done {
+        return Vec::new();
+    }
+    app.committed = Some((index, rows.len()));
+    rows.into_iter().skip(done).collect()
 }
 
 /// Draw the live area: unfinished items, then the composer between two
@@ -113,13 +145,18 @@ fn render_live(frame: &mut Frame, app: &App, area: Rect) {
         pending: &app.pending_tools,
     };
     let width = area.width as usize;
-    let lines: Vec<Line> = crate::explore::segments(app.live_items())
-        .iter()
-        .flat_map(|segment| match segment {
+    let mut skip = app
+        .committed
+        .filter(|(index, _)| *index == app.flushed)
+        .map_or(0, |(_, rows)| rows);
+    let mut lines: Vec<Line> = Vec::new();
+    for segment in crate::explore::segments(app.live_items()) {
+        let rows = match segment {
             Segment::Item(item) => crate::history::live_lines(item, width, &tools),
-            Segment::Explored(intents) => crate::explore::lines(intents, width),
-        })
-        .collect();
+            Segment::Explored(intents) => crate::explore::lines(&intents, width),
+        };
+        lines.extend(rows.into_iter().skip(std::mem::take(&mut skip)));
+    }
     let skip = lines.len().saturating_sub(area.height as usize);
     let shown: Vec<Line> = lines.into_iter().skip(skip).collect();
     let top = area.height.saturating_sub(shown.len() as u16);

@@ -62,6 +62,9 @@ pub struct App {
     /// Items already printed into the terminal's scrollback. Everything from
     /// here on is drawn in the live area.
     pub flushed: usize,
+    /// Rows of the streaming item at `flushed` already printed to scrollback:
+    /// (item index, rows).
+    pub committed: Option<(usize, usize)>,
     /// Tool calls awaiting a decision, oldest first. The server wants one
     /// response per call, so a batch has to be answered one at a time.
     pub pending_tools: Vec<String>,
@@ -125,6 +128,7 @@ impl App {
             ctx_used: 0,
             items: vec![],
             flushed: 0,
+            committed: None,
             pending_tools: vec![],
             approval_selected: 0,
             approval_scroll: 0,
@@ -463,6 +467,7 @@ impl App {
         self.ctx_used = 0;
         self.items.clear();
         self.flushed = 0;
+        self.committed = None;
         self.pending_tools.clear();
         self.tokens_in = 0;
         self.tokens_cached = 0;
@@ -657,6 +662,7 @@ impl App {
     pub fn apply_snapshot_lines(&mut self, lines: &[String]) {
         self.items.clear();
         self.flushed = 0;
+        self.committed = None;
         self.assistant_idx = None;
         self.reasoning_idx = None;
 
