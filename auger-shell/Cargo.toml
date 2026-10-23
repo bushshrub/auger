@@ -1,0 +1,8 @@
+[package]
+name = "auger-shell"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tree-sitter = "0.27.1"
+tree-sitter-bash = "0.25.1"

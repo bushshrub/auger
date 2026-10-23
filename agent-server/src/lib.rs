@@ -246,6 +246,7 @@ async fn start_session(
         sys_prompt,
         tokio::runtime::Handle::current(),
         tools,
+        std::sync::Arc::new(auger_policy::default_policy()),
     );
 
     let event_tx = events.unwrap_or_else(|| tokio::sync::broadcast::channel(256).0);

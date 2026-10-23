@@ -12,6 +12,7 @@ use crate::record::session::SessionData;
 use crate::record::session::SessionId;
 use crate::record::turn::TurnId;
 use crate::record::turn::TurnRecord;
+use crate::policy::PolicyNode;
 use crate::tool::Tool;
 use provider::LlmModel;
 use std::env::current_dir;
@@ -72,6 +73,7 @@ impl SessionBuilder {
         system_prompt: SystemPrompt,
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
+        policy: Arc<dyn PolicyNode>,
     ) -> (SessionHandle, Receiver<SessionEvent>) {
         let recorder = SessionRecorder::new(self.record, self.on_turn, self.on_event);
         Session::spawn(
@@ -80,6 +82,7 @@ impl SessionBuilder {
             recorder,
             model,
             tools,
+            policy,
         )
     }
 }

@@ -38,6 +38,11 @@ pub enum SessionEvent {
     ToolConsentRequired {
         tool_calls: Vec<provider::ToolCallRequest>,
     },
+    /// The approval policy allowed or denied a call without asking the user.
+    ToolPolicyDecision {
+        tool_call_id: String,
+        verdict: crate::policy::Verdict,
+    },
     /// A tool call finished executing and produced a result.
     ToolCallResult(ToolCallResult),
     /// The assistant turn settled. Fires whether or not the provider reported

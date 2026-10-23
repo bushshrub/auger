@@ -1,5 +1,7 @@
 use auger_core::JsonSchema;
+use auger_core::PathAccess;
 use auger_core::Tool;
+use auger_core::ToolContext;
 use auger_core::ToolDetails;
 use auger_core::ToolError;
 use async_trait::async_trait;
@@ -45,15 +47,23 @@ impl Tool for ReadFile {
         }))
     }
 
-    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
+    fn path(&self, args: &serde_json::Value) -> Option<PathAccess> {
+        Some(PathAccess {
+            path: args["path"].as_str()?.into(),
+            write: false,
+        })
+    }
+
+    async fn call(&self, ctx: &ToolContext, args: serde_json::Value) -> Result<String, ToolError> {
         let path = args["path"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: path".into()))?;
+        let file = ctx.resolve(path);
 
         let offset = args["offset"].as_u64().unwrap_or(1) as usize;
         let limit = args["limit"].as_u64().map(|n| n as usize);
 
-        let contents = tokio::fs::read_to_string(path).await?;
+        let contents = tokio::fs::read_to_string(&file).await?;
 
         let lines: Vec<&str> = contents.lines().collect();
         let total = lines.len();
@@ -71,10 +81,11 @@ impl Tool for ReadFile {
         };
 
         let line_count = end - start;
+        let width = end.to_string().len();
         let mut out = String::new();
         for (i, line) in lines[start..end].iter().enumerate() {
             let lineno = start + i + 1;
-            out.push_str(&format!("{lineno}\t{line}\n"));
+            out.push_str(&format!("{lineno:>width$} {line}\n"));
         }
 
         if limit.is_none() && line_count > INLINE_LINE_LIMIT {

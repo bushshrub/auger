@@ -22,6 +22,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { workspace = true, features = ["serde", "v4"] }
 toml = "1.1.2"
 auger-driver.workspace = true
+auger-policy = { version = "0.1.0", path = "../auger-policy" }
 
 [dev-dependencies]
 tower = "0.5.3"

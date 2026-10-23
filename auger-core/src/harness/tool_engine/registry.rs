@@ -1,4 +1,5 @@
 use crate::tool::Tool;
+use crate::tool::ToolContext;
 use crate::tool::ToolError;
 use provider::ToolCallRequest;
 use provider::ToolDefinition;
@@ -27,8 +28,13 @@ impl ToolRegistry {
         self.0.insert(tool.details().name.to_string(), tool);
     }
 
+    pub(crate) fn get(&self, name: &str) -> Option<&dyn Tool> {
+        self.0.get(name).map(|tool| tool.as_ref())
+    }
+
     async fn call_tool(
         &self,
+        ctx: &ToolContext,
         tool_name: &str,
         args: String,
     ) -> Result<String, ToolInvokeIssue> {
@@ -39,16 +45,17 @@ impl ToolRegistry {
         // TODO: try to fix json if it's malformed, and provide better error messages
         let args_json = serde_json::from_str(&args)
             .map_err(|e| ToolInvokeIssue::ArgumentParseError(e.to_string()))?;
-        tool.call(args_json)
+        tool.call(ctx, args_json)
             .await
             .map_err(ToolInvokeIssue::ToolError)
     }
 
     pub(crate) async fn invoke(
         &self,
+        ctx: ToolContext,
         tc: ToolCallRequest,
     ) -> Result<String, ToolInvokeIssue> {
-        self.call_tool(&tc.name, tc.arguments).await
+        self.call_tool(&ctx, &tc.name, tc.arguments).await
     }
 
     // TODO: add option to compress and expose a single tool search?

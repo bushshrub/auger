@@ -7,13 +7,16 @@ use crate::harness::tool_engine::Phase;
 use crate::harness::tool_engine::Step;
 use crate::harness::tool_engine::ToolMessageSender;
 use crate::harness::tool_engine::ToolPhaseEngine;
+use crate::harness::tool_engine::check::ToolSetup;
 use crate::harness::tool_engine::registry::ToolRegistry;
 use crate::record::recorder::SessionRecorder;
 use crate::record::session::SessionId;
 use crate::record::session::SessionRecord;
 use crate::record::turn::AssistantTurnOutcome;
 use crate::record::turn::StopReason;
+use crate::policy::PolicyNode;
 use crate::tool::Tool;
+use crate::tool::context::WorkDir;
 use auger_driver::ReadyToStream;
 use auger_driver::RestoredAgent;
 use auger_driver::StreamResult;
@@ -76,7 +79,7 @@ pub struct Session {
     harness_internal_event_tx: Sender<LoopMessage>,
     /// Sender for the session to emit events through
     event_tx: Sender<SessionEvent>,
-    tool_registry: Arc<ToolRegistry>,
+    tools: ToolSetup,
     recorder: SessionRecorder,
 }
 
@@ -96,6 +99,7 @@ impl Session {
         record: SessionRecorder,
         model: LlmModel,
         tools: Vec<Box<dyn Tool>>,
+        policy: Arc<dyn PolicyNode>,
     ) -> (SessionHandle, Receiver<SessionEvent>) {
         let id = record.record().data().session_id();
         let creation_time = record.record().data().created_at();
@@ -105,6 +109,13 @@ impl Session {
         }
         let tool_registry = Arc::new(tool_registry);
         let llm_tools = tool_registry.list_for_clanker();
+        let workspace = record.record().data().cwd().clone();
+        let tools = ToolSetup {
+            registry: tool_registry,
+            policy,
+            workdir: WorkDir::new(workspace.clone()),
+            workspace,
+        };
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
 
@@ -113,7 +124,7 @@ impl Session {
             cmd_rx,
             harness_internal_event_tx: cmd_tx.clone(),
             event_tx,
-            tool_registry,
+            tools,
             recorder: record,
         };
         let handle = SessionHandle::new(session.id, cmd_tx.clone(), creation_time);
@@ -152,7 +163,7 @@ impl Session {
     /// Run the tool calls of `agent`. Streams again at once if there is
     /// nothing to wait for.
     fn start_tool_phase(
-        &self,
+        &mut self,
         agent: TypedAgent<WaitingForToolResponses>,
         rt: &Handle,
     ) -> HarnessState {
@@ -160,8 +171,18 @@ impl Session {
         let send: ToolMessageSender = Arc::new(move |msg| {
             let _ = inbox_tx.send(LoopMessage::Tool(msg));
         });
-        let phase = ToolPhaseEngine::start(agent.get_batch(), self.tool_registry.clone(), rt, send);
-        self.continue_tool_phase(agent, phase, rt)
+        let started = ToolPhaseEngine::start(agent.get_batch(), self.tools.clone(), rt, send);
+        for decision in started.decisions {
+            let _ = self.event_tx.send(SessionEvent::ToolPolicyDecision {
+                tool_call_id: decision.tool_call_id,
+                verdict: decision.verdict,
+            });
+        }
+        for result in started.finished {
+            self.recorder.record_tool_result(result.clone());
+            let _ = self.event_tx.send(SessionEvent::ToolCallResult(result));
+        }
+        self.continue_tool_phase(agent, started.phase, rt)
     }
 
     fn continue_tool_phase(
@@ -194,14 +215,14 @@ impl Session {
         }
     }
 
-    /// Apply a step of the tool phase: report the finished call, then move on.
+    /// Apply a step of the tool phase: report the finished calls, then move on.
     fn apply_tool_step(
         &mut self,
         agent: TypedAgent<WaitingForToolResponses>,
         step: Step,
         rt: &Handle,
     ) -> HarnessState {
-        if let Some(result) = step.finished {
+        for result in step.finished {
             self.recorder.record_tool_result(result.clone());
             let _ = self.event_tx.send(SessionEvent::ToolCallResult(result));
         }

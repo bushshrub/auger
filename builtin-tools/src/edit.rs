@@ -1,5 +1,7 @@
 use auger_core::JsonSchema;
+use auger_core::PathAccess;
 use auger_core::Tool;
+use auger_core::ToolContext;
 use auger_core::ToolDetails;
 use auger_core::ToolError;
 use async_trait::async_trait;
@@ -40,10 +42,18 @@ impl Tool for EditFile {
         }))
     }
 
-    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
+    fn path(&self, args: &serde_json::Value) -> Option<PathAccess> {
+        Some(PathAccess {
+            path: args["path"].as_str()?.into(),
+            write: true,
+        })
+    }
+
+    async fn call(&self, ctx: &ToolContext, args: serde_json::Value) -> Result<String, ToolError> {
         let path = args["path"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: path".into()))?;
+        let file = ctx.resolve(path);
         let old_string = args["old_string"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: old_string".into()))?;
@@ -51,7 +61,7 @@ impl Tool for EditFile {
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: new_string".into()))?;
 
-        let content = fs::read_to_string(path).await?;
+        let content = fs::read_to_string(&file).await?;
 
         let count = content.matches(old_string).count();
         match count {
@@ -69,7 +79,7 @@ impl Tool for EditFile {
         }
 
         let new_content = content.replacen(old_string, new_string, 1);
-        fs::write(path, &new_content).await?;
+        fs::write(&file, &new_content).await?;
 
         Ok(
             json!({ "success": true, "path": path }).to_string(),

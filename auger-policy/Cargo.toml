@@ -1,0 +1,8 @@
+[package]
+name = "auger-policy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+auger-core = { version = "0.1.0", path = "../auger-core" }
+auger-shell = { version = "0.1.0", path = "../auger-shell" }

@@ -5,6 +5,7 @@
 //! tracked as their starts arrive.
 
 use auger_core::SessionEvent;
+use auger_core::Verdict;
 use provider::BlockKind;
 use serde_json::Value;
 use serde_json::json;
@@ -35,6 +36,25 @@ impl BlockTracker {
             SessionEvent::ToolConsentRequired { tool_calls } => {
                 vec![json!({ "type": "tool_consent_required", "tool_calls": tool_calls })]
             }
+            SessionEvent::ToolPolicyDecision {
+                tool_call_id,
+                verdict,
+            } => match verdict {
+                Verdict::Allow { node } => vec![json!({
+                    "type": "tool_policy_decision",
+                    "id": tool_call_id,
+                    "decision": "allowed",
+                    "node": node,
+                })],
+                Verdict::Deny { node, reason } => vec![json!({
+                    "type": "tool_policy_decision",
+                    "id": tool_call_id,
+                    "decision": "denied",
+                    "node": node,
+                    "reason": reason,
+                })],
+                Verdict::AskUser { .. } | Verdict::Next => Vec::new(),
+            },
             SessionEvent::ToolCallResult(result) => vec![json!({
                 "type": "tool_call_result",
                 "id": result.tool_call_id(),
