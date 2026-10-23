@@ -3,7 +3,7 @@
 use crate::jsonrpc::RpcError;
 use auger_core::{JsonlSink, Record, RecordBody, SessionBuilder, read_jsonl};
 use serde_json::Value;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufReader, ErrorKind};
 use std::path::{Path, PathBuf};
 use tracing::warn;
@@ -25,8 +25,8 @@ pub(crate) fn session_key(params: &Value) -> Result<String, RpcError> {
 pub(crate) fn attach_sink(builder: SessionBuilder, dir: Option<&Path>) -> SessionBuilder {
     let Some(dir) = dir else { return builder };
     let path = dir.join(format!("{}.jsonl", builder.id()));
-    match OpenOptions::new().create(true).append(true).open(&path) {
-        Ok(file) => builder.sink(JsonlSink::synced(file)),
+    match JsonlSink::open(&path) {
+        Ok(sink) => builder.sink(sink),
         Err(error) => {
             warn!(%error, path = %path.display(), "cannot write trace; session is not stored");
             builder

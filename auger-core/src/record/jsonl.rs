@@ -4,8 +4,13 @@ use crate::record::Record;
 use crate::record::RecordSink;
 use crate::record::SinkError;
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::BufRead;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::io::Write;
+use std::path::Path;
 
 /// Appends one JSON line per record and flushes it. With a [`File`],
 /// [`JsonlSink::synced`] also syncs to disk, which crash-safe tool execution
@@ -30,6 +35,29 @@ impl JsonlSink<File> {
             writer: file,
             sync: |file| file.sync_data(),
         }
+    }
+
+    /// Append to the trace at `path`, creating it if needed. A torn last
+    /// line, left by a crash mid-write, is cut off first; otherwise the next
+    /// record would be glued onto it and the trace could not be read again.
+    pub fn open(path: &Path) -> std::io::Result<Self> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(path)?;
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents)?;
+        let keep = contents
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |end| end + 1);
+        if keep < contents.len() {
+            file.set_len(keep as u64)?;
+        }
+        file.seek(SeekFrom::Start(keep as u64))?;
+        Ok(Self::synced(file))
     }
 }
 
@@ -109,6 +137,22 @@ mod tests {
         bytes.truncate(bytes.len() - 5);
         let records = read_jsonl(bytes.as_slice()).unwrap();
         assert_eq!(records.len(), 1);
+    }
+
+    #[test]
+    fn appending_after_a_crash_cuts_the_torn_line() {
+        let dir = std::env::temp_dir().join(format!("auger-jsonl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("trace.jsonl");
+        let mut bytes = written(&[started(0), started(1)]);
+        bytes.truncate(bytes.len() - 5);
+        std::fs::write(&path, bytes).unwrap();
+
+        JsonlSink::open(&path).unwrap().append(&started(1)).unwrap();
+
+        let records = read_jsonl(std::fs::read(&path).unwrap().as_slice()).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(records.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![0, 1]);
     }
 
     #[test]

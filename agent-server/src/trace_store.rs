@@ -9,7 +9,6 @@ use auger_core::SessionHeader;
 use auger_core::SessionId;
 use auger_core::SinkError;
 use std::fs::File;
-use std::fs::OpenOptions;
 use std::io::BufReader;
 use std::path::Path;
 use std::path::PathBuf;
@@ -31,15 +30,12 @@ impl ServerSink {
     pub(crate) fn open(dir: Option<&Path>, id: SessionId, log: RecordLog) -> Self {
         let file = dir.and_then(|dir| {
             let path = trace_path(dir, id);
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
+            JsonlSink::open(&path)
                 .inspect_err(|error| warn!(%error, path = %path.display(), "cannot write trace"))
                 .ok()
         });
         Self {
-            file: file.map(JsonlSink::synced),
+            file,
             log,
         }
     }
