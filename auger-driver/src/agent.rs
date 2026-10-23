@@ -6,6 +6,7 @@ use provider::LlmModel;
 use provider::Message;
 use provider::ToolCallRequest;
 use provider::ToolDefinition;
+use provider::UserBlock;
 use provider::UserPrompt;
 use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
@@ -15,19 +16,22 @@ use derive_more::From;
 /// A turn in the conversation. An input turn is everything the harness or the
 /// user supplied before the model was asked to respond; an output turn is a
 /// single response from the model.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum Turn {
     Input { entries: Vec<InputEntry> },
     Output(AssistantResponse),
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, From)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, From)]
+#[serde(rename_all = "snake_case")]
 pub enum InputEntry {
     User(UserPrompt),
     Harness(HarnessEntry),
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum HarnessEntry {
     ToolResult(ToolResult),
     /// A harness level message.
@@ -35,6 +39,7 @@ pub enum HarnessEntry {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
 pub enum Prompt {
     User(UserPrompt),
     Harness(String)
@@ -165,29 +170,18 @@ pub(crate) fn convert_turns_into_messages(turns: Vec<Turn>) -> Vec<Message> {
     turns
         .into_iter()
         .map(|turn| match turn {
-            Turn::Input { entries } => {
-                let mut message = String::new();
-                let mut tool_call_results = Vec::new();
-                let mut push_text = |text: &str| {
-                    if !message.is_empty() {
-                        message.push_str("\n\n");
-                    }
-                    message.push_str(text);
-                };
-                for entry in entries {
-                    match entry {
-                        InputEntry::User(prompt) => push_text(&prompt.message),
-                        InputEntry::Harness(HarnessEntry::Message(text)) => push_text(&text),
+            Turn::Input { entries } => Message::User {
+                blocks: entries
+                    .into_iter()
+                    .map(|entry| match entry {
+                        InputEntry::User(prompt) => UserBlock::Text(prompt.message),
+                        InputEntry::Harness(HarnessEntry::Message(text)) => UserBlock::Harness(text),
                         InputEntry::Harness(HarnessEntry::ToolResult(result)) => {
-                            tool_call_results.push(result)
+                            UserBlock::ToolResult(result)
                         }
-                    }
-                }
-                Message::User {
-                    message: UserPrompt::new(message),
-                    tool_call_results,
-                }
-            }
+                    })
+                    .collect(),
+            },
             Turn::Output(response) => response.into(),
         })
         .collect()

@@ -1,8 +1,8 @@
-use auger_core::JsonSchema;
-use auger_core::Tool;
-use auger_core::ToolContext;
-use auger_core::ToolDetails;
-use auger_core::ToolError;
+use auger_toolengine::JsonSchema;
+use auger_toolengine::Tool;
+use auger_toolengine::ToolContext;
+use auger_toolengine::ToolDetails;
+use auger_toolengine::ToolError;
 use async_trait::async_trait;
 use serde_json::json;
 use std::path::PathBuf;

@@ -76,21 +76,20 @@ fn convert_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
             Message::System(content) => {
                 system = Some(content.clone());
             }
-            Message::User {
-                message,
-                tool_call_results,
-            } => {
-                let mut blocks: Vec<Value> = Vec::new();
-                let msg_text = &message.message;
+            Message::User { blocks: user_blocks } => {
+                // Anthropic wants tool results ahead of any text.
+                let mut blocks: Vec<Value> = provider::tool_results(user_blocks)
+                    .map(|tr| {
+                        json!({
+                            "type": "tool_result",
+                            "tool_use_id": tr.tool_call_id,
+                            "content": tr.content,
+                        })
+                    })
+                    .collect();
+                let msg_text = provider::render_text(user_blocks);
                 if !msg_text.is_empty() {
                     blocks.push(json!({"type": "text", "text": msg_text}));
-                }
-                for tr in tool_call_results {
-                    blocks.push(json!({
-                        "type": "tool_result",
-                        "tool_use_id": tr.tool_call_id,
-                        "content": tr.content,
-                    }));
                 }
                 if blocks.is_empty() {
                     blocks.push(json!({"type": "text", "text": ""}));

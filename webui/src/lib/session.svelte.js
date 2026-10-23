@@ -382,81 +382,88 @@ export class AugerSession {
 
 /**
  * Rebuild the transcript from a trace snapshot (initial load and reconnect).
- * The snapshot is the persisted record stream (see FE.md): a leading session
- * record, then turns (which carry the conversation), then the tool events that
- * occurred during an assistant turn. Turns and their enum payloads are
- * externally tagged (`turn.input`, `turn.assistant.outcome`,
- * `event.tool_authorization`, ...). Tool results live in the input turn that
- * answers the assistant, not in a separate event.
- * @param {TraceRecord[]} records
+ * The snapshot is the session's records (`{seq, ts, type, data}`), folded the
+ * way auger-core restores a session: `turns` records replay the conversation
+ * (`push_turn`, `push_entry`, `truncate`), `tool` records carry decisions and
+ * outcomes, and an interrupted stream's partial shows until the conversation
+ * moves on.
+ * @param {any[]} records
  * @returns {UiItem[]}
  */
 function buildItems(records) {
+	/** @type {any[]} */
+	const turns = [];
+	/** @type {any} */
+	let partial = null;
+	/** @type {Map<string, any>} */
+	const outcomes = new Map();
+	/** @type {Map<string, any>} */
+	const decisions = new Map();
+
+	for (const record of records) {
+		const data = record.data;
+		if (record.type === 'turns') {
+			if ('push_turn' in data) turns.push(data.push_turn);
+			else if ('push_entry' in data) turns.at(-1)?.input?.entries.push(data.push_entry);
+			else if ('truncate' in data) turns.length = data.truncate.len;
+			partial = null;
+		} else if (record.type === 'stream') {
+			partial = data?.interrupted?.partial ?? data?.failed?.partial ?? null;
+		} else if (record.type === 'tool') {
+			if ('finished' in data) outcomes.set(data.finished.tool_call_id, data.finished.outcome);
+			else if ('decided' in data) decisions.set(data.decided.tool_call_id, data.decided.decision);
+		}
+	}
+
 	/** @type {UiItem[]} */
 	const items = [];
 	/** @type {Map<string, UiToolCall>} */
 	const calls = new Map();
+	/** @param {any[]} blocks */
+	const pushResponse = (blocks) => {
+		const { reasoning, content: text, toolCalls } = responseParts({ blocks });
+		if (reasoning.trim().length > 0 || text.trim().length > 0) {
+			items.push({ kind: 'assistant', id: nextId(), reasoning, content: text, streaming: false });
+		}
+		for (const tc of toolCalls) {
+			const decision = decisions.get(tc.id);
+			const by = decision?.allowed?.by ?? decision?.denied?.by;
+			/** @type {UiToolCall} */
+			const call = {
+				id: tc.id,
+				name: tc.name,
+				arguments: tc.arguments,
+				status: decision ? 'running' : 'pending_approval',
+				autoApproved: by !== undefined && by !== 'user'
+			};
+			if (decision && 'denied' in decision) call.status = 'denied';
+			const outcome = outcomes.get(tc.id);
+			if (outcome) applyOutcome(call, outcome);
+			calls.set(tc.id, call);
+			items.push({ kind: 'tool', id: nextId(), call });
+		}
+	};
 
-	for (const record of records) {
-		if (record.kind === 'session') continue;
-
-		if (record.kind === 'turn' && 'input' in record.turn) {
-			for (const entry of record.turn.input.entries) {
+	for (const turn of turns) {
+		if ('input' in turn) {
+			for (const entry of turn.input.entries) {
 				if ('user' in entry && entry.user.message.trim().length > 0) {
 					items.push({ kind: 'user', id: nextId(), text: entry.user.message });
-				} else if ('tool_result' in entry) {
-					const result = entry.tool_result;
+				} else if (entry.harness?.tool_result) {
+					const result = entry.harness.tool_result;
 					const call = calls.get(result.tool_call_id);
-					// Denial wins over a result (a denied call still records its
-					// reason as a result), so don't overwrite that status.
-					if (call && call.status !== 'denied') applyOutcome(call, result.outcome);
+					if (call && !outcomes.has(result.tool_call_id) && call.status !== 'denied') {
+						call.status = 'done';
+						call.result = result.content;
+					}
 				}
 				// Harness messages are internal steering; nothing to show.
 			}
-		} else if (record.kind === 'turn' && 'assistant' in record.turn) {
-			// An incomplete turn may still carry whatever was streamed first.
-			const outcome = record.turn.assistant.outcome;
-			const response =
-				'completed' in outcome
-					? outcome.completed.response
-					: outcome.incomplete.partial_response;
-			if (!response) continue;
-
-			const { reasoning, content: text, toolCalls } = responseParts(response);
-			if (reasoning.trim().length > 0 || text.trim().length > 0) {
-				items.push({
-					kind: 'assistant',
-					id: nextId(),
-					reasoning,
-					content: text,
-					streaming: false
-				});
-			}
-			for (const tc of toolCalls) {
-				const needsApproval = APPROVAL_REQUIRED_TOOLS.has(tc.name);
-				/** @type {UiToolCall} */
-				const call = {
-					id: tc.id,
-					name: tc.name,
-					arguments: tc.arguments,
-					status: needsApproval ? 'pending_approval' : 'running',
-					autoApproved: !needsApproval
-				};
-				calls.set(tc.id, call);
-				items.push({ kind: 'tool', id: nextId(), call });
-			}
-		} else if (record.kind === 'event' && 'tool_authorization' in record.event) {
-			// A turn's events can arrive in any order, so only advance the status;
-			// never downgrade a call that already has a result back to 'running'.
-			const auth = record.event.tool_authorization;
-			const call = calls.get(auth.tool_call_id);
-			if (call) {
-				call.autoApproved = auth.source === 'policy';
-				if (auth.decision === 'denied') call.status = 'denied';
-				else if (call.status === 'pending_approval') call.status = 'running';
-			}
+		} else if ('output' in turn) {
+			pushResponse(turn.output);
 		}
 	}
+	if (Array.isArray(partial)) pushResponse(partial);
 
 	return items;
 }

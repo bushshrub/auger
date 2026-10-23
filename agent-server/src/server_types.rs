@@ -13,6 +13,8 @@ use uuid::Uuid;
 pub(crate) struct SessionEntry {
     pub(crate) handle: SessionHandle,
     pub(crate) events: broadcast::Sender<SessionEvent>,
+    /// Every record so far, for snapshots.
+    pub(crate) records: crate::trace_store::RecordLog,
     pub(crate) model: String,
     pub(crate) read_token: Uuid,
     pub(crate) write_token: Uuid,

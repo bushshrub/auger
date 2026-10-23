@@ -55,7 +55,7 @@ pub struct StreamEnd {
 }
 
 /// A block of response from the clanker.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Block {
     Text (String),

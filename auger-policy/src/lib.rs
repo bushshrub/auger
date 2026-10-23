@@ -12,8 +12,8 @@ pub use bash_read_only::BashReadOnly;
 pub use secrets::SecretsGuard;
 pub use workspace_read::WorkspaceRead;
 
-use auger_core::Chain;
-use auger_core::PolicyNode;
+use auger_toolengine::Chain;
+use auger_toolengine::PolicyNode;
 
 /// Secrets guard, then reads inside the workspace, then read-only bash.
 pub fn default_policy() -> impl PolicyNode {

@@ -1,31 +1,55 @@
 //! Runs the approval policy for one tool call.
 
-use crate::harness::tool_engine::registry::ToolRegistry;
+use crate::engine::registry::ToolRegistry;
+use crate::fact::Journal;
 use crate::policy::PolicyCall;
 use crate::policy::PolicyNode;
 use crate::policy::Verdict;
+use crate::tool::Tool;
 use crate::tool::context::WorkDir;
 use provider::ToolCallRequest;
+use provider::ToolDefinition;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Everything the tool phase needs from the session.
+/// Everything a tool phase needs from its session: the tools, the policy,
+/// the working directory the calls share, and where facts go.
 #[derive(Clone)]
-pub(crate) struct ToolSetup {
+pub struct ToolSetup {
     pub(crate) registry: Arc<ToolRegistry>,
     pub(crate) policy: Arc<dyn PolicyNode>,
     pub(crate) workspace: PathBuf,
     pub(crate) workdir: WorkDir,
-}
-
-/// A verdict that settled a call without asking the user.
-#[derive(Clone, Debug)]
-pub(crate) struct PolicyDecision {
-    pub(crate) tool_call_id: String,
-    pub(crate) verdict: Verdict,
+    pub(crate) journal: Journal,
 }
 
 impl ToolSetup {
+    /// Calls start in `cwd`, which is `workspace` for a new session.
+    pub fn new(
+        tools: Vec<Box<dyn Tool>>,
+        policy: Arc<dyn PolicyNode>,
+        workspace: PathBuf,
+        cwd: PathBuf,
+        journal: Journal,
+    ) -> Self {
+        let mut registry = ToolRegistry::new();
+        for tool in tools {
+            registry.register(tool);
+        }
+        Self {
+            registry: Arc::new(registry),
+            policy,
+            workspace,
+            workdir: WorkDir::journaled(cwd, journal.clone()),
+            journal,
+        }
+    }
+
+    /// The tool definitions to give the model.
+    pub fn definitions(&self) -> Vec<ToolDefinition> {
+        self.registry.list_for_clanker()
+    }
+
     /// Decide `call` in `cwd`. Never returns [`Verdict::Next`].
     pub(crate) fn check(&self, call: &ToolCallRequest, cwd: &PathBuf) -> Verdict {
         // An unknown tool or malformed arguments only produce an error for

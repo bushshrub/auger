@@ -3,9 +3,9 @@
 use crate::paths::inside_workspace;
 use crate::paths::is_secret;
 use crate::paths::resolve;
-use auger_core::PolicyCall;
-use auger_core::PolicyNode;
-use auger_core::Verdict;
+use auger_toolengine::PolicyCall;
+use auger_toolengine::PolicyNode;
+use auger_toolengine::Verdict;
 use auger_shell::Arg;
 use auger_shell::Command;
 use auger_shell::Joint;

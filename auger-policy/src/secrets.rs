@@ -1,8 +1,8 @@
 use crate::paths::is_secret;
 use crate::paths::resolve;
-use auger_core::PolicyCall;
-use auger_core::PolicyNode;
-use auger_core::Verdict;
+use auger_toolengine::PolicyCall;
+use auger_toolengine::PolicyNode;
+use auger_toolengine::Verdict;
 
 /// Asks before any file tool touches something that looks like credentials,
 /// even inside the workspace.

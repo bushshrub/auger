@@ -5,10 +5,12 @@ pub(crate) mod check;
 pub(crate) mod registry;
 pub(crate) mod result;
 
-use crate::harness::tool_engine::check::PolicyDecision;
-use crate::harness::tool_engine::check::ToolSetup;
-use crate::harness::tool_engine::result::ToolCallResult;
-use crate::harness::tool_engine::result::ToolOutcome;
+use crate::engine::check::ToolSetup;
+use crate::engine::result::ToolCallResult;
+use crate::engine::result::ToolOutcome;
+use crate::fact::DecidedBy;
+use crate::fact::Decision;
+use crate::fact::ToolFact;
 use crate::policy::Verdict;
 use crate::tool::ToolContext;
 use auger_driver::Resolved;
@@ -23,11 +25,14 @@ use tokio::runtime::Handle;
 
 const TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 
+const OUTCOME_UNKNOWN: &str = "auger stopped while this call was running, so its outcome is \
+                               unknown. Check its effects before running it again.";
+
 /// Delivers a [`ToolMessage`] back to whoever owns the engine.
-pub(crate) type ToolMessageSender = Arc<dyn Fn(ToolMessage) + Send + Sync>;
+pub type ToolMessageSender = Arc<dyn Fn(ToolMessage) + Send + Sync>;
 
 /// A message from a spawned tool task. Opaque outside the engine.
-pub(crate) struct ToolMessage {
+pub struct ToolMessage {
     call_id: String,
     outcome: ToolOutcome,
 }
@@ -40,7 +45,7 @@ enum CallState {
     Done(ToolOutcome),
 }
 
-pub(crate) struct ToolPhaseEngine {
+pub struct ToolPhaseEngine {
     batch: ToolBatch<Unresolved>,
     calls: HashMap<String, CallState>,
     setup: ToolSetup,
@@ -48,7 +53,7 @@ pub(crate) struct ToolPhaseEngine {
     send: ToolMessageSender,
 }
 
-pub(crate) enum Phase {
+pub enum Phase {
     /// Some calls have no answer yet. `needs_consent` lists the calls that
     /// just started waiting for a user decision.
     Pending {
@@ -62,30 +67,29 @@ pub(crate) enum Phase {
     Withheld(ToolBatch<Resolved>),
 }
 
-/// The phase after policy checked every call of a new batch.
-pub(crate) struct Started {
-    /// Calls the policy allowed or denied without asking.
-    pub(crate) decisions: Vec<PolicyDecision>,
-    /// Calls the policy denied.
-    pub(crate) finished: Vec<ToolCallResult>,
-    pub(crate) phase: Phase,
-}
-
-pub(crate) struct Step {
-    /// The calls that finished; empty if the input was dropped.
-    pub(crate) finished: Vec<ToolCallResult>,
-    pub(crate) phase: Phase,
-}
-
 impl ToolPhaseEngine {
     /// Start a phase for `batch`. The policy settles what it can; the other
     /// calls wait for a user decision.
-    pub(crate) fn start(
+    pub fn start(
         batch: ToolBatch<Unresolved>,
         setup: ToolSetup,
         rt: &Handle,
         send: ToolMessageSender,
-    ) -> Started {
+    ) -> Phase {
+        Self::resume(batch, setup, rt, send, &[])
+    }
+
+    /// Continue a phase that was cut off, given the facts journaled for this
+    /// batch. Finished calls keep their outcome. A call that started but never
+    /// finished is not run again: its effects are unknown, so the model is
+    /// told so. Every other call starts over.
+    pub fn resume(
+        batch: ToolBatch<Unresolved>,
+        setup: ToolSetup,
+        rt: &Handle,
+        send: ToolMessageSender,
+        facts: &[ToolFact],
+    ) -> Phase {
         let calls = batch.calls().to_vec();
         let mut engine = Self {
             batch,
@@ -95,130 +99,140 @@ impl ToolPhaseEngine {
             send,
         };
         let mut needs_consent = Vec::new();
-        let mut decisions = Vec::new();
-        let mut finished = Vec::new();
         for call in calls {
+            if let Some(outcome) = finished_outcome(facts, &call.id) {
+                engine.calls.insert(call.id, CallState::Done(outcome));
+                continue;
+            }
+            if started(facts, &call.id) {
+                engine.finish(&call.id, ToolOutcome::error(OUTCOME_UNKNOWN));
+                continue;
+            }
             let cwd = engine.setup.workdir.get();
-            let verdict = engine.setup.check(&call, &cwd);
-            match &verdict {
-                Verdict::Allow { .. } => engine.run(call.clone(), cwd),
+            match engine.setup.check(&call, &cwd) {
+                Verdict::Allow { node } => {
+                    engine.decided(&call.id, Decision::Allowed {
+                        by: DecidedBy::Policy(node.to_string()),
+                    });
+                    engine.run(call, cwd);
+                }
                 Verdict::Deny { node, reason } => {
-                    let outcome = ToolOutcome::Denied {
-                        reason: Some(format!("{reason} (policy: {node})")),
-                    };
-                    engine
-                        .calls
-                        .insert(call.id.clone(), CallState::Done(outcome.clone()));
-                    finished.push(ToolCallResult {
-                        tool_call_id: call.id.clone().into(),
-                        outcome,
+                    let reason = format!("{reason} (policy: {node})");
+                    engine.decided(&call.id, Decision::Denied {
+                        by: DecidedBy::Policy(node.to_string()),
+                        reason: Some(reason.clone()),
+                    });
+                    engine.finish(&call.id, ToolOutcome::Denied {
+                        reason: Some(reason),
                     });
                 }
                 Verdict::AskUser { .. } | Verdict::Next => {
-                    engine
-                        .calls
-                        .insert(call.id.clone(), CallState::Undecided { cwd });
-                    needs_consent.push(call.clone());
-                    continue;
+                    engine.calls.insert(call.id.clone(), CallState::Undecided { cwd });
+                    needs_consent.push(call);
                 }
             }
-            decisions.push(PolicyDecision {
-                tool_call_id: call.id,
-                verdict,
-            });
         }
         // A denial withholds every result until the user replies, so asking
         // about the rest of the batch would only be noise.
-        if !finished.is_empty() {
-            finished.extend(engine.skip_undecided());
+        if engine.any_denied() {
+            engine.skip_undecided();
             needs_consent.clear();
         }
-        let phase = match engine.into_phase() {
+        match engine.into_phase() {
             Phase::Pending { engine, .. } => Phase::Pending {
                 engine,
                 needs_consent,
             },
             phase => phase,
-        };
-        Started {
-            decisions,
-            finished,
-            phase,
         }
     }
 
     /// Apply a user decision. Dropped unless the call is undecided. A denial
     /// uses `message` as the reason.
-    pub(crate) fn decide(mut self, call_id: &str, approved: bool, message: Option<String>) -> Step {
-        let finished = match self.calls.get(call_id) {
+    pub fn decide(mut self, call_id: &str, approved: bool, message: Option<String>) -> Phase {
+        match self.calls.get(call_id) {
             Some(CallState::Undecided { cwd }) if approved => {
                 let cwd = cwd.clone();
                 let call = self.batch.calls().iter().find(|c| c.id == call_id).cloned();
                 if let Some(call) = call {
+                    self.decided(call_id, Decision::Allowed { by: DecidedBy::User });
                     self.run(call, cwd);
                 }
-                Vec::new()
             }
             Some(CallState::Undecided { .. }) => {
-                let outcome = ToolOutcome::Denied { reason: message };
-                self.calls.insert(call_id.to_string(), CallState::Done(outcome.clone()));
-                let mut finished = vec![ToolCallResult {
-                    tool_call_id: call_id.to_string().into(),
-                    outcome,
-                }];
-                finished.extend(self.skip_undecided());
-                finished
+                self.decided(call_id, Decision::Denied {
+                    by: DecidedBy::User,
+                    reason: message.clone(),
+                });
+                self.finish(call_id, ToolOutcome::Denied { reason: message });
+                self.skip_undecided();
             }
-            _ => Vec::new(),
-        };
-        Step {
-            finished,
-            phase: self.into_phase(),
+            _ => {}
         }
+        self.into_phase()
+    }
+
+    /// Apply a message from a tool task.
+    pub fn receive(mut self, msg: ToolMessage) -> Phase {
+        if matches!(self.calls.get(&msg.call_id), Some(CallState::Running)) {
+            self.finish(&msg.call_id, msg.outcome);
+        }
+        self.into_phase()
+    }
+
+    fn decided(&self, call_id: &str, decision: Decision) {
+        let _ = (self.setup.journal)(ToolFact::Decided {
+            tool_call_id: call_id.to_string(),
+            decision,
+        });
+    }
+
+    /// Settle `call_id` and journal its outcome.
+    fn finish(&mut self, call_id: &str, outcome: ToolOutcome) {
+        self.calls
+            .insert(call_id.to_string(), CallState::Done(outcome.clone()));
+        let _ = (self.setup.journal)(ToolFact::Finished(ToolCallResult {
+            tool_call_id: call_id.to_string().into(),
+            outcome,
+        }));
+    }
+
+    fn any_denied(&self) -> bool {
+        self.calls
+            .values()
+            .any(|state| matches!(state, CallState::Done(ToolOutcome::Denied { .. })))
     }
 
     /// Deny every call still waiting for a decision, after another call of
     /// the batch was denied. Running calls finish normally.
-    fn skip_undecided(&mut self) -> Vec<ToolCallResult> {
-        let mut skipped = Vec::new();
-        for call in self.batch.calls() {
-            let Some(state @ CallState::Undecided { .. }) = self.calls.get_mut(&call.id) else {
-                continue;
-            };
-            let outcome = ToolOutcome::Denied {
+    fn skip_undecided(&mut self) {
+        let undecided: Vec<String> = self
+            .batch
+            .calls()
+            .iter()
+            .filter(|call| matches!(self.calls.get(&call.id), Some(CallState::Undecided { .. })))
+            .map(|call| call.id.clone())
+            .collect();
+        for call_id in undecided {
+            self.finish(&call_id, ToolOutcome::Denied {
                 reason: Some("not run: another call in this batch was denied".to_string()),
-            };
-            *state = CallState::Done(outcome.clone());
-            skipped.push(ToolCallResult {
-                tool_call_id: call.id.clone().into(),
-                outcome,
             });
         }
-        skipped
     }
 
-    /// Apply a message from a tool task.
-    pub(crate) fn receive(mut self, msg: ToolMessage) -> Step {
-        let finished = match self.calls.get_mut(&msg.call_id) {
-            Some(state @ CallState::Running) => {
-                *state = CallState::Done(msg.outcome.clone());
-                vec![ToolCallResult {
-                    tool_call_id: msg.call_id.into(),
-                    outcome: msg.outcome,
-                }]
-            }
-            _ => Vec::new(),
-        };
-        Step {
-            finished,
-            phase: self.into_phase(),
-        }
-    }
-
-    /// Mark `call` running and spawn it. The task always sends exactly one
-    /// message, also on error, timeout and panic.
+    /// Journal that `call` starts, then spawn it. The task always sends
+    /// exactly one message, also on error, timeout and panic. A call whose
+    /// start cannot be journaled does not run.
     fn run(&mut self, call: ToolCallRequest, cwd: PathBuf) {
         let call_id = call.id.clone();
+        let started = (self.setup.journal)(ToolFact::Started {
+            tool_call_id: call_id.clone(),
+            cwd: cwd.clone(),
+        });
+        if let Err(error) = started {
+            self.finish(&call_id, ToolOutcome::error(format!("not run: {error}")));
+            return;
+        }
         self.calls.insert(call_id.clone(), CallState::Running);
         let registry = self.setup.registry.clone();
         let ctx = ToolContext::for_session(cwd, self.setup.workdir.clone());
@@ -268,4 +282,19 @@ impl ToolPhaseEngine {
             Phase::Done(batch)
         }
     }
+}
+
+fn finished_outcome(facts: &[ToolFact], call_id: &str) -> Option<ToolOutcome> {
+    facts.iter().find_map(|fact| match fact {
+        ToolFact::Finished(result) if String::from(result.tool_call_id()) == call_id => {
+            Some(result.outcome().clone())
+        }
+        _ => None,
+    })
+}
+
+fn started(facts: &[ToolFact], call_id: &str) -> bool {
+    facts.iter().any(|fact| {
+        matches!(fact, ToolFact::Started { tool_call_id, .. } if tool_call_id == call_id)
+    })
 }

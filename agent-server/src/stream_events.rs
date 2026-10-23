@@ -4,8 +4,12 @@
 //! delta does not say what kind of block it belongs to, so the open blocks are
 //! tracked as their starts arrive.
 
+use auger_core::RecordBody;
 use auger_core::SessionEvent;
-use auger_core::Verdict;
+use auger_core::StreamRecord;
+use auger_toolengine::DecidedBy;
+use auger_toolengine::Decision;
+use auger_toolengine::ToolFact;
 use provider::BlockKind;
 use serde_json::Value;
 use serde_json::json;
@@ -36,41 +40,9 @@ impl BlockTracker {
             SessionEvent::ToolConsentRequired { tool_calls } => {
                 vec![json!({ "type": "tool_consent_required", "tool_calls": tool_calls })]
             }
-            SessionEvent::ToolPolicyDecision {
-                tool_call_id,
-                verdict,
-            } => match verdict {
-                Verdict::Allow { node } => vec![json!({
-                    "type": "tool_policy_decision",
-                    "id": tool_call_id,
-                    "decision": "allowed",
-                    "node": node,
-                })],
-                Verdict::Deny { node, reason } => vec![json!({
-                    "type": "tool_policy_decision",
-                    "id": tool_call_id,
-                    "decision": "denied",
-                    "node": node,
-                    "reason": reason,
-                })],
-                Verdict::AskUser { .. } | Verdict::Next => Vec::new(),
-            },
-            SessionEvent::ToolCallResult(result) => vec![json!({
-                "type": "tool_call_result",
-                "id": result.tool_call_id(),
-                "result": result,
-            })],
-            SessionEvent::TurnComplete { usage, stop_reason } => vec![json!({
-                "type": "done",
-                "usage": usage,
-                "stop_reason": stop_reason,
-            })],
-            SessionEvent::Interrupted => vec![json!({ "type": "interrupted" })],
+            SessionEvent::Record(record) => translate_record(record.body),
             SessionEvent::ToolResultsWithheld => {
                 vec![json!({ "type": "tool_results_withheld" })]
-            }
-            SessionEvent::StreamError { error } => {
-                vec![json!({ "type": "stream_error", "error": error })]
             }
             SessionEvent::Closed => vec![json!({ "type": "closed" })],
         }
@@ -132,5 +104,53 @@ impl BlockTracker {
             // once the turn settles.
             provider::StreamEvent::Usage(_) => Vec::new(),
         }
+    }
+}
+
+/// The client events for a record. Records clients do not consume yet map to
+/// nothing; they are in the snapshot.
+fn translate_record(body: RecordBody) -> Vec<Value> {
+    match body {
+        RecordBody::Tool(ToolFact::Decided {
+            tool_call_id,
+            decision,
+        }) => match decision {
+            Decision::Allowed {
+                by: DecidedBy::Policy(node),
+            } => vec![json!({
+                "type": "tool_policy_decision",
+                "id": tool_call_id,
+                "decision": "allowed",
+                "node": node,
+            })],
+            Decision::Denied {
+                by: DecidedBy::Policy(node),
+                reason,
+            } => vec![json!({
+                "type": "tool_policy_decision",
+                "id": tool_call_id,
+                "decision": "denied",
+                "node": node,
+                "reason": reason,
+            })],
+            _ => Vec::new(),
+        },
+        RecordBody::Tool(ToolFact::Finished(result)) => vec![json!({
+            "type": "tool_call_result",
+            "id": result.tool_call_id(),
+            "result": result,
+        })],
+        RecordBody::Stream(StreamRecord::Completed { usage, stop_reason }) => vec![json!({
+            "type": "done",
+            "usage": usage,
+            "stop_reason": stop_reason,
+        })],
+        RecordBody::Stream(StreamRecord::Interrupted { .. }) => {
+            vec![json!({ "type": "interrupted" })]
+        }
+        RecordBody::Stream(StreamRecord::Failed { error, .. }) => {
+            vec![json!({ "type": "stream_error", "error": error.to_string() })]
+        }
+        _ => Vec::new(),
     }
 }

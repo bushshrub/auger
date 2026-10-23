@@ -1,4 +1,3 @@
-use crate::harness::tool_engine::ToolPhaseEngine;
 use auger_driver::LlmStreamingInterrupted;
 use auger_driver::Resolved;
 use auger_driver::ToolBatch;
@@ -6,6 +5,7 @@ use auger_driver::TypedAgent;
 use auger_driver::WaitingForToolResponses;
 use auger_driver::WaitingForUserMessage;
 use auger_driver::Prompt;
+use auger_toolengine::ToolPhaseEngine;
 use tokio_util::sync::CancellationToken;
 
 /// The current state that the harness is in, with additional data as needed

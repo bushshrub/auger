@@ -1,10 +1,11 @@
 use getset::Getters;
 use crate::types::Message;
+use crate::types::UserBlock;
 use crate::types::ToolDefinition;
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct UserPrompt {
     pub message: String,
 }
@@ -18,14 +19,13 @@ impl UserPrompt {
 impl From<UserPrompt> for Message {
     fn from(prompt: UserPrompt) -> Self {
         Message::User {
-            message: prompt,
-            tool_call_results: Vec::new(),
+            blocks: vec![UserBlock::Text(prompt.message)],
         }
     }
 }
 
 /// A result from a tool call which can be sent back to the model.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ToolResult {
     /// The ID of the tool call that this is a result for
     pub tool_call_id: String,

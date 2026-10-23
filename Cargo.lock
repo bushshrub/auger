@@ -15,6 +15,7 @@ dependencies = [
  "auger-core",
  "auger-driver",
  "auger-policy",
+ "auger-toolengine",
  "axum",
  "builtin-tools",
  "futures",
@@ -166,6 +167,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "auger-driver",
+ "auger-toolengine",
  "builtin-tools",
  "chrono",
  "derive_more",
@@ -196,6 +198,7 @@ dependencies = [
  "provider-dummy",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
@@ -206,8 +209,8 @@ dependencies = [
 name = "auger-policy"
 version = "0.1.0"
 dependencies = [
- "auger-core",
  "auger-shell",
+ "auger-toolengine",
  "glob",
 ]
 
@@ -217,6 +220,21 @@ version = "0.1.0"
 dependencies = [
  "tree-sitter",
  "tree-sitter-bash",
+]
+
+[[package]]
+name = "auger-toolengine"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "auger-driver",
+ "getset",
+ "provider",
+ "provider-dummy",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -406,7 +424,7 @@ name = "builtin-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "auger-core",
+ "auger-toolengine",
  "serde_json",
  "tokio",
 ]

@@ -1,23 +1,47 @@
+use crate::fact::Journal;
+use crate::fact::ToolFact;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
 /// The working directory shared by the calls of one session.
-#[derive(Clone, Debug)]
-pub(crate) struct WorkDir(Arc<Mutex<PathBuf>>);
+#[derive(Clone)]
+pub(crate) struct WorkDir {
+    dir: Arc<Mutex<PathBuf>>,
+    journal: Option<Journal>,
+}
 
 impl WorkDir {
     pub(crate) fn new(dir: PathBuf) -> Self {
-        Self(Arc::new(Mutex::new(dir)))
+        Self {
+            dir: Arc::new(Mutex::new(dir)),
+            journal: None,
+        }
+    }
+
+    /// A directory that reports each move as [`ToolFact::CwdChanged`].
+    pub(crate) fn journaled(dir: PathBuf, journal: Journal) -> Self {
+        Self {
+            dir: Arc::new(Mutex::new(dir)),
+            journal: Some(journal),
+        }
     }
 
     pub(crate) fn get(&self) -> PathBuf {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.dir.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn set(&self, dir: PathBuf) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = dir;
+        let mut current = self.dir.lock().unwrap_or_else(|e| e.into_inner());
+        if *current == dir {
+            return;
+        }
+        *current = dir.clone();
+        // Journaled under the lock so facts arrive in the order of the moves.
+        if let Some(journal) = &self.journal {
+            let _ = journal(ToolFact::CwdChanged { cwd: dir });
+        }
     }
 }
 

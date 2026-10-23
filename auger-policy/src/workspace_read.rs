@@ -1,7 +1,7 @@
 use crate::paths::inside_workspace;
-use auger_core::PolicyCall;
-use auger_core::PolicyNode;
-use auger_core::Verdict;
+use auger_toolengine::PolicyCall;
+use auger_toolengine::PolicyNode;
+use auger_toolengine::Verdict;
 
 /// Allows file reads inside the workspace.
 pub struct WorkspaceRead;

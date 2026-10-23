@@ -73,21 +73,21 @@ fn messages_to_json(messages: &[provider::Message]) -> Vec<Value> {
             provider::Message::System(content) => {
                 out.push(json!({"role": "system", "content": content}));
             }
-            provider::Message::User {
-                message,
-                tool_call_results,
-            } => {
-                for tr in tool_call_results {
+            provider::Message::User { blocks } => {
+                let mut has_results = false;
+                for tr in provider::tool_results(blocks) {
+                    has_results = true;
                     out.push(json!({
                         "role": "tool",
                         "tool_call_id": tr.tool_call_id,
                         "content": tr.content,
                     }));
                 }
-                if !message.message.is_empty() || tool_call_results.is_empty() {
+                let text = provider::render_text(blocks);
+                if !text.is_empty() || !has_results {
                     out.push(json!({
                         "role": "user",
-                        "content": message.message,
+                        "content": text,
                     }));
                 }
             }
@@ -423,7 +423,7 @@ mod tests {
     use super::normalize_base_url;
     use provider::Message;
     use provider::ToolResult;
-    use provider::UserPrompt;
+    use provider::UserBlock;
     use serde_json::json;
 
     #[test]
@@ -457,8 +457,10 @@ mod tests {
     #[test]
     fn serializes_tool_results_as_tool_messages() {
         let messages = messages_to_json(&[Message::User {
-            message: UserPrompt::new("continue".to_string()),
-            tool_call_results: vec![ToolResult::new("call_1".to_string(), "result".to_string())],
+            blocks: vec![
+                UserBlock::Text("continue".to_string()),
+                UserBlock::ToolResult(ToolResult::new("call_1".to_string(), "result".to_string())),
+            ],
         }]);
 
         assert_eq!(messages[0]["role"], "tool");

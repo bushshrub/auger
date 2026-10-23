@@ -8,8 +8,9 @@ use auger_core::SessionCommand;
 use auger_core::SessionEvent;
 use auger_core::SessionHandle;
 use auger_core::SessionId;
+use auger_core::Record;
+use auger_core::RestoreError;
 use auger_core::SystemPrompt;
-use auger_core::TraceWriter;
 use axum::Extension;
 use axum::Json;
 use axum::Router;
@@ -31,6 +32,7 @@ use provider::LlmModel;
 use provider::LlmProvider;
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -41,12 +43,14 @@ use tokio::sync::RwLock;
 use tokio_stream::wrappers::BroadcastStream;
 use tracing::debug;
 use tracing::info;
+use tracing::warn;
 use uuid::Uuid;
 
 mod config;
 mod provider_config;
 mod server_types;
 mod stream_events;
+mod trace_store;
 
 const DEFAULT_CONTEXT_WINDOW: usize = 113072;
 const SYSTEM_PROMPT: &str = "You are a precise, capable software engineering agent. Use the \
@@ -68,10 +72,13 @@ struct AppState {
     disk_sessions: Arc<RwLock<HashMap<SessionId, DiskSession>>>,
     activation_lock: Arc<TokioMutex<()>>,
     default_model: String,
+    sessions_dir: Option<PathBuf>,
 }
 
+/// A session stored on disk, started again on its first input.
 struct DiskSession {
-    record: auger_core::SessionRecord,
+    header: auger_core::SessionHeader,
+    records: Vec<Record>,
     model: String,
     read_token: Uuid,
     write_token: Uuid,
@@ -89,12 +96,28 @@ pub async fn serve(listener: TcpListener) -> Result<(), String> {
     let config = config::Config::load()?;
     let provider = provider_config::from_config(&config);
 
+    let sessions_dir = trace_store::sessions_dir();
+    let mut disk_sessions = HashMap::new();
+    for (header, records) in sessions_dir.as_deref().map(trace_store::load_all).unwrap_or_default() {
+        disk_sessions.insert(header.data.session_id(), DiskSession {
+            model: header.data.model_info().id().clone(),
+            header,
+            records,
+            read_token: Uuid::new_v4(),
+            write_token: Uuid::new_v4(),
+            archived: false,
+            events: tokio::sync::broadcast::channel(256).0,
+        });
+    }
+    info!(count = disk_sessions.len(), "loaded stored sessions");
+
     let state = AppState {
         provider: Arc::clone(&provider),
         sessions: Arc::new(RwLock::new(HashMap::new())),
-        disk_sessions: Arc::new(RwLock::new(HashMap::new())),
+        disk_sessions: Arc::new(RwLock::new(disk_sessions)),
         activation_lock: Arc::new(TokioMutex::new(())),
         default_model: config.model(),
+        sessions_dir,
     };
 
     if let Ok(addr) = listener.local_addr() {
@@ -140,14 +163,25 @@ async fn resolve_session_extensions(
         } else {
             let disk = state.disk_sessions.write().await.remove(&id);
             if let Some(disk) = disk {
-                start_session(
-                    &state,
-                    SessionBuilder::restore(disk.record),
-                    disk.model,
-                    Some((disk.read_token, disk.write_token)),
-                    Some(disk.events),
-                )
-                .await;
+                let started = match SessionBuilder::restore(disk.records.clone()) {
+                    Ok(builder) => start_session(
+                        &state,
+                        builder,
+                        disk.model.clone(),
+                        Some((disk.read_token, disk.write_token)),
+                        Some(disk.events.clone()),
+                        disk.records.clone(),
+                    )
+                    .await
+                    .map(|_| ()),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = started {
+                    warn!(%error, session_id = %id, "cannot restore session");
+                    state.disk_sessions.write().await.insert(id, disk);
+                    return (StatusCode::CONFLICT, format!("cannot restore session: {error}"))
+                        .into_response();
+                }
                 state.sessions.read().await.get(&id).cloned()
             } else {
                 None
@@ -194,9 +228,9 @@ async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
     let disk_sessions = state.disk_sessions.read().await;
     list.extend(disk_sessions.values().map(|e| {
         json!({
-            "session_id": e.record.data().session_id().as_uuid(),
+            "session_id": e.header.data.session_id().as_uuid(),
             "model": e.model,
-            "created_at": e.record.data().created_at(),
+            "created_at": e.header.data.created_at(),
             "archived": e.archived,
             "context_window": DEFAULT_CONTEXT_WINDOW,
             "tokens": {
@@ -214,10 +248,13 @@ async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     let model = req.model.unwrap_or_else(|| state.default_model.clone());
-    let builder = SessionBuilder::new(model.clone());
+    let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
+    let builder = SessionBuilder::new(model.clone(), sys_prompt);
     let session_id = builder.id();
     let (read_token, write_token) =
-        start_session(&state, builder, model.clone(), None, None).await;
+        start_session(&state, builder, model.clone(), None, None, Vec::new())
+            .await
+            .expect("a new session always starts");
     Json(
         json!({ "session_id": session_id, "model": model, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
         "read": read_token,
@@ -232,22 +269,23 @@ async fn start_session(
     model: String,
     tokens: Option<(Uuid, Uuid)>,
     events: Option<tokio::sync::broadcast::Sender<SessionEvent>>,
-) -> (Uuid, Uuid) {
-    let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
-    let tools: Vec<Box<dyn auger_core::Tool>> = vec![
+    records: Vec<Record>,
+) -> Result<(Uuid, Uuid), RestoreError> {
+    let tools: Vec<Box<dyn auger_toolengine::Tool>> = vec![
         Box::new(builtin_tools::ReadFile),
         Box::new(builtin_tools::WriteFile),
         Box::new(builtin_tools::EditFile),
         Box::new(builtin_tools::Shell),
     ];
     let session_id = builder.id();
-    let (handle, event_rx) = builder.start(
+    let log = Arc::new(std::sync::Mutex::new(records));
+    let sink = trace_store::ServerSink::open(state.sessions_dir.as_deref(), session_id, log.clone());
+    let (handle, event_rx) = builder.sink(sink).start(
         LlmModel::new(state.provider.clone(), &model),
-        sys_prompt,
         tokio::runtime::Handle::current(),
         tools,
         std::sync::Arc::new(auger_policy::default_policy()),
-    );
+    )?;
 
     let event_tx = events.unwrap_or_else(|| tokio::sync::broadcast::channel(256).0);
     let forward_tx = event_tx.clone();
@@ -266,13 +304,14 @@ async fn start_session(
         SessionEntry {
             handle,
             events: event_tx,
+            records: log,
             model,
             read_token,
             write_token,
             archived: Arc::new(AtomicBool::new(false)),
         },
     );
-    (read_token, write_token)
+    Ok((read_token, write_token))
 }
 
 async fn stop_session(
@@ -351,79 +390,18 @@ async fn interrupt_session(State(state): State<AppState>, Path(id): Path<Session
     Json(json!({ "status": "ok" })).into_response()
 }
 
-/// Get a trace from its running session or, after archival, its JSONL file.
+/// Get the trace of a running or stored session as NDJSON records.
 #[tracing::instrument(skip(state), fields(session_id))]
 async fn snapshot(State(state): State<AppState>, Path(id): Path<SessionId>) -> Response {
     info!("Getting snapshot");
-    let entry = state.sessions.read().await.get(&id).cloned();
-    if entry
-        .as_ref()
-        .is_some_and(|entry| entry.archived.load(Ordering::Relaxed))
-    {
-        return (StatusCode::INTERNAL_SERVER_ERROR, "can't read archived yet").into_response();
-    }
-
-    let Some(session_handle) = entry.map(|entry| entry.handle) else {
-        let record = state
-            .disk_sessions
-            .read()
-            .await
-            .get(&id)
-            .map(|entry| entry.record.clone());
-        return match record {
-            Some(record) => snapshot_response(&record),
-            None => StatusCode::NOT_FOUND.into_response(),
-        };
+    let body = if let Some(entry) = state.sessions.read().await.get(&id) {
+        trace_store::ndjson(&entry.records.lock().unwrap_or_else(|e| e.into_inner()))
+    } else if let Some(disk) = state.disk_sessions.read().await.get(&id) {
+        trace_store::ndjson(&disk.records)
+    } else {
+        return StatusCode::NOT_FOUND.into_response();
     };
-
-    let (snapshot_tx, snapshot_rx) = mpsc::channel();
-    // what do I do with snapshot_rx?
-    match tokio::task::spawn_blocking(move || {
-        session_handle.send_command(SessionCommand::Snapshot {
-            reply_tx: snapshot_tx,
-        })
-    })
-    .await
-    {
-        Ok(Ok(())) => match snapshot_rx.recv() {
-            Ok(record) => snapshot_response(&record),
-            Err(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "snapshot channel dropped",
-            )
-                .into_response(),
-        },
-        _ => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot failed").into_response(),
-    }
-}
-
-fn snapshot_response(record: &auger_core::SessionRecord) -> Response {
-    let mut trace = Vec::new();
-    let result = (|| {
-        let mut writer = TraceWriter::new(&mut trace, record.data())?;
-        for turn in record.turns() {
-            writer.write_turn(turn)?;
-            for event in turn.events() {
-                writer.write_event(turn.data().turn_id(), event)?;
-            }
-        }
-        Ok::<_, auger_core::TraceWriteError>(())
-    })();
-    match result {
-        Ok(()) => (
-            [(CONTENT_TYPE, "application/x-ndjson")],
-            String::from_utf8(trace).expect("serialized JSON is UTF-8"),
-        )
-            .into_response(),
-        Err(error) => {
-            tracing::error!(%error, "failed to serialize session snapshot");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "snapshot serialization failed",
-            )
-                .into_response()
-        }
-    }
+    ([(CONTENT_TYPE, "application/x-ndjson")], body).into_response()
 }
 
 /// Get a stream of events for a session, including LLM responses and user

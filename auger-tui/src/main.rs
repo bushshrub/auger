@@ -23,6 +23,7 @@ mod markdown;
 mod pager;
 mod shell;
 mod shellfmt;
+mod snapshot;
 mod statusline;
 mod toolargs;
 mod types;

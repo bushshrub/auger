@@ -226,22 +226,19 @@ fn messages_to_input(messages: &[provider::Message]) -> Vec<Value> {
                     serde_json::json!({"type": "message", "role": "system", "content": content}),
                 );
             }
-            provider::Message::User {
-                message,
-                tool_call_results,
-            } => {
-                let msg_text = &message.message;
-                if !msg_text.is_empty() {
-                    items.push(
-                        serde_json::json!({"type": "message", "role": "user", "content": msg_text}),
-                    );
-                }
-                for tr in tool_call_results {
+            provider::Message::User { blocks } => {
+                for tr in provider::tool_results(blocks) {
                     items.push(serde_json::json!({
                         "type": "function_call_output",
                         "call_id": tr.tool_call_id,
                         "output": tr.content,
                     }));
+                }
+                let msg_text = provider::render_text(blocks);
+                if !msg_text.is_empty() {
+                    items.push(
+                        serde_json::json!({"type": "message", "role": "user", "content": msg_text}),
+                    );
                 }
             }
             provider::Message::Assistant { response } => {

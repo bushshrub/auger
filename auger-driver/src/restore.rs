@@ -47,50 +47,68 @@ pub enum RestoredAgent {
 /// stream: the prompt is kept rather than dropped, so `retry` resends it.
 /// Rule 1 outranks it deliberately, since sealing a partial while tool calls
 /// are unanswered would send a `tool_use` block that never gets a result.
-pub fn restore(model: LlmModel, system_prompt: String, tools: Vec<ToolDefinition>, state: RestoreState) -> RestoredAgent {
+pub fn restore(
+    model: LlmModel,
+    system_prompt: String,
+    tools: Vec<ToolDefinition>,
+    state: RestoreState,
+) -> Result<RestoredAgent, RestoreError> {
     let RestoreState { turns, partial } = state;
 
+    for pair in turns.windows(2) {
+        if matches!(pair, [Turn::Input { .. }, Turn::Input { .. }] | [Turn::Output(_), Turn::Output(_)]) {
+            return Err(RestoreError::NotAlternating);
+        }
+    }
     let last_output = turns.iter().rposition(|turn| matches!(turn, Turn::Output(_)));
     for (index, turn) in turns.iter().enumerate() {
         let Turn::Output(response) = turn else { continue };
         if Some(index) == last_output {
             continue;
         }
-        assert!(
-            response.tool_calls().iter().all(|call| {
-                matches!(turns.get(index + 1), Some(Turn::Input { entries }) if entries.iter().any(
-                    |entry| matches!(entry, InputEntry::Harness(HarnessEntry::ToolResult(result))
-                        if result.tool_call_id == call.id),
-                ))
-            }),
-            "restored turn {index} left tool calls unanswered; only the most recent output turn \
-             may have pending calls"
-        );
+        let answered = response.tool_calls().iter().all(|call| {
+            matches!(turns.get(index + 1), Some(Turn::Input { entries }) if entries.iter().any(
+                |entry| matches!(entry, InputEntry::Harness(HarnessEntry::ToolResult(result))
+                    if result.tool_call_id == call.id),
+            ))
+        });
+        if !answered {
+            return Err(RestoreError::UnansweredToolCalls { turn: index });
+        }
     }
 
     if !pending_tool_calls(&turns).is_empty() {
-        RestoredAgent::WaitingForToolResponses(TypedAgent {
+        Ok(RestoredAgent::WaitingForToolResponses(TypedAgent {
             model,
             system_prompt,
             turns,
             tools,
             state: WaitingForToolResponses {},
-        })
+        }))
     } else if matches!(turns.last(), Some(Turn::Input { .. })) {
-        RestoredAgent::Interrupted(TypedAgent {
+        Ok(RestoredAgent::Interrupted(TypedAgent {
             model,
             system_prompt,
             turns,
             tools,
             state: LlmStreamingInterrupted { partial },
-        })
+        }))
     } else {
-        RestoredAgent::WaitingForUserMessage(TypedAgent {
+        Ok(RestoredAgent::WaitingForUserMessage(TypedAgent {
             model,
             system_prompt,
             turns,
             tools,
             state: WaitingForUserMessage {},
-        })
+        }))
     }
+}
+
+/// Why persisted turns cannot be restored.
+#[derive(Debug, thiserror::Error)]
+pub enum RestoreError {
+    #[error("turns do not alternate between input and output")]
+    NotAlternating,
+    #[error("output turn {turn} left tool calls unanswered; only the most recent output turn may")]
+    UnansweredToolCalls { turn: usize },
 }

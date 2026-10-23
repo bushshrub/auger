@@ -1,46 +1,41 @@
-use crate::SystemPrompt;
+use crate::harness::builder::Origin;
 use crate::harness::events::LoopMessage;
 use crate::harness::events::SessionCommand;
 use crate::harness::events::SessionEvent;
 use crate::harness::states::HarnessState;
-use crate::harness::tool_engine::Phase;
-use crate::harness::tool_engine::Step;
-use crate::harness::tool_engine::ToolMessageSender;
-use crate::harness::tool_engine::ToolPhaseEngine;
-use crate::harness::tool_engine::check::ToolSetup;
-use crate::harness::tool_engine::registry::ToolRegistry;
-use crate::record::recorder::SessionRecorder;
-use crate::record::session::SessionId;
-use crate::record::session::SessionRecord;
-use crate::record::turn::AssistantTurnOutcome;
-use crate::record::turn::StopReason;
-use crate::policy::PolicyNode;
-use crate::tool::Tool;
-use crate::tool::context::WorkDir;
+use crate::record::RecordBody;
+use crate::record::RecordSink;
+use crate::record::RestoreError;
+use crate::record::SessionHeader;
+use crate::record::SessionId;
+use crate::record::StreamRecord;
+use crate::record::fold::TRACE_VERSION;
+use crate::record::writer::RecordWriter;
 use auger_driver::ReadyToStream;
+use auger_driver::RestoreState;
 use auger_driver::RestoredAgent;
 use auger_driver::StreamResult;
 use auger_driver::TypedAgent;
 use auger_driver::WaitingForToolResponses;
 use auger_driver::restore;
+use auger_toolengine::Phase;
+use auger_toolengine::PolicyNode;
+use auger_toolengine::Tool;
+use auger_toolengine::ToolFact;
+use auger_toolengine::ToolMessageSender;
+use auger_toolengine::ToolPhaseEngine;
+use auger_toolengine::ToolSetup;
 use chrono::DateTime;
 use chrono::Utc;
 use getset::CopyGetters;
 use mpsc::Receiver;
 use provider::LlmModel;
-use provider::ToolDefinition;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use tokio::runtime::Handle;
 use tracing::info;
 use tracing::warn;
-
-#[derive(Clone, Debug, thiserror::Error)]
-pub enum SnapshotError {
-    #[error("session is closed")]
-    SessionClosed,
-}
 
 /// A handle to a running auger session
 #[derive(Clone, CopyGetters)]
@@ -50,7 +45,6 @@ pub struct SessionHandle {
     loop_event_tx: Sender<LoopMessage>,
 
     // TODO: This REALLY does not belong here.
-    // But SessionRecord is owned by Session...
     #[get_copy = "pub"]
     created_at: DateTime<Utc>,
 }
@@ -80,69 +74,73 @@ pub struct Session {
     /// Sender for the session to emit events through
     event_tx: Sender<SessionEvent>,
     tools: ToolSetup,
-    recorder: SessionRecorder,
+    writer: RecordWriter,
 }
 
 impl Session {
-    fn create_initial_agent(
-        system_prompt: SystemPrompt,
-        record: &SessionRecord,
-        model: LlmModel,
-        tools: Vec<ToolDefinition>,
-    ) -> RestoredAgent {
-        restore(model, system_prompt.into(), tools, record.restore_state())
-    }
-
     pub(super) fn spawn(
         rt: Handle,
-        system_prompt: SystemPrompt,
-        record: SessionRecorder,
+        origin: Origin,
+        sink: Box<dyn RecordSink>,
         model: LlmModel,
         tools: Vec<Box<dyn Tool>>,
         policy: Arc<dyn PolicyNode>,
-    ) -> (SessionHandle, Receiver<SessionEvent>) {
-        let id = record.record().data().session_id();
-        let creation_time = record.record().data().created_at();
-        let mut tool_registry = ToolRegistry::new();
-        for tool in tools {
-            tool_registry.register(tool);
-        }
-        let tool_registry = Arc::new(tool_registry);
-        let llm_tools = tool_registry.list_for_clanker();
-        let workspace = record.record().data().cwd().clone();
-        let tools = ToolSetup {
-            registry: tool_registry,
-            policy,
-            workdir: WorkDir::new(workspace.clone()),
-            workspace,
-        };
+    ) -> Result<(SessionHandle, Receiver<SessionEvent>), RestoreError> {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
+        let (data, writer, system_prompt, state, cwd, batch_facts) = match origin {
+            Origin::New {
+                data,
+                system_prompt,
+            } => {
+                let writer = RecordWriter::new(sink, 0, event_tx.clone(), &[]);
+                writer.note(RecordBody::Session(SessionHeader {
+                    version: TRACE_VERSION,
+                    data: data.clone(),
+                    system_prompt: system_prompt.clone(),
+                }));
+                let cwd = data.cwd().clone();
+                (data, writer, system_prompt, RestoreState::new(Vec::new(), None), cwd, Vec::new())
+            }
+            Origin::Restored(restored) => {
+                let writer =
+                    RecordWriter::new(sink, restored.next_seq, event_tx.clone(), &restored.turns);
+                (
+                    restored.header.data,
+                    writer,
+                    restored.header.system_prompt,
+                    RestoreState::new(restored.turns, restored.partial),
+                    restored.cwd,
+                    restored.batch_facts,
+                )
+            }
+        };
+        let tools = ToolSetup::new(tools, policy, data.cwd().clone(), cwd, writer.journal());
+        let initial_agent = restore(model, system_prompt, tools.definitions(), state)?;
 
         let session = Self {
-            id,
+            id: data.session_id(),
             cmd_rx,
             harness_internal_event_tx: cmd_tx.clone(),
             event_tx,
             tools,
-            recorder: record,
+            writer,
         };
-        let handle = SessionHandle::new(session.id, cmd_tx.clone(), creation_time);
-
-        let initial_agent =
-            Self::create_initial_agent(system_prompt, &session.recorder.record(), model, llm_tools);
+        let handle = SessionHandle::new(session.id, cmd_tx, data.created_at());
 
         std::thread::Builder::new()
             .name(format!("auger-session-{}", session.id))
-            .spawn(move || session.run(rt, initial_agent))
+            .spawn(move || session.run(rt, initial_agent, batch_facts))
             .expect("failed to spawn session thread");
 
-        (handle, event_rx)
+        Ok((handle, event_rx))
     }
 
     /// Start streaming from `agent`, forwarding stream events to subscribers
     /// and the eventual result back into the loop's own inbox.
     fn start_stream(&self, agent: TypedAgent<ReadyToStream>, rt: &Handle) -> HarnessState {
+        self.writer.sync_turns(agent.turns());
+        self.writer.note(RecordBody::Stream(StreamRecord::Started));
         let event_tx = self.event_tx.clone();
         let inbox_tx = self.harness_internal_event_tx.clone();
         let stream_fut = agent.create_stream(move |event| {
@@ -160,29 +158,21 @@ impl Session {
         HarnessState::Streaming { cancel }
     }
 
-    /// Run the tool calls of `agent`. Streams again at once if there is
-    /// nothing to wait for.
+    /// Run the tool calls of `agent`, resuming from `facts` journaled for
+    /// this batch before a restart. Streams again at once if there is nothing
+    /// to wait for.
     fn start_tool_phase(
         &mut self,
         agent: TypedAgent<WaitingForToolResponses>,
+        facts: &[ToolFact],
         rt: &Handle,
     ) -> HarnessState {
         let inbox_tx = self.harness_internal_event_tx.clone();
         let send: ToolMessageSender = Arc::new(move |msg| {
             let _ = inbox_tx.send(LoopMessage::Tool(msg));
         });
-        let started = ToolPhaseEngine::start(agent.get_batch(), self.tools.clone(), rt, send);
-        for decision in started.decisions {
-            let _ = self.event_tx.send(SessionEvent::ToolPolicyDecision {
-                tool_call_id: decision.tool_call_id,
-                verdict: decision.verdict,
-            });
-        }
-        for result in started.finished {
-            self.recorder.record_tool_result(result.clone());
-            let _ = self.event_tx.send(SessionEvent::ToolCallResult(result));
-        }
-        self.continue_tool_phase(agent, started.phase, rt)
+        let phase = ToolPhaseEngine::resume(agent.get_batch(), self.tools.clone(), rt, send, facts);
+        self.continue_tool_phase(agent, phase, rt)
     }
 
     fn continue_tool_phase(
@@ -215,27 +205,24 @@ impl Session {
         }
     }
 
-    /// Apply a step of the tool phase: report the finished calls, then move on.
-    fn apply_tool_step(
-        &mut self,
-        agent: TypedAgent<WaitingForToolResponses>,
-        step: Step,
-        rt: &Handle,
-    ) -> HarnessState {
-        for result in step.finished {
-            self.recorder.record_tool_result(result.clone());
-            let _ = self.event_tx.send(SessionEvent::ToolCallResult(result));
-        }
-        self.continue_tool_phase(agent, step.phase, rt)
+    /// Record a stream that completed: its response is in `turns`.
+    fn record_completed(&self, turns: &[auger_driver::Turn], end: provider::StreamEnd) {
+        self.writer.sync_turns(turns);
+        self.writer.note(RecordBody::Stream(StreamRecord::Completed {
+            usage: end.usage,
+            stop_reason: end.stop_reason,
+        }));
     }
 
-    fn run(mut self, rt: Handle, init_agent: RestoredAgent) {
+    fn run(mut self, rt: Handle, init_agent: RestoredAgent, batch_facts: Vec<ToolFact>) {
         info!(session_id = %self.id, "Session started");
         let mut curr_state = match init_agent {
             RestoredAgent::WaitingForUserMessage(agent) => {
                 HarnessState::WaitingForUserMessage { agent }
             }
-            RestoredAgent::WaitingForToolResponses(agent) => self.start_tool_phase(agent, &rt),
+            RestoredAgent::WaitingForToolResponses(agent) => {
+                self.start_tool_phase(agent, &batch_facts, &rt)
+            }
             RestoredAgent::Interrupted(agent) => HarnessState::StreamingInterrupted { agent },
         };
         'session_loop: while let Ok(msg) = self.cmd_rx.recv() {
@@ -244,9 +231,6 @@ impl Session {
                     SessionCommand::Stop { reply_tx } => {
                         let _ = reply_tx.send(());
                         break 'session_loop;
-                    }
-                    SessionCommand::Snapshot { reply_tx } => {
-                        let _ = reply_tx.send(self.recorder.record().clone());
                     }
                     SessionCommand::SendMessage(prompt) => {
                         info!(session_id = %self.id, "Received user message {:?}", prompt);
@@ -279,7 +263,6 @@ impl Session {
                             }
                         };
 
-                        self.recorder.record_prompt(prompt);
                         curr_state = self.start_stream(new_agent, &rt);
                     }
                     SessionCommand::Interrupt => {
@@ -304,8 +287,8 @@ impl Session {
                     } => {
                         curr_state = match curr_state {
                             HarnessState::ToolPhase { agent, engine } => {
-                                let step = engine.decide(&id, approved, message);
-                                self.apply_tool_step(agent, step, &rt)
+                                let phase = engine.decide(&id, approved, message);
+                                self.continue_tool_phase(agent, phase, &rt)
                             }
                             _ => {
                                 warn!(session_id = %self.id, command = "tool_decision", "Ignoring command in invalid harness state");
@@ -332,63 +315,42 @@ impl Session {
                                         error = %error,
                                         "LLM stream failed; waiting for a new user message"
                                     );
-                                    self.recorder
-                                        .record_assistant(AssistantTurnOutcome::Incomplete {
-                                            partial_response: agent.state().partial().clone(),
-                                            reason: StopReason::Failed(error.clone()),
-                                        })
-                                        .expect("previous turn was user");
-                                    let _ = self.event_tx.send(SessionEvent::StreamError {
-                                        error: error.to_string(),
-                                    });
+                                    self.writer.sync_turns(agent.turns());
+                                    self.writer.note(RecordBody::Stream(StreamRecord::Failed {
+                                        partial: agent.state().partial().clone(),
+                                        error,
+                                    }));
                                     HarnessState::StreamingFailed { agent }
                                 }
                                 StreamResult::WaitingForToolResponses { agent, end } => {
                                     info!(session_id = %self.id, "stream finished: agent has called tools");
 
-                                    self.recorder
-                                        .record_assistant(AssistantTurnOutcome::Completed {
-                                            response: agent.previous_message().clone(),
-                                        })
-                                        .expect("last turn to be user");
-                                    let _ = self.event_tx.send(SessionEvent::TurnComplete {
-                                        usage: end.usage,
-                                        stop_reason: end.stop_reason,
-                                    });
+                                    self.record_completed(agent.turns(), end);
 
-                                    self.start_tool_phase(agent, &rt)
+                                    self.start_tool_phase(agent, &[], &rt)
                                 }
                                 StreamResult::WaitingForUserMessage { agent, end } => {
                                     info!(session_id=%self.id, "Stream has returned: No tools called");
-                                    self.recorder
-                                        .record_assistant(AssistantTurnOutcome::Completed {
-                                            response: agent
-                                                .previous_message()
-                                                .expect("a previous message to exist")
-                                                .clone(),
-                                        })
-                                        .expect("last turn to be user");
-                                    let _ = self.event_tx.send(SessionEvent::TurnComplete {
-                                        usage: end.usage,
-                                        stop_reason: end.stop_reason,
-                                    });
+                                    self.record_completed(agent.turns(), end);
                                     HarnessState::WaitingForUserMessage { agent }
                                 }
                             }
                         }
                         HarnessState::InterruptingStream { pending_message } => match res {
-                            StreamResult::Interrupted(agent) => match pending_message {
-                                Some(prompt) => {
-                                    let new_agent = agent.seal_and_continue(prompt.clone());
-                                    self.recorder.record_prompt(prompt);
-                                    self.start_stream(new_agent, &rt)
+                            StreamResult::Interrupted(agent) => {
+                                self.writer.note(RecordBody::Stream(StreamRecord::Interrupted {
+                                    partial: agent.state().partial().clone(),
+                                }));
+                                match pending_message {
+                                    Some(prompt) => {
+                                        self.start_stream(agent.seal_and_continue(prompt), &rt)
+                                    }
+                                    None => {
+                                        info!(session_id=%self.id, "Stream successfully interrupted (no user msg)");
+                                        HarnessState::StreamingInterrupted { agent }
+                                    }
                                 }
-                                None => {
-                                    info!(session_id=%self.id, "Stream successfully interrupted (no user msg)");
-                                    let _ = self.event_tx.send(SessionEvent::Interrupted);
-                                    HarnessState::StreamingInterrupted { agent }
-                                }
-                            },
+                            }
                             // TODO: we must handle these
                             StreamResult::Failed { .. } => {
                                 panic!("stream failed while harness was interrupting the stream")
@@ -409,8 +371,8 @@ impl Session {
                 LoopMessage::Tool(msg) => {
                     curr_state = match curr_state {
                         HarnessState::ToolPhase { agent, engine } => {
-                            let step = engine.receive(msg);
-                            self.apply_tool_step(agent, step, &rt)
+                            let phase = engine.receive(msg);
+                            self.continue_tool_phase(agent, phase, &rt)
                         }
                         // The phase is over: a late result, drop it.
                         other => other,

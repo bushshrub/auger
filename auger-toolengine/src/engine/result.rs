@@ -1,12 +1,14 @@
 use auger_driver::ToolCallId;
 use getset::CloneGetters;
+use getset::Getters;
 use serde::Deserialize;
 use serde::Serialize;
 
-#[derive(Serialize, Deserialize, Debug, Clone, CloneGetters)]
+#[derive(Serialize, Deserialize, Debug, Clone, CloneGetters, Getters)]
 pub struct ToolCallResult {
     #[getset(get_clone = "pub")]
     pub(crate) tool_call_id: ToolCallId,
+    #[getset(get = "pub")]
     pub(crate) outcome: ToolOutcome,
 }
 

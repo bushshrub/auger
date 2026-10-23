@@ -1,11 +1,9 @@
 //! Events and command types for a session
 
-use crate::harness::tool_engine::ToolMessage;
-use crate::harness::tool_engine::result::ToolCallResult;
-use crate::record::SessionRecord;
-use auger_driver::StreamResult;
+use crate::record::Record;
 use auger_driver::Prompt;
-use provider::TokenUsage;
+use auger_driver::StreamResult;
+use auger_toolengine::ToolMessage;
 use std::sync::mpsc;
 
 /// User sent commands to the session
@@ -15,10 +13,6 @@ pub enum SessionCommand {
     SendMessage(Prompt),
     /// Stop the session.
     Stop { reply_tx: mpsc::Sender<()> },
-    /// Clone the recorded session trace without changing session state.
-    Snapshot {
-        reply_tx: mpsc::Sender<SessionRecord>,
-    },
     /// Interrupt the current activity on the stream
     Interrupt,
     /// Make a decision on a tool.
@@ -32,34 +26,19 @@ pub enum SessionCommand {
 /// Events that occur during the session
 #[derive(Clone, Debug)]
 pub enum SessionEvent {
+    /// A record, just appended to the session's sink. Folding these gives
+    /// the same state as folding a stored trace.
+    Record(Record),
     /// A provider event emitted while the LLM is streaming.
     StreamEvent(provider::StreamEvent),
     /// Tool calls that require a user approval or denial decision.
     ToolConsentRequired {
         tool_calls: Vec<provider::ToolCallRequest>,
     },
-    /// The approval policy allowed or denied a call without asking the user.
-    ToolPolicyDecision {
-        tool_call_id: String,
-        verdict: crate::policy::Verdict,
-    },
-    /// A tool call finished executing and produced a result.
-    ToolCallResult(ToolCallResult),
-    /// The assistant turn settled. Fires whether or not the provider reported
-    /// usage, so a client can always tell that generation stopped.
-    TurnComplete {
-        usage: Option<TokenUsage>,
-        stop_reason: Option<String>,
-    },
     /// The tool phase ended with a denied or interrupted call. The results go
     /// back to the model with the next user message; until then the session
     /// waits for input.
     ToolResultsWithheld,
-    /// The in-flight LLM stream was interrupted; the session is waiting for
-    /// user input with the partial response retained.
-    Interrupted,
-    /// The LLM stream failed; the session is waiting for a new user message.
-    StreamError { error: String },
     /// The session has stopped and will not emit further events.
     Closed,
 }

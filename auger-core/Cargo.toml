@@ -19,9 +19,13 @@ tokio-util.workspace = true
 getset.workspace = true
 derive_more = { workspace = true, features = ["from"] }
 async-trait.workspace = true
+auger-toolengine = { version = "0.1.0", path = "../auger-toolengine" }
 
 [dev-dependencies]
 async-trait.workspace = true
+auger-driver.workspace = true
+auger-toolengine = { path = "../auger-toolengine" }
 builtin-tools = { path = "../builtin-tools" }
 provider-dummy.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing-subscriber.workspace = true

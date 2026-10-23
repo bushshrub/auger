@@ -2,87 +2,90 @@ use crate::SessionEvent;
 use crate::SessionHandle;
 use crate::SystemPrompt;
 use crate::harness::session::Session;
-use crate::record::SessionRecord;
-use crate::record::event::EventRecord;
-use crate::record::recorder::EventCallback;
-use crate::record::recorder::SessionRecorder;
-use crate::record::recorder::TurnCallback;
-use crate::record::session::ModelInfo;
-use crate::record::session::SessionData;
-use crate::record::session::SessionId;
-use crate::record::turn::TurnId;
-use crate::record::turn::TurnRecord;
-use crate::policy::PolicyNode;
-use crate::tool::Tool;
+use crate::record::ModelInfo;
+use crate::record::NoSink;
+use crate::record::Record;
+use crate::record::RecordSink;
+use crate::record::RestoreError;
+use crate::record::SessionData;
+use crate::record::SessionId;
+use crate::record::fold::Restored;
+use crate::record::fold::fold;
+use auger_toolengine::PolicyNode;
+use auger_toolengine::Tool;
+use chrono::Utc;
 use provider::LlmModel;
 use std::env::current_dir;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use tokio::runtime::Handle;
 
+pub(crate) enum Origin {
+    New {
+        data: SessionData,
+        system_prompt: String,
+    },
+    Restored(Restored),
+}
+
 pub struct SessionBuilder {
-    record: SessionRecord,
-    on_turn: TurnCallback,
-    on_event: EventCallback,
+    origin: Origin,
+    sink: Box<dyn RecordSink>,
 }
 
 impl SessionBuilder {
-    pub fn new(model_name: String) -> Self {
-        let id = SessionId::new();
-        let record = SessionRecord::new(
-            id,
+    pub fn new(model_name: String, system_prompt: SystemPrompt) -> Self {
+        let data = SessionData::new(
+            SessionId::new(),
+            Utc::now(),
             current_dir().expect("no cwd"),
             ModelInfo::new("to-be-added".to_string(), model_name),
         );
         Self {
-            record,
-            on_turn: Arc::new(|_, _| {}),
-            on_event: Arc::new(|_, _| {}),
+            origin: Origin::New {
+                data,
+                system_prompt: system_prompt.into(),
+            },
+            sink: Box::new(NoSink),
         }
     }
 
-    pub fn restore(record: SessionRecord) -> Self {
-        Self {
-            record,
-            on_turn: Arc::new(|_, _| {}),
-            on_event: Arc::new(|_, _| {}),
-        }
+    /// Resume a session from its records, in order. The session keeps the
+    /// system prompt it was started with.
+    pub fn restore(records: impl IntoIterator<Item = Record>) -> Result<Self, RestoreError> {
+        Ok(Self {
+            origin: Origin::Restored(fold(records)?),
+            sink: Box::new(NoSink),
+        })
     }
 
     pub fn id(&self) -> SessionId {
-        self.record.data().session_id()
+        self.session_data().session_id()
     }
 
     pub fn session_data(&self) -> &SessionData {
-        self.record.data()
+        match &self.origin {
+            Origin::New { data, .. } => data,
+            Origin::Restored(restored) => &restored.header.data,
+        }
     }
 
-    pub fn on_turn(mut self, cb: impl Fn(TurnId, &TurnRecord) + Send + Sync + 'static) -> Self {
-        self.on_turn = Arc::new(cb);
+    /// Where records go. A restored session appends to the records it was
+    /// restored from. Defaults to keeping nothing.
+    pub fn sink(mut self, sink: impl RecordSink + 'static) -> Self {
+        self.sink = Box::new(sink);
         self
     }
 
-    pub fn on_event(mut self, cb: impl Fn(TurnId, &EventRecord) + Send + Sync + 'static) -> Self {
-        self.on_event = Arc::new(cb);
-        self
-    }
-
+    /// Start the session. Fails only for a restored session whose turns the
+    /// driver rejects.
     pub fn start(
         self,
         model: LlmModel,
-        system_prompt: SystemPrompt,
         rt: Handle,
         tools: Vec<Box<dyn Tool>>,
         policy: Arc<dyn PolicyNode>,
-    ) -> (SessionHandle, Receiver<SessionEvent>) {
-        let recorder = SessionRecorder::new(self.record, self.on_turn, self.on_event);
-        Session::spawn(
-            rt,
-            system_prompt,
-            recorder,
-            model,
-            tools,
-            policy,
-        )
+    ) -> Result<(SessionHandle, Receiver<SessionEvent>), RestoreError> {
+        Session::spawn(rt, self.origin, self.sink, model, tools, policy)
     }
 }
