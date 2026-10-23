@@ -1,18 +1,13 @@
 <script>
-	import {
-		Check,
-		ChevronDown,
-		ChevronRight,
-		CircleAlert,
-		Layers,
-		LoaderCircle
-	} from '@lucide/svelte';
+	import { ChevronDown, ChevronRight, CircleAlert, LoaderCircle } from '@lucide/svelte';
+	import { groupLabel } from '$lib/tool-labels.js';
 	import ReasoningToggle from './ReasoningToggle.svelte';
 	import ToolCallCard from './ToolCallCard.svelte';
 
 	/**
-	 * `entries` is the ordered timeline of an exploration burst: reasoning notes
-	 * interleaved with their read-only tool calls.
+	 * A burst of tool calls in one assistant turn. Collapsed it is one summary
+	 * line; expanded, a bordered list with one row per call and the reasoning
+	 * notes between them.
 	 * @type {{
 	 *   entries: ({ kind: 'reasoning', id: string, text: string }
 	 *           | { kind: 'tool', id: string, call: import('$lib/session.svelte.js').UiToolCall })[],
@@ -22,87 +17,47 @@
 	 */
 	let { entries, sessionArchived = false, onRespond } = $props();
 
-	// The tool calls drive the collapsed summary and status; reasoning entries
-	// only surface once the group is expanded, preserving the step order.
-	const calls = $derived(
-		entries.flatMap((e) => (e.kind === 'tool' ? [e.call] : []))
-	);
-
-	// How each groupable tool is phrased in the collapsed summary. Rendered in
-	// this fixed order so the summary reads consistently regardless of call order.
-	/** @type {[string, string, (n: number) => string][]} */
-	const SUMMARY = [
-		['read_file', 'read', (n) => `${n} file${n === 1 ? '' : 's'}`],
-		['list_files', 'listed', (n) => `${n} director${n === 1 ? 'y' : 'ies'}`],
-		['grep', 'searched', (n) => `${n} pattern${n === 1 ? '' : 's'}`],
-		['glob', 'globbed', (n) => `${n} pattern${n === 1 ? '' : 's'}`],
-		['todo_list', 'updated', () => 'todos']
-	];
-
-	const summary = $derived.by(() => {
-		/** @type {Record<string, number>} */
-		const counts = {};
-		for (const call of calls) counts[call.name] = (counts[call.name] ?? 0) + 1;
-		return SUMMARY.filter(([name]) => counts[name])
-			.map(([name, verb, noun]) => `${verb} ${noun(counts[name])}`)
-			.join(', ');
-	});
-
+	const calls = $derived(entries.flatMap((e) => (e.kind === 'tool' ? [e.call] : [])));
+	const label = $derived(groupLabel(calls));
 	const anyPending = $derived(calls.some((c) => c.status === 'pending_approval'));
 	const anyRunning = $derived(calls.some((c) => c.status === 'running'));
-	const anyError = $derived(calls.some((c) => c.status === 'error' || c.status === 'denied'));
+	const anyError = $derived(calls.some((c) => c.status === 'error'));
 
-	// Auto-open when a call needs attention so it is never hidden behind the summary.
 	let open = $state(false);
 	$effect(() => {
-		if (anyPending) open = true;
+		if (anyPending || anyError) open = true;
 	});
 </script>
 
-<div class="overflow-hidden rounded-lg border border-border bg-card">
+<div class="flex flex-col">
 	<button
 		type="button"
 		onclick={() => (open = !open)}
-		class="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-accent/40"
 		aria-expanded={open}
+		class="flex max-w-full items-center gap-1.5 py-1 text-left text-sm text-muted-foreground hover:text-foreground"
 	>
 		{#if open}
-			<ChevronDown class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+			<ChevronDown class="size-3.5 shrink-0" aria-hidden="true" />
 		{:else}
-			<ChevronRight class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+			<ChevronRight class="size-3.5 shrink-0" aria-hidden="true" />
 		{/if}
-		<Layers class="size-3.5 shrink-0 text-primary" aria-hidden="true" />
-		<span class="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{summary}</span>
-
-		{#if anyPending || anyRunning}
-			<span
-				class="flex shrink-0 items-center gap-1 rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
-			>
-				<LoaderCircle class="size-3 animate-spin" aria-hidden="true" />
-				{anyPending ? 'needs approval' : 'running'}
-			</span>
+		<span class="truncate">{label}</span>
+		{#if anyPending}
+			<span class="shrink-0 text-xs text-warning">needs approval</span>
+		{:else if anyRunning}
+			<LoaderCircle class="size-3.5 shrink-0 animate-spin" aria-label="Running" />
 		{:else if anyError}
-			<span
-				class="flex shrink-0 items-center gap-1 rounded-full bg-destructive/15 px-2 py-0.5 font-mono text-[10px] text-destructive"
-			>
-				<CircleAlert class="size-3" aria-hidden="true" />
-				{calls.length}
-			</span>
-		{:else}
-			<span
-				class="flex shrink-0 items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 font-mono text-[10px] text-success"
-			>
-				<Check class="size-3" aria-hidden="true" />
-				{calls.length}
-			</span>
+			<CircleAlert class="size-3.5 shrink-0 text-destructive" aria-label="Failed" />
 		{/if}
 	</button>
 
 	{#if open}
-		<div class="flex flex-col gap-2 border-t border-border p-2">
+		<div class="mt-1 divide-y divide-border overflow-hidden rounded-lg border border-border">
 			{#each entries as entry (entry.id)}
 				{#if entry.kind === 'reasoning'}
-					<ReasoningToggle text={entry.text} />
+					<div class="px-3 py-2">
+						<ReasoningToggle text={entry.text} />
+					</div>
 				{:else}
 					<ToolCallCard call={entry.call} {sessionArchived} {onRespond} />
 				{/if}

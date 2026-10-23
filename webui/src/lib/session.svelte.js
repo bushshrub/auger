@@ -51,6 +51,8 @@ export class AugerSession {
 	// context-usage bar. Bounded by the context window -- this is NOT a cumulative
 	// sum across turns (each turn re-sends the full history, so summing overcounts).
 	contextTokens = $state(0);
+	/** Tool names a restored session could not reattach; sent once per start. @type {string[]} */
+	toolsMissing = $state([]);
 
 	/**
 	 * The agent's current todo list, parsed from the most recent todo_list tool
@@ -264,6 +266,11 @@ export class AugerSession {
 
 	/** @param {SessionEvent} event */
 	#onEvent(event) {
+		// A notice, not a record: applies even before the snapshot is folded.
+		if (event.type === 'tools_missing') {
+			this.toolsMissing = event.names;
+			return;
+		}
 		if (this.#buffer) {
 			if (event.type === 'record') this.#buffer.push(event);
 			return;

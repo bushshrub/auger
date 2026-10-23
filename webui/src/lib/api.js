@@ -55,6 +55,7 @@ const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
  *   | { type: 'tool_consent_required', tool_calls: ToolCall[] }
  *   | { type: 'tool_results_withheld' }
  *   | { type: 'record', record: TraceRecord }
+ *   | { type: 'tools_missing', names: string[] }
  *   | { type: 'closed' }
  * )} SessionEvent
  *
@@ -181,7 +182,7 @@ export async function interruptSession(id, writeToken) {
 
 /**
  * Fetch the session snapshot. The response is newline-delimited JSON
- * (application/x-ndjson), one TraceRecord per line — not a JSON array — so it
+ * (application/x-ndjson), one TraceRecord per line - not a JSON array - so it
  * is parsed line by line here.
  * @param {string} id
  * @param {string} token
