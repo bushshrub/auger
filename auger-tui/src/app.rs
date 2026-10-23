@@ -67,7 +67,7 @@ pub struct App {
     pub tokens_out: u64,
     /// Characters streamed during the in-flight turn, used to estimate output
     /// tokens before usage arrives.
-    live_chars: usize,
+    pub(crate) live_chars: usize,
     pub status: Status,
     pub input: String,
     /// Byte offset of the edit cursor within `input`, always on a char boundary.
@@ -78,6 +78,9 @@ pub struct App {
     // In-progress streaming indices
     pub assistant_idx: Option<usize>,
     pub reasoning_idx: Option<usize>,
+
+    /// Folds the session's records into `items`.
+    pub(crate) fold: crate::fold::Fold,
 
     pub error_msg: Option<String>,
 }
@@ -119,6 +122,7 @@ impl App {
             completion: Completion::default(),
             assistant_idx: None,
             reasoning_idx: None,
+            fold: crate::fold::Fold::default(),
             error_msg: None,
         }
     }
@@ -144,7 +148,7 @@ impl App {
         }
     }
 
-    fn resolve_pending_tool(&mut self, id: &str) {
+    pub(crate) fn resolve_pending_tool(&mut self, id: &str) {
         self.pending_tools.retain(|t| t != id);
     }
 
@@ -225,6 +229,7 @@ impl App {
     fn handle_sse(&mut self, ev: SseEvent) {
         match ev {
             SseEvent::Content { text } => {
+                self.fold.open_tail(self.items.len());
                 self.reasoning_idx = None;
                 self.live_chars += text.chars().count();
                 match self.assistant_idx {
@@ -241,6 +246,7 @@ impl App {
             }
 
             SseEvent::Reasoning { text } => {
+                self.fold.open_tail(self.items.len());
                 self.assistant_idx = None;
                 self.live_chars += text.chars().count();
                 match self.reasoning_idx {
@@ -266,6 +272,7 @@ impl App {
                 name,
                 arguments,
             } => {
+                self.fold.open_tail(self.items.len());
                 self.assistant_idx = None;
                 self.reasoning_idx = None;
                 self.live_chars += arguments.chars().count();
@@ -288,6 +295,7 @@ impl App {
                 name,
                 arguments,
             } => {
+                self.fold.open_tail(self.items.len());
                 self.assistant_idx = None;
                 self.reasoning_idx = None;
                 let idx = self.tool_item(&id, &name);
@@ -320,24 +328,7 @@ impl App {
                 self.queue_pending_tool(id);
             }
 
-            SseEvent::ToolAuto { id, node } => {
-                if let Some(ChatItem::Tool { decision, .. }) = self
-                    .items
-                    .iter_mut()
-                    .find(|i| matches!(i, ChatItem::Tool { id: tid, .. } if tid == &id))
-                {
-                    *decision = Some(ToolDecision::Auto(node));
-                }
-                self.resolve_pending_tool(&id);
-            }
-
-            SseEvent::Interrupted => {
-                self.assistant_idx = None;
-                self.reasoning_idx = None;
-                self.items
-                    .push(ChatItem::Error { text: "Interrupted".into() });
-                self.status = Status::Idle;
-            }
+            SseEvent::Record(record) => self.apply_record(&record),
 
             SseEvent::ToolResultsWithheld => {
                 self.status = Status::Idle;
@@ -351,71 +342,7 @@ impl App {
                 self.status = Status::Idle;
             }
 
-            SseEvent::ToolResult {
-                id,
-                content,
-                denied,
-            } => {
-                self.assistant_idx = None;
-                if let Some(item) = self
-                    .items
-                    .iter_mut()
-                    .find(|i| matches!(i, ChatItem::Tool { id: tid, .. } if tid == &id))
-                {
-                    if let ChatItem::Tool {
-                        result, decision, ..
-                    } = item
-                    {
-                        *result = Some(content);
-                        if denied {
-                            *decision = Some(ToolDecision::Denied);
-                        } else if decision.is_none() {
-                            *decision = Some(ToolDecision::Approved);
-                        }
-                    }
-                }
-                self.resolve_pending_tool(&id);
-            }
-
-            SseEvent::Metrics {
-                prompt_tokens,
-                cached_tokens,
-                completion_tokens,
-                total_tokens,
-            } => {
-                self.ctx_used = total_tokens
-                    .or_else(|| prompt_tokens.zip(completion_tokens).map(|(p, c)| p + c))
-                    .unwrap_or(self.ctx_used);
-                // Real usage supersedes the streaming estimate for this turn.
-                self.tokens_in = prompt_tokens.unwrap_or(self.tokens_in);
-                self.tokens_cached = cached_tokens.unwrap_or(self.tokens_cached);
-                self.tokens_out += completion_tokens.unwrap_or((self.live_chars / 4) as u64);
-                self.live_chars = 0;
-            }
-
-            SseEvent::TurnComplete => {
-                self.assistant_idx = None;
-                self.reasoning_idx = None;
-                self.live_chars = 0;
-                // A turn that ended asking for consent is not idle: the user
-                // still owes the server a decision per queued call. Nor is
-                // one that ended in tool calls: the session runs them and
-                // streams again.
-                let calls_tools = self
-                    .items
-                    .iter()
-                    .rev()
-                    .find(|i| !matches!(i, ChatItem::Reasoning { .. }))
-                    .is_some_and(|i| matches!(i, ChatItem::Tool { .. }));
-                if !self.has_pending_tool() && !calls_tools {
-                    self.status = Status::Idle;
-                }
-            }
-
-            SseEvent::StreamError { message } => {
-                self.items.push(ChatItem::Error { text: message });
-                self.status = Status::Idle;
-            }
+            SseEvent::Error { message } => self.push_error(message),
         }
     }
 
@@ -434,6 +361,7 @@ impl App {
     fn reset_chat(&mut self) {
         self.ctx_used = 0;
         self.items.clear();
+        self.fold = crate::fold::Fold::default();
         self.flushed = 0;
         self.committed = None;
         self.pending_tools.clear();
@@ -615,23 +543,12 @@ impl App {
         }
         let session_id = self.session_id?;
         let write_token = self.write_token.clone()?;
-        self.items.push(ChatItem::User { text: text.clone() });
+        // The message shows when its turns record arrives.
         self.clear_input();
         self.status = Status::Running;
         self.assistant_idx = None;
         self.reasoning_idx = None;
         Some((session_id, write_token, text))
-    }
-
-    /// Rebuild the transcript from the snapshot's NDJSON records.
-    pub fn apply_snapshot_lines(&mut self, lines: &[String]) {
-        self.flushed = 0;
-        self.committed = None;
-        self.assistant_idx = None;
-        self.reasoning_idx = None;
-        let transcript = crate::snapshot::rebuild(lines);
-        self.items = transcript.items;
-        self.pending_tools = transcript.pending;
     }
 
     /// Decide the tool call at the head of the queue. Returns the call to
@@ -862,41 +779,22 @@ mod tests {
         ));
     }
 
-    /// The server sends the whole `ToolCallResult` object, so parsing `result`
-    /// as a string failed with "invalid type: map, expected a string".
     #[test]
-    fn tool_results_parse_as_outcome_objects() {
-        let raw = r#"{"type":"tool_call_result","id":"call_1",
-            "result":{"tool_call_id":"call_1",
-                      "outcome":{"success":{"content":[{"text":{"text":"ok"}}]}}}}"#;
-        let parsed: crate::types::RawSessionEvent =
-            serde_json::from_str(raw).expect("tool result should parse");
-        let events = crate::types::transform_raw_event(parsed);
-        assert!(matches!(
-            &events[0],
-            SseEvent::ToolResult { id, content, denied }
-                if id == "call_1" && content == "ok" && !denied
-        ));
-    }
-
-    #[test]
-    fn denied_outcomes_carry_their_reason() {
-        let raw = r#"{"type":"tool_call_result","id":"c",
-            "result":{"tool_call_id":"c","outcome":{"denied":{"reason":"nope"}}}}"#;
+    fn record_events_parse_and_carry_the_record() {
+        let raw = r#"{"type":"record","record":{"seq":4,"ts":"2026-10-23T00:00:00Z",
+            "type":"stream","data":"started"}}"#;
         let parsed: crate::types::RawSessionEvent = serde_json::from_str(raw).unwrap();
         let events = crate::types::transform_raw_event(parsed);
         assert!(matches!(
             &events[0],
-            SseEvent::ToolResult { content, denied, .. } if content == "nope" && *denied
+            SseEvent::Record(record) if record["seq"] == 4
         ));
     }
 
-    #[test]
-    fn interrupted_outcomes_parse() {
-        let raw = r#"{"type":"tool_call_result","id":"c",
-            "result":{"tool_call_id":"c","outcome":"interrupted"}}"#;
-        let parsed: crate::types::RawSessionEvent = serde_json::from_str(raw).unwrap();
-        assert_eq!(crate::types::transform_raw_event(parsed).len(), 1);
+    // -- records -----------------------------------------------------------
+
+    fn record(seq: u64, kind: &str, data: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "seq": seq, "ts": "2026-10-23T00:00:00Z", "type": kind, "data": data })
     }
 
     // ── tool approval queue ──────────────────────────────────────────────
@@ -949,11 +847,11 @@ mod tests {
         for id in ["c1", "c2"] {
             app.handle_app_event(consent(id));
         }
-        app.handle_app_event(AppEvent::Sse(SseEvent::ToolResult {
-            id: "c1".into(),
-            content: "ok".into(),
-            denied: false,
-        }));
+        app.apply_record(&record(
+            0,
+            "tool",
+            serde_json::json!({ "finished": { "tool_call_id": "c1", "outcome": "interrupted" } }),
+        ));
         assert_eq!(app.pending_tools, ["c2"]);
     }
 
@@ -962,7 +860,11 @@ mod tests {
         let mut app = App::new();
         with_session(&mut app);
         app.handle_app_event(consent("c1"));
-        app.handle_app_event(AppEvent::Sse(SseEvent::TurnComplete));
+        app.apply_record(&record(
+            0,
+            "stream",
+            serde_json::json!({ "completed": { "usage": null, "stop_reason": "tool_calls" } }),
+        ));
         assert_eq!(app.status, Status::Running);
     }
 
@@ -983,12 +885,14 @@ mod tests {
         app.handle_app_event(AppEvent::Sse(SseEvent::Content {
             text: "a".repeat(400),
         }));
-        app.handle_app_event(AppEvent::Sse(SseEvent::Metrics {
-            prompt_tokens: Some(1200),
-            cached_tokens: None,
-            completion_tokens: Some(80),
-            total_tokens: Some(1280),
-        }));
+        app.apply_record(&record(
+            0,
+            "stream",
+            serde_json::json!({ "completed": { "usage": {
+                "prompt_tokens": 1200, "cached_tokens": null,
+                "completion_tokens": 80, "total_tokens": 1280
+            }, "stop_reason": "stop" } }),
+        ));
         assert_eq!(app.tokens_in, 1200);
         assert_eq!(app.tokens_out_live(), 80);
     }
@@ -996,13 +900,15 @@ mod tests {
     #[test]
     fn output_tokens_accumulate_across_turns() {
         let mut app = App::new();
-        for _ in 0..2 {
-            app.handle_app_event(AppEvent::Sse(SseEvent::Metrics {
-                prompt_tokens: Some(10),
-                cached_tokens: None,
-                completion_tokens: Some(50),
-                total_tokens: Some(60),
-            }));
+        for seq in 0..2 {
+            app.apply_record(&record(
+                seq,
+                "stream",
+                serde_json::json!({ "completed": { "usage": {
+                    "prompt_tokens": 10, "cached_tokens": null,
+                    "completion_tokens": 50, "total_tokens": 60
+                }, "stop_reason": "stop" } }),
+            ));
         }
         assert_eq!(app.tokens_out_live(), 100);
     }

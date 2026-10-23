@@ -6,6 +6,7 @@ use crate::types::TuiEvent;
 use crate::types::transform_raw_event;
 use futures::StreamExt;
 use reqwest::Client;
+use serde_json::Value;
 use serde_json::json;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -151,14 +152,8 @@ pub fn spawn_event_stream(
     tx: mpsc::Sender<TuiEvent>,
 ) {
     tokio::spawn(async move {
-        // Load snapshot first so history is populated before live events arrive.
-        match get_snapshot(&server, session_id, &token).await {
-            Ok(lines) => {
-                let _ = tx.send(TuiEvent::App(AppEvent::SnapshotLines(lines))).await;
-            }
-            Err(_) => {} // non-fatal: continue with empty history
-        }
-
+        // Subscribe before reading the snapshot, so no record is missed between
+        // the two. Records seen twice are dropped by seq in the fold.
         let client = Client::new();
         // The event stream uses a broadcast channel on the server side; no auth
         // header is needed.
@@ -176,6 +171,23 @@ pub fn spawn_event_stream(
             }
         };
 
+        // Non-fatal: continue with empty history.
+        let snapshot_last = match get_snapshot(&server, session_id, &token).await {
+            Ok(lines) => {
+                let last = lines
+                    .iter()
+                    .rev()
+                    .find_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .and_then(|record| record.get("seq")?.as_u64());
+                let _ = tx.send(TuiEvent::App(AppEvent::SnapshotLines(lines))).await;
+                last
+            }
+            Err(_) => None,
+        };
+        // Deltas that arrive before the first record newer than the snapshot may
+        // belong to a response the snapshot already holds, so they wait for it.
+        let mut live = snapshot_last.is_none();
+
         let mut stream = resp.bytes_stream();
         let mut buffer = String::new();
 
@@ -189,13 +201,21 @@ pub fn spawn_event_stream(
                         if let Some(data) = parse_sse_data(&frame) {
                             match serde_json::from_str::<RawSessionEvent>(&data) {
                                 Ok(raw) => {
+                                    if let RawSessionEvent::Record { record } = &raw {
+                                        let seq = record.get("seq").and_then(Value::as_u64);
+                                        if seq > snapshot_last {
+                                            live = true;
+                                        }
+                                    } else if !live {
+                                        continue;
+                                    }
                                     for ev in transform_raw_event(raw) {
                                         let _ = tx.send(TuiEvent::App(AppEvent::Sse(ev))).await;
                                     }
                                 }
                                 Err(e) => {
                                     let _ = tx
-                                        .send(TuiEvent::App(AppEvent::Sse(SseEvent::StreamError {
+                                        .send(TuiEvent::App(AppEvent::Sse(SseEvent::Error {
                                             message: format!("parse error: {e}"),
                                         })))
                                         .await;

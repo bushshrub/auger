@@ -274,43 +274,17 @@ components:
             tool_calls: { type: array, items: { $ref: "#/components/schemas/ToolCall" } }
         - type: object
           description: >-
-            The approval policy settled a call without asking the user. An
-            allowed call runs at once; a denied call is followed by its
-            tool_call_result. Calls the policy cannot settle appear in
-            tool_consent_required instead.
-          required: [type, id, decision, node]
+            One session record, as stored in the snapshot. Clients fold records
+            from the snapshot and from this stream alike; a record whose seq was
+            already folded is ignored.
+          required: [type, record]
           properties:
-            type: { const: tool_policy_decision }
-            id: { type: string }
-            decision: { enum: [allowed, denied] }
-            node: { type: string, description: Name of the policy node that decided. }
-            reason: { type: string, description: Present when denied. }
+            type: { const: record }
+            record: { $ref: "#/components/schemas/TraceRecord" }
         - type: object
-          required: [type, id, result]
-          properties:
-            type: { const: tool_call_result }
-            id: { type: string }
-            result:
-              type: object
-              required: [tool_call_id, outcome]
-              properties:
-                tool_call_id: { type: string }
-                outcome: { $ref: "#/components/schemas/ToolOutcome" }
-        - type: object
-          required: [type, id, error]
-          properties:
-            type: { const: tool_call_error }
-            id: { type: string }
-            error: { type: string }
-        - type: object
+          description: A tool phase ended with a denial; the session waits for the next message.
           required: [type]
-          properties: { type: { const: interrupted } }
-        - type: object
-          required: [type]
-          properties:
-            type: { const: done }
-            usage: { type: [object, "null"] }
-            stop_reason: { type: [string, "null"] }
+          properties: { type: { const: tool_results_withheld } }
         - type: object
           required: [type]
           properties: { type: { const: closed } }
