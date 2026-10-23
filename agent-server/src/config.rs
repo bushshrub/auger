@@ -12,6 +12,9 @@ pub(crate) struct Config {
     pub(crate) model: Option<String>,
     pub(crate) user_agent: Option<String>,
     pub(crate) provider: ProviderConfig,
+    /// Frontend settings. Read by the frontends, ignored by the server.
+    #[allow(dead_code)]
+    pub(crate) tui: Option<toml::Table>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -33,8 +36,12 @@ impl Config {
         }
         let contents = std::fs::read_to_string(&path)
             .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-        toml::from_str(&contents)
-            .map_err(|error| format!("failed to parse {}: {error}", path.display()))
+        let mut config: Self = toml::from_str(&contents)
+            .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
+        if let Some(key) = &config.provider.api_key {
+            config.provider.api_key = Some(expand_env(key)?);
+        }
+        Ok(config)
     }
 
     pub(crate) fn listen_addr(&self) -> String {
@@ -79,11 +86,30 @@ impl Config {
     }
 }
 
+/// Replace each `${NAME}` in `value` with the environment variable `NAME`.
+fn expand_env(value: &str) -> Result<String, String> {
+    let mut out = String::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("${") {
+        let Some(len) = rest[start + 2..].find('}') else {
+            return Err(format!("unclosed ${{ in config value: {value}"));
+        };
+        let name = &rest[start + 2..start + 2 + len];
+        let var = std::env::var(name)
+            .map_err(|_| format!("config references unset environment variable {name}"))?;
+        out.push_str(&rest[..start]);
+        out.push_str(&var);
+        rest = &rest[start + 3 + len..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
 fn config_path() -> Option<PathBuf> {
     if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
         return Some(PathBuf::from(config_home).join("auger/config.toml"));
     }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".auger/config.toml"))
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config/auger/config.toml"))
 }
 
 #[cfg(test)]
@@ -115,5 +141,15 @@ base_url = "https://example.test"
             config.provider.base_url.as_deref(),
             Some("https://example.test")
         );
+    }
+
+    #[test]
+    fn expands_env_references() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(super::expand_env("${HOME}").unwrap(), home);
+        assert_eq!(super::expand_env("a-${HOME}-b").unwrap(), format!("a-{home}-b"));
+        assert_eq!(super::expand_env("plain").unwrap(), "plain");
+        assert!(super::expand_env("${AUGER_SURELY_UNSET_VAR}").is_err());
+        assert!(super::expand_env("${HOME").is_err());
     }
 }
