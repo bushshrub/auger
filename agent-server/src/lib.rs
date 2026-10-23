@@ -114,6 +114,17 @@ pub fn defaults() -> Result<Defaults, String> {
 
 /// Serve the agent API on `listener` until the server fails.
 pub async fn serve(listener: TcpListener) -> Result<(), String> {
+    let router = api_router()?;
+    if let Ok(addr) = listener.local_addr() {
+        info!("agent-server listening on {addr}");
+    }
+    axum::serve(listener, router)
+        .await
+        .map_err(|error| format!("server error: {error}"))
+}
+
+/// The agent API routes with their state, configured the way `serve` configures them.
+pub fn api_router() -> Result<Router, String> {
     let config = config::Config::load()?;
     let provider = provider_config::from_config(&config);
 
@@ -142,12 +153,7 @@ pub async fn serve(listener: TcpListener) -> Result<(), String> {
         mcp_servers: Arc::new(config.mcp.servers.clone()),
     };
 
-    if let Ok(addr) = listener.local_addr() {
-        info!("agent-server listening on {addr}");
-    }
-    axum::serve(listener, router(state))
-        .await
-        .map_err(|error| format!("server error: {error}"))
+    Ok(router(state))
 }
 
 fn router(state: AppState) -> Router {
