@@ -1,9 +1,10 @@
 //! Parses bash commands into plain command lists.
 //!
 //! Only the simplest shape is understood: commands made of literal words,
-//! joined by `&&`, `||`, `;` or `|`, with file redirects. Anything else
-//! (expansions, substitutions, loops, subshells, assignments, heredocs,
-//! background jobs) makes [`plain_commands`] return `None`. This crate does not
+//! joined by `&&`, `||`, `;` or `|`, with file redirects, plus `for` loops
+//! over literal words, which are unrolled. Anything else (other expansions,
+//! substitutions, subshells, assignments, heredocs, background jobs) makes
+//! [`plain_commands`] return `None`. This crate does not
 //! judge whether a command is safe; it only tells callers what will run.
 
 use tree_sitter::Node;
@@ -39,12 +40,19 @@ pub struct Redirect {
 pub struct Command {
     /// `None` for the first command.
     pub joint: Option<Joint>,
+    /// How many `for` loops this command sits in. Joints inside a loop only
+    /// order the loop's own commands.
+    pub depth: usize,
     pub argv: Vec<Arg>,
     pub redirects: Vec<Redirect>,
 }
 
+/// Most items a `for` loop may unroll to.
+const MAX_UNROLL: usize = 64;
+
 /// Plain commands joined by `&& || ; |`, in source order, or `None` if
-/// anything else appears.
+/// anything else appears. A `for` loop over literal words is unrolled, with
+/// the loop variable substituted in its body.
 pub fn plain_commands(src: &str) -> Option<Vec<Command>> {
     let mut parser = Parser::new();
     parser
@@ -59,6 +67,7 @@ pub fn plain_commands(src: &str) -> Option<Vec<Command>> {
         src,
         joint: None,
         out: Vec::new(),
+        vars: Vec::new(),
     };
     walker.statements(root)?;
     if walker.out.is_empty() {
@@ -72,6 +81,8 @@ struct Walker<'s> {
     /// The operator seen since the last command.
     joint: Option<Joint>,
     out: Vec<Command>,
+    /// Bound loop variables, innermost last.
+    vars: Vec<(String, String)>,
 }
 
 impl Walker<'_> {
@@ -80,7 +91,7 @@ impl Walker<'_> {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             match child.kind() {
-                "comment" => {}
+                "comment" | "do" | "done" => {}
                 "&&" => self.joint = Some(Joint::And),
                 "||" => self.joint = Some(Joint::Or),
                 "|" => self.joint = Some(Joint::Pipe),
@@ -95,6 +106,7 @@ impl Walker<'_> {
     fn statement(&mut self, node: Node) -> Option<()> {
         match node.kind() {
             "list" | "pipeline" => self.statements(node),
+            "for_statement" => self.for_loop(node),
             "command" => self.command(node, Vec::new()),
             "redirected_statement" => {
                 let body = node.child_by_field_name("body")?;
@@ -110,6 +122,54 @@ impl Walker<'_> {
             }
             _ => None,
         }
+    }
+
+    /// `for NAME in WORDS; do BODY; done`, unrolled: BODY once per word with
+    /// NAME bound to it.
+    fn for_loop(&mut self, node: Node) -> Option<()> {
+        let mut name = None;
+        let mut values = Vec::new();
+        let mut body = None;
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "for" | "in" | ";" | "\n" => {}
+                "variable_name" => name = Some(self.text(child).to_string()),
+                "do_group" => body = Some(child),
+                _ => {
+                    let value = self.word(child)?;
+                    if value.expands {
+                        return None;
+                    }
+                    values.push(value.text);
+                }
+            }
+        }
+        // `for f; do` loops over the arguments, which we can't see.
+        let (name, body) = (name?, body?);
+        if values.is_empty() || values.len() > MAX_UNROLL {
+            return None;
+        }
+        for value in values {
+            self.vars.push((name.clone(), value));
+            self.statements(body)?;
+            self.vars.pop();
+        }
+        Some(())
+    }
+
+    fn lookup(&self, node: Node) -> Option<&str> {
+        let name = match node.kind() {
+            "simple_expansion" => node.named_child(0)?,
+            // Only plain `${name}`, no operators.
+            "expansion" if node.named_child_count() == 1 => node.named_child(0)?,
+            _ => return None,
+        };
+        if name.kind() != "variable_name" {
+            return None;
+        }
+        let name = self.text(name);
+        self.vars.iter().rev().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
     }
 
     fn command(&mut self, node: Node, mut redirects: Vec<Redirect>) -> Option<()> {
@@ -135,6 +195,7 @@ impl Walker<'_> {
         self.joint = None;
         self.out.push(Command {
             joint,
+            depth: self.vars.len(),
             argv,
             redirects,
         });
@@ -189,12 +250,21 @@ impl Walker<'_> {
                     match child.kind() {
                         "\"" => {}
                         "string_content" => text.push_str(&unescape_dquoted(self.text(child))),
-                        _ => return None,
+                        _ => text.push_str(self.lookup(child)?),
                     }
                 }
                 Some(Arg {
                     text,
                     expands: false,
+                })
+            }
+            // An unquoted loop variable splits on spaces and globs, so its
+            // value only counts as one literal word if it has neither.
+            "simple_expansion" | "expansion" => {
+                let value = self.lookup(node)?;
+                Some(Arg {
+                    text: value.to_string(),
+                    expands: value.contains(|c: char| c.is_whitespace() || "*?[{~".contains(c)),
                 })
             }
             "concatenation" => {
@@ -291,13 +361,31 @@ mod tests {
     }
 
     #[test]
+    fn unrolls_loops_over_literal_words() {
+        assert_eq!(
+            argv(r#"for f in a.md "b c"; do echo "=== $f ==="; cat "$f" ${f}x; done"#),
+            [
+                vec!["echo", "=== a.md ==="],
+                vec!["cat", "a.md", "a.mdx"],
+                vec!["echo", "=== b c ==="],
+                vec!["cat", "b c", "b cx"],
+            ]
+        );
+        let cmds = plain_commands("cd /a && for f in x; do cat $f; done").unwrap();
+        assert_eq!(cmds.iter().map(|c| c.depth).collect::<Vec<_>>(), [0, 1]);
+    }
+
+    #[test]
     fn rejects_everything_else() {
         for src in [
             "echo $HOME",
             "echo \"$HOME\"",
             "cat $(ls)",
             "cat `ls`",
-            "for f in a; do cat $f; done",
+            "for f in *.md; do cat $f; done",
+            "for f in $(ls); do cat $f; done",
+            "for f; do cat $f; done",
+            "for f in a; do cat $g; done",
             "(cd /a; ls)",
             "{ ls; }",
             "FOO=1 ls",

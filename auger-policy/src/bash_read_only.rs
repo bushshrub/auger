@@ -96,8 +96,9 @@ fn read_only(commands: &[Command], cwd: &Path, workspace: &Path) -> bool {
     true
 }
 
-/// `cd <dir> && ...` as the first command, with no `;` or `||` later that
-/// could run something in the old directory if the `cd` fails.
+/// `cd <dir> && ...` as the first command, with no top-level `;` or `||`
+/// later that could run something in the old directory if the `cd` fails.
+/// Joints inside a loop only order the loop's own commands.
 fn leading_cd(commands: &[Command], i: usize, cwd: &Path, workspace: &Path) -> Option<PathBuf> {
     let [_, dir] = commands[i].argv.as_slice() else {
         return None;
@@ -105,6 +106,7 @@ fn leading_cd(commands: &[Command], i: usize, cwd: &Path, workspace: &Path) -> O
     let only_and = commands
         .iter()
         .skip(1)
+        .filter(|c| c.depth == 0 || c.joint == Some(Joint::Or))
         .all(|c| matches!(c.joint, Some(Joint::And | Joint::Pipe)));
     let followed_by_and = commands.get(1).is_none_or(|c| c.joint == Some(Joint::And));
     if i != 0 || dir.expands || !only_and || !followed_by_and || !commands[0].redirects.is_empty() {
@@ -234,6 +236,7 @@ mod tests {
             "find . -name '*.rs' | wc -l",
             "ls -la src >/dev/null",
             "git branch -a && git shortlog -sn | head",
+            r#"cd $WS && for f in src/a.rs src/b.rs; do echo "=== $f ==="; cat "$f"; done"#,
             "cd $WS && sed -n 110,180p src/a.rs && echo '=== x ===' && head -70 src/b.rs",
         ] {
             assert!(allowed(cmd), "denied: {cmd}");
@@ -257,6 +260,8 @@ mod tests {
             "git -c core.pager=sh log",
             "git commit -m x",
             "git branch new-feature",
+            "for f in src/a.rs /etc/hosts; do cat $f; done",
+            "for f in src/a.rs; do rm $f; done",
             "git branch -D main",
             "git diff --output=x",
             "cd /tmp && ls",
