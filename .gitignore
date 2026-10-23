@@ -4,3 +4,4 @@
 .pnpm-store/
 .DS_Store
 .mcp.json
+.agents/handoffs/
