@@ -111,6 +111,22 @@ pub fn live_lines(item: &ChatItem, width: usize, tools: &LiveTool) -> Vec<Line<'
                 return lines;
             }
             lines.push(tool_header(name, decision.as_ref()));
+            // Arguments still streaming are not JSON yet; show just the path
+            // as it arrives rather than the raw text.
+            if serde_json::from_str::<serde_json::Value>(args).is_err() {
+                if let Some(path) = crate::toolargs::partial_field(args, "path") {
+                    lines.push(Line::from(Span::styled(format!("    {path}"), dim())));
+                }
+                return lines;
+            }
+            if let Some(view) = crate::diff::tool_view(name, args) {
+                lines.push(Line::from(Span::styled(
+                    format!("    {}", crate::diff::summary(&view, result.as_deref())),
+                    dim(),
+                )));
+                lines.extend(indent(crate::diff::body(&view, result.as_deref(), MAX_BODY_LINES)));
+                return lines;
+            }
             lines.extend(indent(crate::toolargs::render(
                 name,
                 args,
