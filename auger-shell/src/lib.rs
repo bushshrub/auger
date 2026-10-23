@@ -110,15 +110,26 @@ impl Walker<'_> {
             "command" => self.command(node, Vec::new()),
             "redirected_statement" => {
                 let body = node.child_by_field_name("body")?;
-                if body.kind() != "command" {
-                    return None;
-                }
                 let mut redirects = Vec::new();
                 let mut cursor = node.walk();
                 for child in node.children_by_field_name("redirect", &mut cursor) {
                     redirects.push(self.redirect(child)?);
                 }
-                self.command(body, redirects)
+                if body.kind() == "command" {
+                    return self.command(body, redirects);
+                }
+                // tree-sitter wraps a whole `a && b 2>x` list or pipeline in
+                // the redirect, but bash binds it to the last command only.
+                if !matches!(body.kind(), "list" | "pipeline") {
+                    return None;
+                }
+                let before = self.out.len();
+                self.statement(body)?;
+                if self.out.len() == before {
+                    return None;
+                }
+                self.out.last_mut()?.redirects.extend(redirects);
+                Some(())
             }
             _ => None,
         }
@@ -175,7 +186,12 @@ impl Walker<'_> {
     fn command(&mut self, node: Node, mut redirects: Vec<Redirect>) -> Option<()> {
         let mut argv = Vec::new();
         let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
+        for child in node.children(&mut cursor) {
+            // An unnamed token here (a lone `$`) is something we don't
+            // model; skipping it would drop an argument bash passes.
+            if !child.is_named() {
+                return None;
+            }
             match child.kind() {
                 "command_name" => argv.push(self.word(child.named_child(0)?)?),
                 "file_redirect" => redirects.push(self.redirect(child)?),
@@ -233,7 +249,7 @@ impl Walker<'_> {
                 let raw = self.text(node);
                 Some(Arg {
                     text: unescape(raw),
-                    expands: raw.contains(['*', '?', '[', '{', '~']),
+                    expands: expands(raw),
                 })
             }
             "raw_string" => {
@@ -244,15 +260,21 @@ impl Walker<'_> {
                 })
             }
             "string" => {
+                // Walk by byte range: tree-sitter leaves some content (a
+                // newline) outside any child, and it must not be lost.
+                let (start, end) = (node.start_byte() + 1, node.end_byte().checked_sub(1)?);
                 let mut text = String::new();
+                let mut pos = start;
                 let mut cursor = node.walk();
-                for child in node.children(&mut cursor) {
+                for child in node.named_children(&mut cursor) {
+                    text.push_str(&unescape_dquoted(self.src.get(pos..child.start_byte())?));
                     match child.kind() {
-                        "\"" => {}
                         "string_content" => text.push_str(&unescape_dquoted(self.text(child))),
                         _ => text.push_str(self.lookup(child)?),
                     }
+                    pos = child.end_byte();
                 }
+                text.push_str(&unescape_dquoted(self.src.get(pos..end.max(pos))?));
                 Some(Arg {
                     text,
                     expands: false,
@@ -269,7 +291,8 @@ impl Walker<'_> {
             }
             "concatenation" => {
                 let mut text = String::new();
-                let mut expands = false;
+                // Brace expansion can span the parts: `a{b,c}`.
+                let mut expands = expands(self.text(node));
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
                     let part = self.word(child)?;
@@ -285,6 +308,13 @@ impl Walker<'_> {
     fn text(&self, node: Node) -> &str {
         &self.src[node.byte_range()]
     }
+}
+
+/// Whether bash may expand an unquoted word: globs, `~`, and brace
+/// expansion, which needs a comma or a range (`{}` alone is literal).
+fn expands(raw: &str) -> bool {
+    raw.contains(['*', '?', '[', '~'])
+        || (raw.contains('{') && (raw.contains(',') || raw.contains("..")))
 }
 
 fn unescape(raw: &str) -> String {
@@ -354,10 +384,17 @@ mod tests {
     }
 
     #[test]
+    fn redirects_after_a_list_bind_to_its_last_command() {
+        let cmds = plain_commands("cd a && git log 2>/dev/null").unwrap();
+        assert!(cmds[0].redirects.is_empty());
+        assert_eq!(cmds[1].redirects[0].target.text, "/dev/null");
+    }
+
+    #[test]
     fn marks_expanding_words() {
-        let cmds = plain_commands("grep --include=*.rs x ~/y '*'").unwrap();
+        let cmds = plain_commands("grep --include=*.rs x ~/y '*' {} a{b,c}").unwrap();
         let expands: Vec<_> = cmds[0].argv.iter().map(|a| a.expands).collect();
-        assert_eq!(expands, [false, true, false, true, false]);
+        assert_eq!(expands, [false, true, false, true, false, false, true]);
     }
 
     #[test]
@@ -373,6 +410,29 @@ mod tests {
         );
         let cmds = plain_commands("cd /a && for f in x; do cat $f; done").unwrap();
         assert_eq!(cmds.iter().map(|c| c.depth).collect::<Vec<_>>(), [0, 1]);
+    }
+
+    /// What we pass on must be exactly what bash passes: a policy that checks
+    /// a different word than bash runs can be bypassed.
+    #[test]
+    fn words_match_bash() {
+        let cases = [
+            r#"a "b c" 'd e' f\ g"#, r#"a "x\"y" 'it'"'"'s'"#, r#"a "\$HOME" '\n' \\x"#,
+            r#"a "a\\b" "a\b" "a\`b""#, r#"a b"c"d 'e'f"#, r#"a --x=*.rs"#, r#"a \*"#, r#"a "*""#,
+            r#"a {}"#, r#"a x#y #z"#, "a \"multi\nline\"", "a \\\nb", r#"a 'a\'"#, r#"a "" ''"#,
+            r#"a =x x=y !x %s"#, r#"a "é" ü"#, r#"a \"q\""#, r#"a "$""#, r#"a 'x'\''y'"#,
+            r#"a -- -x"#, r#"a "\\" '\\'"#, "a \"tab\there\"",
+        ];
+        for src in cases {
+            let Some(cmds) = plain_commands(src) else { continue };
+            let ours: Vec<String> = cmds[0].argv[1..].iter().map(|a| a.text.clone()).collect();
+            let script = format!("printf '%s\\0' {}", &src[2..]);
+            let out = std::process::Command::new("bash").arg("-c").arg(&script).output().unwrap();
+            let mut bash: Vec<String> =
+                String::from_utf8_lossy(&out.stdout).split('\0').map(String::from).collect();
+            bash.pop();
+            assert_eq!(ours, bash, "for {src:?}");
+        }
     }
 
     #[test]

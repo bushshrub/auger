@@ -208,6 +208,7 @@ version = "0.1.0"
 dependencies = [
  "auger-core",
  "auger-shell",
+ "glob",
 ]
 
 [[package]]
@@ -1144,6 +1145,12 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "h2"
