@@ -45,14 +45,9 @@ class Monitor {
 				for (const tc of e.tool_calls) this.#pending.add(tc.id);
 				this.#streaming = false;
 				break;
-			case 'tool_call_result':
-				this.#pending.delete(e.id);
+			case 'record':
+				this.#applyRecord(e.record);
 				break;
-			case 'done':
-				this.#streaming = false;
-				break;
-			case 'interrupted':
-			case 'stream_error':
 			case 'closed':
 				this.#streaming = false;
 				this.#pending.clear();
@@ -61,6 +56,27 @@ class Monitor {
 				return;
 		}
 		this.#onchange();
+	}
+
+	/** @param {import('./api.js').TraceRecord} record */
+	#applyRecord(record) {
+		const { data } = record;
+		if (record.type === 'stream') {
+			if (data === 'started') {
+				this.#streaming = true;
+			} else if (data.completed) {
+				this.#streaming = false;
+			} else {
+				// Interrupted or failed.
+				this.#streaming = false;
+				this.#pending.clear();
+			}
+		} else if (record.type === 'tool') {
+			if (data.finished) this.#pending.delete(data.finished.tool_call_id);
+			else if (data.decided && 'denied' in data.decided.decision) {
+				this.#pending.delete(data.decided.tool_call_id);
+			}
+		}
 	}
 
 	reset() {

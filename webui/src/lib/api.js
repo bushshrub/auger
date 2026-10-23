@@ -42,64 +42,28 @@ const BASE = import.meta.env.VITE_AUGER_BASE ?? '/v1';
  *   | { denied: { reason: string | null } }
  *   | 'interrupted'
  * )} ToolOutcome
- * @typedef {{ tool_call_id: string, outcome: ToolOutcome }} ToolCallResult
+ * @typedef {{ blocks: { text?: string, reasoning?: { text: string }, tool_call?: ToolCall }[] }} AssistantResponse
  *
- * One SSE frame; discriminated by `type`. `tool_call_result` carries the full
- * structured result (with its outcome); there is no separate error frame — a
- * failed/denied/interrupted call arrives as a `tool_call_result` whose outcome
- * is `error`/`denied`/`interrupted`.
+ * One SSE frame; discriminated by `type`. Live session records arrive as
+ * `record` frames, the same records the snapshot holds; everything else is a
+ * live-only delta or notice.
  * @typedef {(
  *   | { type: 'text_delta', text: string }
  *   | { type: 'reasoning_delta', text: string }
  *   | { type: 'tool_call', id: string, name: string, arguments: string }
  *   | { type: 'tool_call_complete', id: string, name: string, arguments: string }
  *   | { type: 'tool_consent_required', tool_calls: ToolCall[] }
- *   | { type: 'tool_call_result', id: string, result: ToolCallResult }
- *   | { type: 'done', usage: TokenUsage | null, stop_reason: string | null }
- *   | { type: 'interrupted' }
- *   | { type: 'stream_error', error: string }
+ *   | { type: 'tool_results_withheld' }
+ *   | { type: 'record', record: TraceRecord }
  *   | { type: 'closed' }
  * )} SessionEvent
  *
- * The snapshot is the same record stream persisted to trace.jsonl: a flat,
- * ordered list of TraceRecords, each discriminated by `kind`. It arrives as
- * newline-delimited JSON (one record per line), parsed by getSnapshot into an
- * array. The session record is always first, followed by turns (which carry the
- * conversation) and `tool_authorization` events that occurred during the owning
- * assistant turn. Nested enums are externally tagged, matching the Rust
- * serialization. `arguments` on a tool call is a JSON-encoded string.
- *
- * An input turn accumulates entries as they happen, so a single turn holds the
- * prompt plus every tool result answering the preceding assistant turn. Tool
- * results carry the full ToolCallResult, so a snapshot shows failed and denied
- * calls the same way the live stream does.
- * @typedef {(
- *   | { user: { message: string } }
- *   | { harness: string }
- *   | { tool_result: ToolCallResult }
- * )} RecordedInput
- * @typedef {(
- *   | { text: string }
- *   | { reasoning: { text: string } }
- *   | { tool_call: ToolCall }
- * )} AssistantBlock
- * @typedef {{ blocks: AssistantBlock[] }} AssistantResponse
- * @typedef {'interrupted' | { failed: { kind: unknown, message: string } }} StopReason
- * @typedef {(
- *   | { completed: { response: AssistantResponse } }
- *   | { incomplete: { partial_response: AssistantResponse | null, reason: StopReason } }
- * )} AssistantTurnOutcome
- * @typedef {(
- *   | { kind: 'session', version: number, session_id: string, created_at: string,
- *       cwd: string, model_info: { provider: string, id: string } }
- *   | { kind: 'turn', turn_id: string, timestamp: string, parent_id: string | null,
- *       turn: { input: { entries: RecordedInput[] } }
- *           | { assistant: { outcome: AssistantTurnOutcome } } }
- *   | { kind: 'event', turn_id: string, parent_id: string | null, timestamp: string,
- *       event_id: string, event:
- *         { tool_authorization: { tool_call_id: string, decision: 'approved' | 'denied',
- *           source: 'user' | 'policy', reason: string | null } } }
- * )} TraceRecord
+ * The snapshot is the session's records, one per line of NDJSON, parsed by
+ * getSnapshot into an array. Each record is `{ seq, ts, type, data }`: `seq`
+ * counts from 0 with no gaps; `type` is `session`, `turns`, `stream` or `tool`.
+ * `data` is externally tagged, matching the Rust serialization. `arguments` on
+ * a tool call is a JSON-encoded string.
+ * @typedef {{ seq: number, ts: string, type: 'session' | 'turns' | 'stream' | 'tool', data: any }} TraceRecord
  */
 
 export class ApiError extends Error {

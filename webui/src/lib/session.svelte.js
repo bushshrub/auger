@@ -1,9 +1,9 @@
-// Per-session client state machine: consumes the trace snapshot + SSE event stream
-// and maintains a normalized transcript (UiItem[]) for the view components.
+// Per-session client state machine: folds the record snapshot and the live
+// record stream into a normalized transcript (UiItem[]) for the view components.
 //
-// Lifecycle: start() fetches /snapshot, rebuilds the transcript, then
-// subscribes to /events. On stream loss it reconnects with backoff and
-// rebuilds from a fresh snapshot (the server does not replay events).
+// Lifecycle: start() subscribes to /events, fetches /snapshot, folds it, then
+// replays the records that arrived meanwhile. On stream loss it reconnects with
+// backoff and starts over from a fresh snapshot (the server does not replay).
 
 import {
 	ApiError,
@@ -13,21 +13,13 @@ import {
 	sendInput,
 	subscribeEvents
 } from './api.js';
+import { Fold, nextId } from './fold.js';
 
 /**
  * @typedef {import('./api.js').SessionEvent} SessionEvent
- * @typedef {import('./api.js').TraceRecord} TraceRecord
- * @typedef {import('./api.js').TokenUsage} TokenUsage
- *
- * @typedef {'pending_approval' | 'running' | 'done' | 'error' | 'denied'} ToolCallStatus
- * @typedef {{ id: string, name: string, arguments: string, status: ToolCallStatus,
- *             autoApproved: boolean, result?: string, error?: string }} UiToolCall
- * @typedef {(
- *   | { kind: 'user', id: string, text: string }
- *   | { kind: 'assistant', id: string, reasoning: string, content: string,
- *       streaming: boolean, stopReason?: string | null, empty?: boolean }
- *   | { kind: 'tool', id: string, call: UiToolCall }
- * )} UiItem
+ * @typedef {import('./fold.js').UiItem} UiItem
+ * @typedef {import('./fold.js').UiToolCall} UiToolCall
+ * @typedef {import('./fold.js').ToolCallStatus} ToolCallStatus
  */
 
 /**
@@ -45,8 +37,8 @@ export const APPROVAL_REQUIRED_TOOLS = new Set(['shell', 'edit_file', 'write_fil
  */
 export const GROUPABLE_TOOLS = new Set(['read_file', 'list_files', 'glob', 'grep', 'todo_list']);
 
-let counter = 0;
-const nextId = () => `ui_${++counter}`;
+/** Live-only events that carry deltas; they wait for the snapshot to be folded. */
+const DELTA_EVENTS = new Set(['text_delta', 'reasoning_delta', 'tool_call', 'tool_call_complete']);
 
 export class AugerSession {
 	/** @type {UiItem[]} */
@@ -89,9 +81,12 @@ export class AugerSession {
 	#backoffMs = 1000;
 	/** @type {ReturnType<typeof setTimeout> | null} */
 	#retryTimer = null;
-	// True while sendInput is in-flight; prevents #connect from overwriting items
-	// with a snapshot that predates the message the user just sent.
-	#sendInFlight = false;
+	#fold = new Fold();
+	/** Records and events that arrive before the snapshot is folded. @type {SessionEvent[] | null} */
+	#buffer = null;
+	/** Whether live deltas may be applied: a record newer than the snapshot has arrived. */
+	#live = false;
+	#snapshotSeq = -1;
 
 	/**
 	 * @param {string} sessionId
@@ -102,7 +97,7 @@ export class AugerSession {
 		this.tokens = tokens;
 	}
 
-	/** Fetch the snapshot, rebuild the transcript, and subscribe to events. */
+	/** Subscribe to events, fetch the snapshot, and fold both. */
 	async start() {
 		this.#stopped = false;
 		await this.#connect();
@@ -118,28 +113,41 @@ export class AugerSession {
 	}
 
 	async #connect() {
-		try {
-			const records = await getSnapshot(this.sessionId, this.tokens.read);
-			// Skip rebuild if a send is in-flight: the snapshot may predate the
-			// message the user just sent, which would erase the optimistic push.
-			if (!this.#sendInFlight) {
-				this.items = buildItems(records);
-				this.busy = this.#hasUnresolvedTools();
-			}
-		} catch (err) {
-			this.#handleConnectionError(err);
-			return;
-		}
-
+		this.#buffer = [];
+		this.#live = false;
+		// Subscribe before the snapshot, so no record falls between the two.
+		this.#stream?.abort();
 		this.#stream = subscribeEvents(
 			this.sessionId,
 			this.tokens.read,
-			(event) => this.#applyEvent(event),
+			(event) => this.#onEvent(event),
 			(err) => {
 				this.connected = false;
 				this.#handleConnectionError(err);
 			}
 		);
+		let records;
+		try {
+			records = await getSnapshot(this.sessionId, this.tokens.read);
+		} catch (err) {
+			this.#stream.abort();
+			this.#stream = null;
+			this.#buffer = null;
+			this.#handleConnectionError(err);
+			return;
+		}
+		const fold = new Fold();
+		/** @type {UiItem[]} */
+		const items = [];
+		for (const record of records) fold.apply(items, record);
+		this.#fold = fold;
+		this.items = items;
+		this.#snapshotSeq = records.at(-1)?.seq ?? -1;
+		this.busy = this.#hasUnresolvedTools();
+
+		const buffered = this.#buffer ?? [];
+		this.#buffer = null;
+		for (const event of buffered) this.#onEvent(event);
 		this.connected = true;
 		this.error = null;
 		this.#backoffMs = 1000;
@@ -161,23 +169,14 @@ export class AugerSession {
 
 	/** @param {string} text */
 	async send(text) {
-		// Push optimistically so the message appears immediately, before the
-		// network round-trip. #sendInFlight prevents a concurrent #connect from
-		// overwriting items with a snapshot that predates this message.
-		const item = /** @type {UiItem} */ ({ kind: 'user', id: nextId(), text });
-		this.items.push(item);
+		// The message shows when its turns record arrives.
 		this.busy = true;
 		this.error = null;
-		this.#sendInFlight = true;
 		try {
 			await sendInput(this.sessionId, this.tokens.write, text);
 		} catch (err) {
-			const idx = this.items.indexOf(item);
-			if (idx !== -1) this.items.splice(idx, 1);
 			this.busy = false;
 			this.error = err instanceof Error ? err.message : String(err);
-		} finally {
-			this.#sendInFlight = false;
 		}
 	}
 
@@ -263,11 +262,55 @@ export class AugerSession {
 		}
 	}
 
+	/** @param {SessionEvent} event */
+	#onEvent(event) {
+		if (this.#buffer) {
+			if (event.type === 'record') this.#buffer.push(event);
+			return;
+		}
+		if (event.type === 'record') {
+			if (event.record.seq > this.#snapshotSeq) this.#live = true;
+			this.#applyRecord(event.record);
+		} else if (this.#live) {
+			this.#applyEvent(event);
+		}
+	}
+
+	/** @param {any} record */
+	#applyRecord(record) {
+		const effect = this.#fold.apply(this.items, record);
+		if (!effect) return;
+		switch (effect.kind) {
+			case 'started':
+				this.busy = true;
+				break;
+			case 'completed': {
+				const usage = effect.usage;
+				if (usage) {
+					this.contextTokens =
+						usage.total_tokens ?? (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0);
+				}
+				// The turn continues (tool execution, then another stream) while
+				// any tool call is still awaiting consent or running.
+				this.busy = this.#hasUnresolvedTools();
+				break;
+			}
+			case 'stopped':
+				this.busy = false;
+				if (effect.error) this.error = effect.error;
+				break;
+			case 'settled':
+				this.busy = this.#hasUnresolvedTools();
+				break;
+		}
+	}
+
 	/** @param {SessionEvent} e */
 	#applyEvent(e) {
 		switch (e.type) {
 			case 'reasoning_delta':
 			case 'text_delta': {
+				this.#fold.openTail(this.items.length);
 				const existing = this.#lastStreaming();
 				if (existing) {
 					if (e.type === 'reasoning_delta') existing.reasoning += e.text;
@@ -288,6 +331,7 @@ export class AugerSession {
 				// Incremental argument deltas; wait for tool_call_complete.
 				break;
 			case 'tool_call_complete': {
+				this.#fold.openTail(this.items.length);
 				// Close the current bubble so post-tool content starts fresh.
 				this.#closeStreamingBubble();
 				if (!this.#findCall(e.id)) {
@@ -311,62 +355,9 @@ export class AugerSession {
 				this.busy = true;
 				break;
 			}
-			case 'tool_call_result': {
-				const call = this.#findCall(e.id);
-				// Denial is decided locally (respond) and wins over a late result,
-				// which for a denied call just restates the denial reason.
-				if (call && call.status !== 'denied') applyOutcome(call, e.result.outcome);
-				break;
-			}
-			case 'done': {
-				const existing = this.#lastStreaming();
-				if (existing) {
-					existing.streaming = false;
-					existing.stopReason = e.stop_reason;
-				}
-				if (e.usage) {
-					this.contextTokens =
-						e.usage.total_tokens ??
-						(e.usage.prompt_tokens ?? 0) + (e.usage.completion_tokens ?? 0);
-				}
-				// Surface turns that completed without any assistant output (no
-				// reasoning, no content) and without calling a tool -- otherwise the
-				// turn is invisible. Happens when a model tier streams zero deltas.
-				// stop_reason 'tool_calls' means tools ran, so it isn't empty.
-				const noOutput =
-					!existing || (existing.reasoning.trim() === '' && existing.content.trim() === '');
-				if (noOutput && e.stop_reason !== 'tool_calls' && !this.#hasUnresolvedTools()) {
-					if (existing) {
-						existing.empty = true;
-					} else {
-						this.items.push({
-							kind: 'assistant',
-							id: nextId(),
-							reasoning: '',
-							content: '',
-							streaming: false,
-							stopReason: e.stop_reason,
-							empty: true
-						});
-					}
-				}
-				// The turn continues (tool execution, then another stream) while
-				// any tool call is still awaiting consent or running.
+			case 'tool_results_withheld':
 				this.busy = this.#hasUnresolvedTools();
 				break;
-			}
-			case 'interrupted': {
-				// Stream cut short; the partial response is committed server-side.
-				this.#closeStreamingBubble();
-				this.busy = false;
-				break;
-			}
-			case 'stream_error': {
-				this.#closeStreamingBubble();
-				this.busy = false;
-				this.error = e.error;
-				break;
-			}
 			case 'closed': {
 				this.busy = false;
 				this.error = 'session closed';
@@ -378,146 +369,4 @@ export class AugerSession {
 				break;
 		}
 	}
-}
-
-/**
- * Rebuild the transcript from a trace snapshot (initial load and reconnect).
- * The snapshot is the session's records (`{seq, ts, type, data}`), folded the
- * way auger-core restores a session: `turns` records replay the conversation
- * (`push_turn`, `push_entry`, `truncate`), `tool` records carry decisions and
- * outcomes, and an interrupted stream's partial shows until the conversation
- * moves on.
- * @param {any[]} records
- * @returns {UiItem[]}
- */
-function buildItems(records) {
-	/** @type {any[]} */
-	const turns = [];
-	/** @type {any} */
-	let partial = null;
-	/** @type {Map<string, any>} */
-	const outcomes = new Map();
-	/** @type {Map<string, any>} */
-	const decisions = new Map();
-
-	for (const record of records) {
-		const data = record.data;
-		if (record.type === 'turns') {
-			if ('push_turn' in data) turns.push(data.push_turn);
-			else if ('push_entry' in data) turns.at(-1)?.input?.entries.push(data.push_entry);
-			else if ('truncate' in data) turns.length = data.truncate.len;
-			partial = null;
-		} else if (record.type === 'stream') {
-			partial = data?.interrupted?.partial ?? data?.failed?.partial ?? null;
-		} else if (record.type === 'tool') {
-			if ('finished' in data) outcomes.set(data.finished.tool_call_id, data.finished.outcome);
-			else if ('decided' in data) decisions.set(data.decided.tool_call_id, data.decided.decision);
-		}
-	}
-
-	/** @type {UiItem[]} */
-	const items = [];
-	/** @type {Map<string, UiToolCall>} */
-	const calls = new Map();
-	/** @param {any[]} blocks */
-	const pushResponse = (blocks) => {
-		const { reasoning, content: text, toolCalls } = responseParts({ blocks });
-		if (reasoning.trim().length > 0 || text.trim().length > 0) {
-			items.push({ kind: 'assistant', id: nextId(), reasoning, content: text, streaming: false });
-		}
-		for (const tc of toolCalls) {
-			const decision = decisions.get(tc.id);
-			const by = decision?.allowed?.by ?? decision?.denied?.by;
-			/** @type {UiToolCall} */
-			const call = {
-				id: tc.id,
-				name: tc.name,
-				arguments: tc.arguments,
-				status: decision ? 'running' : 'pending_approval',
-				autoApproved: by !== undefined && by !== 'user'
-			};
-			if (decision && 'denied' in decision) call.status = 'denied';
-			const outcome = outcomes.get(tc.id);
-			if (outcome) applyOutcome(call, outcome);
-			calls.set(tc.id, call);
-			items.push({ kind: 'tool', id: nextId(), call });
-		}
-	};
-
-	for (const turn of turns) {
-		if ('input' in turn) {
-			for (const entry of turn.input.entries) {
-				if ('user' in entry && entry.user.message.trim().length > 0) {
-					items.push({ kind: 'user', id: nextId(), text: entry.user.message });
-				} else if (entry.harness?.tool_result) {
-					const result = entry.harness.tool_result;
-					const call = calls.get(result.tool_call_id);
-					if (call && !outcomes.has(result.tool_call_id) && call.status !== 'denied') {
-						call.status = 'done';
-						call.result = result.content;
-					}
-				}
-				// Harness messages are internal steering; nothing to show.
-			}
-		} else if ('output' in turn) {
-			pushResponse(turn.output);
-		}
-	}
-	if (Array.isArray(partial)) pushResponse(partial);
-
-	return items;
-}
-
-/**
- * Normalize persisted provider blocks for the transcript. Uppercase keys keep
- * snapshots written before the provider tags became snake_case readable.
- * @param {import('./api.js').AssistantResponse | any} response
- */
-function responseParts(response) {
-	if (!Array.isArray(response.blocks)) {
-		return {
-			reasoning: response.reasoning ?? '',
-			content: response.content ?? '',
-			toolCalls: response.tool_calls ?? []
-		};
-	}
-
-	let reasoning = '';
-	let content = '';
-	const toolCalls = [];
-	for (const block of response.blocks) {
-		if ('reasoning' in block) reasoning += block.reasoning.text;
-		else if ('text' in block) content += block.text;
-		else if ('tool_call' in block) toolCalls.push(block.tool_call);
-		else if ('Reasoning' in block) reasoning += block.Reasoning.text;
-		else if ('Text' in block) content += block.Text;
-		else if ('ToolCall' in block) toolCalls.push(block.ToolCall);
-	}
-	return { reasoning, content, toolCalls };
-}
-
-/**
- * Apply a tool-call outcome to its card, setting status plus result/error text.
- * @param {UiToolCall} call
- * @param {import('./api.js').ToolOutcome} outcome
- */
-function applyOutcome(call, outcome) {
-	if (outcome === 'interrupted') {
-		call.status = 'error';
-		call.error = 'Tool call was interrupted.';
-	} else if ('success' in outcome) {
-		call.status = 'done';
-		call.result = toolText(outcome.success.content);
-	} else if ('error' in outcome) {
-		call.status = 'error';
-		call.error = toolText(outcome.error.error);
-	} else if ('denied' in outcome) {
-		call.status = 'denied';
-		call.error = outcome.denied.reason ?? 'Tool call was denied.';
-	}
-}
-
-/** @param {import('./api.js').ToolData[]} content */
-function toolText(content) {
-	return content.map((item) => item.text.text).join('');
 }

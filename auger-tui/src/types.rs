@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -68,16 +69,16 @@ pub enum AppEvent {
         read_token: String,
         context_window: u64,
     },
-    /// Snapshot lines (NDJSON) — the app layer interprets them into ChatItems
+    /// Snapshot lines (NDJSON records), folded into the transcript.
     SnapshotLines(Vec<String>),
     Sse(SseEvent),
     NetworkError(String),
 }
 
-// ── SSE event types ──────────────────────────────────────────────────────────
+// -- SSE event types ----------------------------------------------------------
 // The server emits flat JSON with a "type" field, e.g.:
 //   { "type": "text_delta", "text": "..." }
-//   { "type": "tool_call", "id": "...", "name": "...", "arguments": "..." }
+//   { "type": "record", "record": { "seq": 3, "type": "stream", ... } }
 
 #[derive(Debug)]
 pub enum SseEvent {
@@ -106,39 +107,22 @@ pub enum SseEvent {
         name: String,
         arguments: String,
     },
-    /// The approval policy allowed a call; `node` names who.
-    ToolAuto {
-        id: String,
-        node: String,
-    },
-    ToolResult {
-        id: String,
-        content: String,
-        /// The server refused or the user denied the call; the UI shows this
-        /// differently from a normal result.
-        denied: bool,
-    },
-    Metrics {
-        prompt_tokens: Option<u64>,
-        cached_tokens: Option<u64>,
-        completion_tokens: Option<u64>,
-        total_tokens: Option<u64>,
-    },
-    TurnComplete,
-    /// A call was denied: the session waits for the next user message.
+    /// A tool phase ended with a denial: the session waits for the next message.
     ToolResultsWithheld,
     /// A restored session called tools that are no longer offered.
     ToolsMissing {
         names: Vec<String>,
     },
-    Interrupted,
+    /// A session record, folded into the transcript.
+    Record(Value),
     StreamClosed,
-    StreamError {
+    /// A frame that could not be parsed.
+    Error {
         message: String,
     },
 }
 
-/// Flat JSON event matching the server's session_event_json output.
+/// Flat JSON event matching the server's SessionEvent output.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RawSessionEvent {
@@ -158,36 +142,21 @@ pub enum RawSessionEvent {
         name: String,
         arguments: String,
     },
-    Done {
-        usage: Option<RawUsage>,
-        #[serde(rename = "stop_reason")]
-        stop_reason: Option<String>,
-    },
     ToolConsentRequired {
         tool_calls: Vec<RawToolCallRequest>,
-    },
-    ToolCallResult {
-        id: String,
-        result: RawToolCallResult,
-    },
-    ToolPolicyDecision {
-        id: String,
-        decision: String,
-        node: String,
     },
     ToolResultsWithheld,
     ToolsMissing {
         names: Vec<String>,
     },
-    Interrupted,
-    StreamError {
-        error: String,
+    Record {
+        record: Value,
     },
     Closed,
 }
 
 /// A tool call inside `tool_consent_required`. The server serialises
-/// `ToolCallRequest` directly, so these are plain objects with no `type` tag —
+/// `ToolCallRequest` directly, so these are plain objects with no `type` tag -
 /// treating them as a tagged enum fails with "missing field `type`".
 #[derive(Debug, Deserialize)]
 pub struct RawToolCallRequest {
@@ -195,57 +164,6 @@ pub struct RawToolCallRequest {
     pub name: String,
     #[serde(default)]
     pub arguments: String,
-}
-
-/// The `result` of a `tool_call_result` event. The server serialises the whole
-/// `ToolCallResult` object, not a plain string: expecting a string here failed
-/// with "invalid type: map, expected a string".
-#[derive(Debug, Deserialize)]
-pub struct RawToolCallResult {
-    pub outcome: RawToolOutcome,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RawToolOutcome {
-    Success { content: Vec<RawToolData> },
-    Error { error: Vec<RawToolData> },
-    Denied { reason: Option<String> },
-    Interrupted,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RawToolData {
-    Text { text: String },
-}
-
-impl RawToolOutcome {
-    /// Flatten an outcome into the text the UI shows under the tool call.
-    fn into_text(self) -> String {
-        fn join(data: Vec<RawToolData>) -> String {
-            data.into_iter()
-                .map(|RawToolData::Text { text }| text)
-                .collect::<Vec<_>>()
-                .join("")
-        }
-        match self {
-            RawToolOutcome::Success { content } => join(content),
-            RawToolOutcome::Error { error } => join(error),
-            RawToolOutcome::Denied { reason } => {
-                reason.unwrap_or_else(|| "Tool call was denied.".into())
-            }
-            RawToolOutcome::Interrupted => "Tool call was interrupted.".into(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RawUsage {
-    pub prompt_tokens: Option<u64>,
-    pub cached_tokens: Option<u64>,
-    pub completion_tokens: Option<u64>,
-    pub total_tokens: Option<u64>,
 }
 
 /// Transform a raw server event into one or more UI events.
@@ -273,19 +191,6 @@ pub fn transform_raw_event(ev: RawSessionEvent) -> Vec<SseEvent> {
             name,
             arguments,
         }],
-        RawSessionEvent::Done { usage, .. } => {
-            let mut out = Vec::new();
-            if let Some(u) = usage {
-                out.push(SseEvent::Metrics {
-                    prompt_tokens: u.prompt_tokens,
-                    cached_tokens: u.cached_tokens,
-                    completion_tokens: u.completion_tokens,
-                    total_tokens: u.total_tokens,
-                });
-            }
-            out.push(SseEvent::TurnComplete);
-            out
-        }
         // Consent lists whole tool calls, so they are complete by definition.
         RawSessionEvent::ToolConsentRequired { tool_calls } => tool_calls
             .into_iter()
@@ -295,25 +200,9 @@ pub fn transform_raw_event(ev: RawSessionEvent) -> Vec<SseEvent> {
                 arguments: tc.arguments,
             })
             .collect(),
-        RawSessionEvent::ToolCallResult { id, result } => {
-            let denied = matches!(result.outcome, RawToolOutcome::Denied { .. });
-            vec![SseEvent::ToolResult {
-                id,
-                content: result.outcome.into_text(),
-                denied,
-            }]
-        }
-        // A denial is followed by its tool_call_result, which marks it.
-        RawSessionEvent::ToolPolicyDecision { id, decision, node } => match decision.as_str() {
-            "allowed" => vec![SseEvent::ToolAuto { id, node }],
-            _ => vec![],
-        },
-        RawSessionEvent::Interrupted => vec![SseEvent::Interrupted],
         RawSessionEvent::ToolResultsWithheld => vec![SseEvent::ToolResultsWithheld],
         RawSessionEvent::ToolsMissing { names } => vec![SseEvent::ToolsMissing { names }],
-        RawSessionEvent::StreamError { error } => {
-            vec![SseEvent::StreamError { message: error }]
-        }
+        RawSessionEvent::Record { record } => vec![SseEvent::Record(record)],
         RawSessionEvent::Closed => vec![SseEvent::StreamClosed],
     }
 }
