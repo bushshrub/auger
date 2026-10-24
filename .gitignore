@@ -1,6 +1,7 @@
 /target
 .claude/settings.local.json
 .idea/
+.env
 .pnpm-store/
 .DS_Store
 .mcp.json

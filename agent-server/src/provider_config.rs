@@ -8,12 +8,14 @@ use tracing::error;
 use tracing::info;
 
 const DEFAULT_OPENAI_BASE_URL: &str = "http://server-slop:8080/v1/";
+const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderType {
     Anthropic,
     OpenAiChatCompletions,
     OpenAiResponses,
+    DeepSeek,
 }
 
 impl ProviderType {
@@ -24,11 +26,22 @@ impl ProviderType {
                 Ok(Self::OpenAiChatCompletions)
             }
             "openai-responses" | "openai_responses" => Ok(Self::OpenAiResponses),
+            "deepseek" => Ok(Self::DeepSeek),
             _ => Err(format!(
                 "unsupported PROVIDER_TYPE '{value}'; expected anthropic, \
-                 openai-chat-completions, or openai-responses"
+                 openai-chat-completions, openai-responses, or deepseek"
             )),
         }
+    }
+}
+
+fn default_base_url(provider_type: ProviderType) -> String {
+    match provider_type {
+        ProviderType::Anthropic => String::new(),
+        ProviderType::OpenAiChatCompletions | ProviderType::OpenAiResponses => {
+            DEFAULT_OPENAI_BASE_URL.to_string()
+        }
+        ProviderType::DeepSeek => DEFAULT_DEEPSEEK_BASE_URL.to_string(),
     }
 }
 
@@ -55,10 +68,11 @@ pub(crate) fn from_config(config: &Config) -> Arc<dyn LlmProvider> {
                 user_agent.clone(),
             ))
         }
+        // deepseek uses openai chat completion
         ProviderType::OpenAiChatCompletions => {
             let base_url = config
                 .provider_base_url()
-                .unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
+                .unwrap_or_else(|| default_base_url(provider_type));
             info!(provider_type = ?provider_type, base_url = %base_url, "configured LLM provider");
             Arc::new(OpenAiChatCompletionsProvider::with_user_agent(
                 api_key,
@@ -66,10 +80,23 @@ pub(crate) fn from_config(config: &Config) -> Arc<dyn LlmProvider> {
                 user_agent.clone(),
             ))
         }
+
+        ProviderType::DeepSeek => {
+            let base_url = config
+                .provider_base_url()
+                .unwrap_or_else(|| default_base_url(provider_type));
+            info!(provider_type = ?provider_type, base_url = %base_url, "configured LLM provider");
+            Arc::new(OpenAiChatCompletionsProvider::with_user_agent(
+                api_key,
+                base_url,
+                user_agent.clone(),
+            ))
+        }
+
         ProviderType::OpenAiResponses => {
             let base_url = config
                 .provider_base_url()
-                .unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
+                .unwrap_or_else(|| default_base_url(provider_type));
             info!(provider_type = ?provider_type, base_url = %base_url, "configured LLM provider");
             Arc::new(OpenAiResponsesProvider::with_user_agent(
                 api_key, base_url, user_agent,
@@ -88,7 +115,7 @@ pub(crate) fn from_env_for_test() -> Arc<dyn LlmProvider> {
 
 #[cfg(test)]
 mod tests {
-    use super::ProviderType;
+    use super::{DEFAULT_DEEPSEEK_BASE_URL, ProviderType, default_base_url};
 
     #[test]
     fn parses_supported_provider_types() {
@@ -103,6 +130,18 @@ mod tests {
         assert_eq!(
             ProviderType::parse("openai_responses").unwrap(),
             ProviderType::OpenAiResponses
+        );
+        assert_eq!(
+            ProviderType::parse("deepseek").unwrap(),
+            ProviderType::DeepSeek
+        );
+    }
+
+    #[test]
+    fn deepseek_uses_deepseek_base_url_by_default() {
+        assert_eq!(
+            default_base_url(ProviderType::DeepSeek),
+            DEFAULT_DEEPSEEK_BASE_URL
         );
     }
 }
