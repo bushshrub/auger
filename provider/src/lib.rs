@@ -1,11 +1,11 @@
 pub mod capabilities;
 pub mod model;
-pub mod thread;
 pub mod types;
 
-pub use capabilities::{ModelCatalog, ModelId, ModelInfo};
+pub use capabilities::ModelCatalog;
+pub use capabilities::ModelId;
+pub use capabilities::ModelInfo;
 pub use model::LlmModel;
-pub use thread::{AnyThread, LlmThread, LlmThreadState, RestoreThreadError};
 pub use types::*;
 
 /// A connection to a language model API: endpoint, credentials, wire format.
@@ -15,7 +15,14 @@ pub use types::*;
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
     /// Get a non-streaming response from the clanker
-    async fn complete(&self, model: &str, request: LlmRequest) -> Result<LlmResponse, LlmError>;
+    async fn complete(
+        &self,
+        model: &str,
+        request: LlmRequest,
+    ) -> Result<CompletedLlmResponse, LlmError>;
+
     /// Let the clanker yap over an abortable stream.
-    async fn stream(&self, model: &str, request: LlmRequest) -> Result<LlmStream, LlmError>;
+    ///
+    /// Downstream provider implementations should put each event into the sink.
+    async fn stream(&self, model: &str, request: LlmRequest, sink: EventSink<'_>) -> Result<StreamEnd, LlmError>;
 }

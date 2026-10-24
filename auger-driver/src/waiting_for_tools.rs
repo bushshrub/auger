@@ -1,62 +1,67 @@
-use crate::agent::{ReadyToStream, State, TypedAgent};
-use crate::tool_batch::{Resolved, Resolving, ToolBatch};
-use provider::thread::ToolResultsPending;
-use provider::{LlmThread, ToolCallRequest};
+use crate::agent::{pending_tool_calls, HarnessEntry, Prompt, ReadyToStream};
+use crate::agent::State;
+use crate::agent::TypedAgent;
+use crate::tool_batch::Resolved;
+use crate::tool_batch::Unresolved;
+use crate::tool_batch::ToolBatch;
+use provider::AssistantResponse;
+use provider::ToolCallRequest;
 
 /// The LLM has requested tool calls and the driver
 /// is waiting for the tool call's results to be provided back.
-pub struct WaitingForToolResponses {
-    pub(crate) thread: LlmThread<ToolResultsPending>,
-}
+pub struct WaitingForToolResponses;
 
 impl State for WaitingForToolResponses {}
 
 impl TypedAgent<WaitingForToolResponses> {
-    /// Clone the committed messages in the current thread.
-    pub fn snapshot(&self) -> Vec<provider::Message> {
-        self.state.thread.messages().to_vec()
+    pub fn previous_message(&self) -> &AssistantResponse {
+        self.last_output().expect(
+            "auger driver state invariant violation: an output turn must precede the \
+             WaitingForToolResponses state",
+        )
+    }
+
+    fn get_tool_calls(&self) -> Vec<ToolCallRequest> {
+        pending_tool_calls(&self.turns)
     }
 
     /// Get all the tool names from the tool calls that were requested.
     pub fn tool_names_requested(&self) -> Vec<String> {
-        self.state
-            .thread
-            .get_pending_tool_calls()
-            .iter()
-            .map(|call| call.name.clone())
+        self.get_tool_calls()
+            .into_iter()
+            .map(|call| call.name)
             .collect()
     }
 
     pub fn get_requested_tools(&self) -> Vec<ToolCallRequest> {
-        self.state.thread.get_pending_tool_calls()
+        self.get_tool_calls()
     }
 
-    /// Get the batch of tool calls that were requested.
-    pub fn get_batch(&self) -> ToolBatch<Resolving> {
-        ToolBatch::new(self.state.thread.get_pending_tool_calls())
+    /// The unanswered calls, to be resolved by the host.
+    pub fn get_batch(&self) -> ToolBatch<Unresolved> {
+        ToolBatch::new(self.get_tool_calls())
+    }
+
+    /// Inject a prompt. This is useful for things like steering.
+    pub fn inject(mut self, prompt: Prompt) -> Self {
+        self.push_input(prompt.into());
+        self
     }
 
     /// Submit a valid batch of tool responses.
     pub fn add_all_tool_responses(
-        self,
+        mut self,
         responses: ToolBatch<Resolved>,
     ) -> TypedAgent<ReadyToStream> {
-        let mut thread = self.state.thread;
-
-        for response in responses.drain() {
-            thread = match thread.add_tool_result(response) {
-                Ok(either::Either::Left(thread)) => thread,
-                Ok(either::Either::Right(thread)) => {
-                    return TypedAgent {
-                        model: self.model,
-                        tools: self.tools,
-                        state: ReadyToStream::new(thread),
-                    };
-                }
-                Err(error) => panic!("completed tool batch contained invalid result: {error}"),
-            };
+        for result in responses.into_results() {
+            self.push_input(HarnessEntry::ToolResult(result).into());
         }
-
-        panic!("completed tool batch did not resolve all requested calls");
+        TypedAgent {
+            model: self.model,
+            turns: self.turns,
+            system_prompt: self.system_prompt,
+            tools: self.tools,
+            state: ReadyToStream {},
+        }
     }
 }

@@ -4,7 +4,7 @@
 //! conversation and returns the next valid state after each LLM turn.
 //!
 //! ```no_run
-//! use auger_driver::{StreamResult, TypedAgent, WaitingForUserMessage};
+//! use auger_driver::{Prompt, StreamResult, TypedAgent, WaitingForUserMessage};
 //! use provider::{LlmModel, ToolDefinition, UserPrompt};
 //!
 //! async fn run_agent(model: LlmModel) {
@@ -14,37 +14,48 @@
 //!         "You are a helpful coding agent.".to_string(),
 //!         tools,
 //!     )
-//!     .add_message(UserPrompt::new("Inspect the repository.".to_string()));
+//!     .add_message(Prompt::User(UserPrompt::new(
+//!         "Inspect the repository.".to_string(),
+//!     )));
 //!
-//!     match agent.create_stream().await {
-//!         StreamResult::WaitingForUserMessage(_) => {}
-//!         StreamResult::WaitingForToolResponses(agent) => {
-//!             let pending_tools = agent.get_batch();
-//!             let _ = (pending_tools, execute_tools);
+//!     match agent.create_stream(|_event| {}).await {
+//!         StreamResult::WaitingForUserMessage { .. } => {}
+//!         StreamResult::WaitingForToolResponses { agent, .. } => {
+//!             let _ = agent.get_requested_tools();
 //!         }
-//!         StreamResult::Interrupted(_) | StreamResult::Failed(_) => {}
+//!         StreamResult::Interrupted(_) | StreamResult::Failed { .. } => {}
 //!     }
 //! }
 //!
 //! fn load_tool_definitions() -> Vec<ToolDefinition> {
 //!     todo!("construct the available tool definitions")
 //! }
-//!
-//! async fn execute_tools(
-//!     pending_tools: auger_driver::ToolBatch<auger_driver::Resolving>,
-//! ) -> auger_driver::ToolBatch<auger_driver::Resolved> {
-//!     todo!("apply policy, execute tools, and return a resolved batch")
-//! }
 //! ```
 
 pub(crate) mod agent;
 pub(crate) mod interrupt_states;
+pub(crate) mod restore;
 pub(crate) mod streaming;
 pub(crate) mod tool_batch;
 pub(crate) mod waiting_for_tools;
 
-pub use agent::{ReadyToStream, State, TypedAgent, WaitingForUserMessage};
-pub use interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
-pub use streaming::{LlmStreaming, StreamResult};
-pub use tool_batch::{AddToolResponseIssue, Resolved, Resolving, ToolBatch, ToolBatchState};
+pub use agent::Turn;
+pub use agent::InputEntry;
+pub use agent::HarnessEntry;
+pub use agent::Prompt;
+pub use agent::ReadyToStream;
+pub use agent::State;
+pub use agent::TypedAgent;
+pub use agent::WaitingForUserMessage;
+pub use interrupt_states::LlmStreamingInterrupted;
+pub use restore::RestoreState;
+pub use restore::RestoredAgent;
+pub use restore::restore;
+pub use streaming::LlmStreaming;
+pub use streaming::StreamResult;
+pub use tool_batch::Resolved;
+pub use tool_batch::ToolBatch;
+pub use tool_batch::ToolBatchState;
+pub use tool_batch::ToolCallId;
+pub use tool_batch::Unresolved;
 pub use waiting_for_tools::WaitingForToolResponses;

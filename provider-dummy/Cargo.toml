@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-async-trait = "0.1.89"
-futures = "0.3.32"
-provider = { version = "0.1.0", path = "../provider" }
+async-trait.workspace = true
+futures.workspace = true
+provider.workspace = true
 tracing.workspace = true

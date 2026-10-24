@@ -1,8 +1,10 @@
+use auger_core::JsonSchema;
+use auger_core::Tool;
+use auger_core::ToolDetails;
+use auger_core::ToolError;
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::fs;
-
-use agent_tools::{JsonSchema, Tool, ToolCallResult, ToolDetails, ToolError};
 
 pub struct WriteFile;
 
@@ -10,9 +12,10 @@ pub struct WriteFile;
 impl Tool for WriteFile {
     fn details(&self) -> ToolDetails {
         ToolDetails {
-            name: "write_file",
-            description: "Write content to a file, creating it (and any missing parent directories) \
-                if it does not exist, or overwriting it if it does.",
+            name: "write_file".to_string(),
+            description: "Write content to a file, creating it (and any missing parent \
+                          directories) if it does not exist, or overwriting it if it does."
+                .to_string(),
         }
     }
 
@@ -33,7 +36,7 @@ impl Tool for WriteFile {
         }))
     }
 
-    async fn call(&self, args: serde_json::Value) -> Result<ToolCallResult, ToolError> {
+    async fn call(&self, args: serde_json::Value) -> Result<String, ToolError> {
         let path = args["path"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArgs("missing required field: path".into()))?;
@@ -50,8 +53,8 @@ impl Tool for WriteFile {
         fs::write(path, content).await?;
 
         let lines = content.lines().count();
-        Ok(ToolCallResult::success(
+        Ok(
             json!({ "success": true, "path": path, "lines_written": lines }).to_string(),
-        ))
+        )
     }
 }

@@ -1,13 +1,14 @@
+use crate::types::AppEvent;
+use crate::types::RawSessionEvent;
+use crate::types::SessionInfo;
+use crate::types::SseEvent;
+use crate::types::TuiEvent;
+use crate::types::transform_raw_event;
 use futures::StreamExt;
 use reqwest::Client;
 use serde_json::json;
 use tokio::sync::mpsc;
 use uuid::Uuid;
-
-use crate::types::{
-    AppEvent, RawSessionEvent, SessionInfo, SnapshotMessage, SseEvent, TuiEvent,
-    transform_raw_event,
-};
 
 fn parse_sse_data(frame: &str) -> Option<String> {
     let lines: Vec<&str> = frame.lines().collect();
@@ -39,15 +40,12 @@ pub async fn list_sessions(server: &str) -> anyhow::Result<Vec<SessionInfo>> {
         .filter_map(|s| {
             let session_id = s["session_id"].as_str()?.parse::<Uuid>().ok()?;
             let model = s["model"].as_str().unwrap_or("unknown").to_string();
-            let created_at = s["created_at"].as_u64().unwrap_or(0);
             let context_window = s["context_window"].as_u64().unwrap_or(8192);
-            // agent-server returns tokens.read / tokens.write (not owner_token/viewer_token)
             let write_token = s["tokens"]["write"].as_str().unwrap_or("").to_string();
             let read_token = s["tokens"]["read"].as_str().unwrap_or("").to_string();
             Some(SessionInfo {
                 session_id,
                 model,
-                created_at,
                 context_window,
                 write_token,
                 read_token,
@@ -125,32 +123,25 @@ pub async fn respond_to_tool(
     Ok(())
 }
 
+/// Fetch the snapshot as NDJSON (TraceWriter output) and return the raw lines.
 pub async fn get_snapshot(
     server: &str,
     session_id: Uuid,
-    token: &str,
-) -> anyhow::Result<Vec<SnapshotMessage>> {
+    _token: &str,
+) -> anyhow::Result<Vec<String>> {
     let client = Client::new();
-    let resp: serde_json::Value = client
+    let resp = client
         .get(format!("{server}/sessions/{session_id}/snapshot"))
-        .header("Authorization", format!("Bearer {token}"))
+        .header("Authorization", format!("Bearer {_token}"))
         .send()
-        .await?
-        .json()
         .await?;
 
-    let messages = resp["messages"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|m| serde_json::from_value(m).ok())
-        .collect();
-
-    Ok(messages)
+    let text = resp.text().await?;
+    Ok(text.lines().map(String::from).collect())
 }
 
-/// Spawn a task that loads the snapshot then streams SSE events, both forwarded to `tx`.
+/// Spawn a task that loads the snapshot then streams SSE events, both forwarded
+/// to `tx`.
 pub fn spawn_event_stream(
     server: String,
     session_id: Uuid,
@@ -160,16 +151,17 @@ pub fn spawn_event_stream(
     tokio::spawn(async move {
         // Load snapshot first so history is populated before live events arrive.
         match get_snapshot(&server, session_id, &token).await {
-            Ok(msgs) => {
-                let _ = tx.send(TuiEvent::App(AppEvent::SnapshotLoaded(msgs))).await;
+            Ok(lines) => {
+                let _ = tx.send(TuiEvent::App(AppEvent::SnapshotLines(lines))).await;
             }
             Err(_) => {} // non-fatal: continue with empty history
         }
 
         let client = Client::new();
+        // The event stream uses a broadcast channel on the server side; no auth
+        // header is needed.
         let resp = match client
             .get(format!("{server}/sessions/{session_id}/events"))
-            .header("Authorization", format!("Bearer {token}"))
             .send()
             .await
         {

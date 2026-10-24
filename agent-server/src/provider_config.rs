@@ -1,12 +1,11 @@
-use std::sync::Arc;
-
+use crate::config::Config;
 use provider::LlmProvider;
 use provider_anthropic::AnthropicProvider;
 use provider_openai_chatcompletions::OpenAiChatCompletionsProvider;
 use provider_openai_responses::OpenAiResponsesProvider;
-use tracing::{error, info};
-
-use crate::config::Config;
+use std::sync::Arc;
+use tracing::error;
+use tracing::info;
 
 const DEFAULT_OPENAI_BASE_URL: &str = "http://server-slop:8080/v1/";
 const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
@@ -29,7 +28,8 @@ impl ProviderType {
             "openai-responses" | "openai_responses" => Ok(Self::OpenAiResponses),
             "deepseek" => Ok(Self::DeepSeek),
             _ => Err(format!(
-                "unsupported PROVIDER_TYPE '{value}'; expected anthropic, openai-chat-completions, or openai-responses"
+                "unsupported PROVIDER_TYPE '{value}'; expected anthropic, \
+                 openai-chat-completions, openai-responses, or deepseek"
             )),
         }
     }
@@ -73,7 +73,7 @@ pub(crate) fn from_config(config: &Config) -> Arc<dyn LlmProvider> {
             let base_url = config
                 .provider_base_url()
                 .unwrap_or_else(|| default_base_url(provider_type));
-
+            info!(provider_type = ?provider_type, base_url = %base_url, "configured LLM provider");
             Arc::new(OpenAiChatCompletionsProvider::with_user_agent(
                 api_key,
                 base_url,
@@ -85,7 +85,7 @@ pub(crate) fn from_config(config: &Config) -> Arc<dyn LlmProvider> {
             let base_url = config
                 .provider_base_url()
                 .unwrap_or_else(|| default_base_url(provider_type));
-
+            info!(provider_type = ?provider_type, base_url = %base_url, "configured LLM provider");
             Arc::new(OpenAiChatCompletionsProvider::with_user_agent(
                 api_key,
                 base_url,

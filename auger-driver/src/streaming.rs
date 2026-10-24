@@ -1,19 +1,23 @@
 //! State when LLM is streaming the response back.
-//!
 
-use crate::agent::{TypedAgent, WaitingForUserMessage};
-use crate::interrupt_states::{LlmStreamingFailed, LlmStreamingInterrupted};
+use crate::agent::{convert_turns_into_messages, Turn, TypedAgent};
+use crate::agent::WaitingForUserMessage;
+use crate::interrupt_states::LlmStreamingInterrupted;
 use crate::waiting_for_tools::WaitingForToolResponses;
-use provider::thread::ClankerTurn;
-use provider::{LlmModel, LlmThread, ToolDefinition};
+use provider::{fold_events, AssistantResponse, LlmError, LlmModel, StreamEnd, StreamEvent};
+use provider::LlmRequest;
+use provider::Message;
+use provider::ToolDefinition;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::Context;
+use std::task::Poll;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 /// Future which when awaited, streams the LLM response.
-/// Once done, returns a StreamResult which gives the result state after streaming.
+/// Once done, returns a StreamResult which gives the result state after
+/// streaming.
 pub struct LlmStreaming {
     cancellation: CancellationToken,
     inner: Pin<Box<dyn Future<Output = StreamResult> + Send>>,
@@ -22,15 +26,17 @@ pub struct LlmStreaming {
 impl LlmStreaming {
     pub(crate) fn new(
         model: LlmModel,
+        system_prompt: String,
         tools: Vec<ToolDefinition>,
-        thread: LlmThread<ClankerTurn>,
+        turns_so_far: Vec<Turn>,
         event_callback: Box<dyn Fn(provider::StreamEvent) + Send + Sync>,
         cancellation: CancellationToken,
     ) -> Self {
         let inner = Box::pin(run_stream(
             model,
             tools,
-            thread,
+            system_prompt,
+            turns_so_far,
             event_callback,
             cancellation.clone(),
         ));
@@ -57,78 +63,85 @@ impl Future for LlmStreaming {
 pub(crate) async fn run_stream(
     model: LlmModel,
     tools: Vec<ToolDefinition>,
-    thread: LlmThread<ClankerTurn>,
+    system_prompt: String,
+    mut turns_so_far: Vec<Turn>,
     event_callback: impl Fn(provider::StreamEvent) + Send + Sync + 'static,
     cancellation: CancellationToken,
 ) -> StreamResult {
     let mut events = Vec::new();
-    let request = thread.create_request(tools.clone());
-    let mut stream = tokio::select! {
-        result = model.stream(request) => match result {
-            Ok(stream) => stream,
+    let mut sink = |event: StreamEvent| {
+        event_callback(event.clone());
+        events.push(event);
+    };
+    let mut messages = vec![Message::System(system_prompt.clone())];
+    messages.extend(convert_turns_into_messages(turns_so_far.clone()));
+    let request = LlmRequest::new(messages, tools.clone());
+    tokio::select! {
+        result = model.stream(request, &mut sink) => match result {
+            Ok(stream) => {
+                let (resp, token_usage) = fold_events(&events);
+                // The adapter reports usage if it can; otherwise fall back to
+                // whatever the stream itself carried.
+                let end = StreamEnd {
+                    usage: stream.usage.or(token_usage),
+                    stop_reason: stream.stop_reason,
+                };
+                let clanker_msg = AssistantResponse::new(resp).expect("there to be blocks");
+                let has_tool_calls = !clanker_msg.tool_calls().is_empty();
+                turns_so_far.push(Turn::Output(clanker_msg));
+                if !has_tool_calls {
+                    StreamResult::WaitingForUserMessage {
+                        agent: TypedAgent {
+                            model,
+                            tools,
+                            system_prompt,
+                            turns: turns_so_far,
+                            state: WaitingForUserMessage {},
+                        },
+                        end,
+                    }
+                } else {
+                    StreamResult::WaitingForToolResponses {
+                        agent: TypedAgent {
+                            model,
+                            tools,
+                            system_prompt,
+                            turns: turns_so_far,
+                            state: WaitingForToolResponses {},
+                        },
+                        end,
+                    }
+                }
+            },
             Err(error) => {
+                let (resp, _) = fold_events(&events);
                 error!(model = %model.name(), error = %error, "failed to start provider stream");
-                return StreamResult::Failed(TypedAgent {
-                    model,
-                    tools,
-                    state: LlmStreamingFailed::new(thread, events, error),
-                });
+                StreamResult::Failed {
+                    agent: TypedAgent {
+                        model,
+                        tools,
+                        system_prompt,
+                        turns: turns_so_far,
+                        state: LlmStreamingInterrupted {
+                            partial: AssistantResponse::from_interrupted(resp),
+                        },
+                    },
+                    error
+                }
             }
         },
         _ = cancellation.cancelled() => {
-            return StreamResult::Interrupted(TypedAgent {
+            let (resp, _) = fold_events(&events);
+            StreamResult::Interrupted(TypedAgent {
                 model,
                 tools,
-                state: LlmStreamingInterrupted::new(thread, events),
-            });
+                system_prompt,
+                turns: turns_so_far,
+                state: LlmStreamingInterrupted {
+                    partial: AssistantResponse::from_interrupted(resp),
+                }
+            })
         },
-    };
-
-    loop {
-        let event = tokio::select! {
-            event = futures::StreamExt::next(&mut stream) => event,
-            _ = cancellation.cancelled() => {
-                stream.abort();
-
-                return StreamResult::Interrupted(TypedAgent {
-                    model,
-                    tools,
-                state: LlmStreamingInterrupted::new(thread, events),
-                });
-            }
-        };
-
-        match event {
-            Some(Ok(event)) => {
-                event_callback(event.clone());
-                events.push(event);
-            }
-            Some(Err(error)) => {
-                error!(model = %model.name(), error = %error, "provider stream failed");
-                return StreamResult::Failed(TypedAgent {
-                    model,
-                    tools,
-                    state: LlmStreamingFailed::new(thread, events, error),
-                });
-            }
-            None => break,
-        }
-    }
-
-    let response = provider::LlmResponse::from(events);
-    let clanker_message = provider::ClankerMessage::from(response);
-
-    match thread.add_clanker_reply(clanker_message) {
-        either::Either::Left(thread) => StreamResult::WaitingForUserMessage(TypedAgent {
-            model,
-            tools,
-            state: WaitingForUserMessage { thread },
-        }),
-        either::Either::Right(thread) => StreamResult::WaitingForToolResponses(TypedAgent {
-            model,
-            tools,
-            state: WaitingForToolResponses { thread },
-        }),
     }
 }
 
@@ -138,9 +151,18 @@ pub enum StreamResult {
     Interrupted(TypedAgent<LlmStreamingInterrupted>),
     /// An error occurred while trying to start the stream, or in the middle
     /// of streaming
-    Failed(TypedAgent<LlmStreamingFailed>),
+    Failed {
+        agent: TypedAgent<LlmStreamingInterrupted>,
+        error: LlmError,
+    },
     /// Stream completed successfully and the LLM has called tools
-    WaitingForToolResponses(TypedAgent<WaitingForToolResponses>),
+    WaitingForToolResponses {
+        agent: TypedAgent<WaitingForToolResponses>,
+        end: StreamEnd,
+    },
     /// Stream completed successfully and the LLM has not called any tools
-    WaitingForUserMessage(TypedAgent<WaitingForUserMessage>),
+    WaitingForUserMessage {
+        agent: TypedAgent<WaitingForUserMessage>,
+        end: StreamEnd,
+    },
 }

@@ -111,6 +111,9 @@ base_url = "https://example.test"
         assert_eq!(config.user_agent.as_deref(), Some("my-client/1.0"));
         assert_eq!(config.provider.kind.as_deref(), Some("anthropic"));
         assert_eq!(config.provider.api_key.as_deref(), Some("secret"));
-        assert_eq!(config.provider.base_url.as_deref(), Some("https://example.test"));
+        assert_eq!(
+            config.provider.base_url.as_deref(),
+            Some("https://example.test")
+        );
     }
 }

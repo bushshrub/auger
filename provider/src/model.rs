@@ -1,4 +1,7 @@
-use crate::{LlmError, LlmProvider, LlmRequest, LlmResponse, LlmStream};
+use crate::{CompletedLlmResponse, EventSink, StreamEnd};
+use crate::LlmError;
+use crate::LlmProvider;
+use crate::LlmRequest;
 use std::fmt;
 use std::sync::Arc;
 
@@ -31,12 +34,12 @@ impl LlmModel {
     }
 
     /// Get a non-streaming response from the clanker
-    pub async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, LlmError> {
+    pub async fn complete(&self, request: LlmRequest) -> Result<CompletedLlmResponse, LlmError> {
         self.provider.complete(&self.name, request).await
     }
 
     /// Let the clanker yap over a stream
-    pub async fn stream(&self, request: LlmRequest) -> Result<LlmStream, LlmError> {
-        self.provider.stream(&self.name, request).await
+    pub async fn stream(&self, request: LlmRequest, event_sink: EventSink<'_>) -> Result<StreamEnd, LlmError> {
+        self.provider.stream(&self.name, request, event_sink).await
     }
 }

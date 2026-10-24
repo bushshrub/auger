@@ -1,0 +1,85 @@
+use crate::SessionEvent;
+use crate::SessionHandle;
+use crate::SystemPrompt;
+use crate::harness::session::Session;
+use crate::record::SessionRecord;
+use crate::record::event::EventRecord;
+use crate::record::recorder::EventCallback;
+use crate::record::recorder::SessionRecorder;
+use crate::record::recorder::TurnCallback;
+use crate::record::session::ModelInfo;
+use crate::record::session::SessionData;
+use crate::record::session::SessionId;
+use crate::record::turn::TurnId;
+use crate::record::turn::TurnRecord;
+use crate::tool::Tool;
+use provider::LlmModel;
+use std::env::current_dir;
+use std::sync::Arc;
+use std::sync::mpsc::Receiver;
+use tokio::runtime::Handle;
+
+pub struct SessionBuilder {
+    record: SessionRecord,
+    on_turn: TurnCallback,
+    on_event: EventCallback,
+}
+
+impl SessionBuilder {
+    pub fn new(model_name: String) -> Self {
+        let id = SessionId::new();
+        let record = SessionRecord::new(
+            id,
+            current_dir().expect("no cwd"),
+            ModelInfo::new("to-be-added".to_string(), model_name),
+        );
+        Self {
+            record,
+            on_turn: Arc::new(|_, _| {}),
+            on_event: Arc::new(|_, _| {}),
+        }
+    }
+
+    pub fn restore(record: SessionRecord) -> Self {
+        Self {
+            record,
+            on_turn: Arc::new(|_, _| {}),
+            on_event: Arc::new(|_, _| {}),
+        }
+    }
+
+    pub fn id(&self) -> SessionId {
+        self.record.data().session_id()
+    }
+
+    pub fn session_data(&self) -> &SessionData {
+        self.record.data()
+    }
+
+    pub fn on_turn(mut self, cb: impl Fn(TurnId, &TurnRecord) + Send + Sync + 'static) -> Self {
+        self.on_turn = Arc::new(cb);
+        self
+    }
+
+    pub fn on_event(mut self, cb: impl Fn(TurnId, &EventRecord) + Send + Sync + 'static) -> Self {
+        self.on_event = Arc::new(cb);
+        self
+    }
+
+    pub fn start(
+        self,
+        model: LlmModel,
+        system_prompt: SystemPrompt,
+        rt: Handle,
+        tools: Vec<Box<dyn Tool>>,
+    ) -> (SessionHandle, Receiver<SessionEvent>) {
+        let recorder = SessionRecorder::new(self.record, self.on_turn, self.on_event);
+        Session::spawn(
+            rt,
+            system_prompt,
+            recorder,
+            model,
+            tools,
+        )
+    }
+}

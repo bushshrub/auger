@@ -1,107 +1,82 @@
+use crate::server_types::ApproveRequest;
+use crate::stream_events::BlockTracker;
+use crate::server_types::CreateSessionRequest;
+use crate::server_types::SessionEntry;
+use crate::server_types::UserInputRequest;
+use auger_core::SessionBuilder;
+use auger_core::SessionCommand;
+use auger_core::SessionEvent;
+use auger_core::SessionHandle;
+use auger_core::SessionId;
+use auger_core::SystemPrompt;
+use auger_core::TraceWriter;
 use axum::Extension;
-use axum::extract::{Path, Request, State};
+use axum::Json;
+use axum::Router;
+use axum::extract::Path;
+use axum::extract::Request;
+use axum::extract::State;
 use axum::http::StatusCode;
+use axum::http::header::CONTENT_TYPE;
+use axum::middleware;
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response, Sse};
-use axum::routing::{delete, get, post};
-use axum::{Json, Router, middleware};
+use axum::response::IntoResponse;
+use axum::response::Response;
+use axum::response::Sse;
+use axum::routing::delete;
+use axum::routing::get;
+use axum::routing::post;
 use futures::StreamExt;
+use provider::LlmModel;
+use provider::LlmProvider;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::BroadcastStream;
-use tracing::{debug, info};
+use tracing::debug;
+use tracing::info;
 use uuid::Uuid;
 
-use crate::server_types::{
-    ApproveRequest, CreateSessionRequest, SessionEntry, SnapshotMessage, UserInputRequest,
-};
-use agent_core::{AutoApprovalPolicies, Session, SessionEvent, SessionHandle, SystemPrompt};
-use provider::{LlmModel, LlmProvider};
-
-mod server_types;
 mod config;
 mod provider_config;
+mod server_types;
+mod stream_events;
 
 const DEFAULT_CONTEXT_WINDOW: usize = 113072;
-const SYSTEM_PROMPT: &str =
-"You are a precise, capable software engineering agent. You have access to tools to read files, run commands, make changes, and search the web.
-
-  Research first:
-  - Before designing or implementing anything non-trivial, use web_search to look up relevant documentation, libraries, APIs, and prior art.
-  - Use fetch_content to read the full text of any search result that looks relevant.
-  - Only proceed to implementation after you understand the landscape.
+const SYSTEM_PROMPT: &str = "You are a precise, capable software engineering agent. Use the \
+                             tools you are given to inspect and change the project.
 
   Guidelines:
   - Think before acting. For ambiguous tasks, clarify once then proceed.
   - Prefer small, targeted changes over large rewrites.
-  - After making changes, verify they work (run tests, build, etc.).
+  - After making changes, verify they work.
   - If a tool call fails, diagnose before retrying.
-  - When done, report what changed and why — not what you did step by step.
+  - When done, report what changed and why - not what you did step by step.
   - Never guess at file paths or API shapes. Read first.
  ";
 
 #[derive(Clone)]
 struct AppState {
     provider: Arc<dyn LlmProvider>,
-    sessions: Arc<RwLock<HashMap<Uuid, SessionEntry>>>,
+    sessions: Arc<RwLock<HashMap<SessionId, SessionEntry>>>,
+    disk_sessions: Arc<RwLock<HashMap<SessionId, DiskSession>>>,
+    activation_lock: Arc<TokioMutex<()>>,
     default_model: String,
 }
 
-async fn write_auth(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    let token = match request.headers().get("Authorization") {
-        Some(v) => v
-            .to_str()
-            .unwrap_or_default()
-            .strip_prefix("Bearer ")
-            .unwrap_or_default()
-            .to_owned(),
-        None => return (StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response(),
-    };
-    let entry = match state.sessions.read().await.get(&id).cloned() {
-        Some(e) => e,
-        None => return (StatusCode::NOT_FOUND, "Session not found").into_response(),
-    };
-    if token != entry.write_token.to_string() {
-        return (StatusCode::UNAUTHORIZED, "Invalid write token").into_response();
-    }
-    request.extensions_mut().insert(entry.handle);
-    next.run(request).await
-}
-
-async fn read_auth(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    let token = match request.headers().get("Authorization") {
-        Some(v) => v
-            .to_str()
-            .unwrap_or_default()
-            .strip_prefix("Bearer ")
-            .unwrap_or_default()
-            .to_owned(),
-        None => return (StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response(),
-    };
-    let entry = match state.sessions.read().await.get(&id).cloned() {
-        Some(e) => e,
-        None => return (StatusCode::NOT_FOUND, "Session not found").into_response(),
-    };
-    if token != entry.read_token.to_string() && token != entry.write_token.to_string() {
-        return (StatusCode::UNAUTHORIZED, "Invalid read token").into_response();
-    }
-    request.extensions_mut().insert(entry.handle);
-    request.extensions_mut().insert(entry.events);
-    next.run(request).await
+struct DiskSession {
+    record: auger_core::SessionRecord,
+    model: String,
+    read_token: Uuid,
+    write_token: Uuid,
+    archived: bool,
+    events: tokio::sync::broadcast::Sender<SessionEvent>,
 }
 
 #[tokio::main]
@@ -117,6 +92,8 @@ async fn main() {
     let state = AppState {
         provider: Arc::clone(&provider),
         sessions: Arc::new(RwLock::new(HashMap::new())),
+        disk_sessions: Arc::new(RwLock::new(HashMap::new())),
+        activation_lock: Arc::new(TokioMutex::new(())),
         default_model: config.model(),
     };
 
@@ -128,24 +105,61 @@ async fn main() {
 }
 
 fn router(state: AppState) -> Router {
-    let write_routes = Router::new()
-        .route("/sessions/{id}", delete(stop_session))
+    let activation_routes = Router::new()
         .route("/sessions/{id}/input", post(send_input))
         .route("/sessions/{id}/tool", post(respond_to_tool_call))
-        .route("/sessions/{id}/interrupt", post(interrupt_session))
-        .route_layer(middleware::from_fn_with_state(state.clone(), write_auth));
-
-    let read_routes = Router::new()
-        .route("/sessions/{id}/events", get(event_stream))
-        .route("/sessions/{id}/snapshot", get(snapshot))
-        .route_layer(middleware::from_fn_with_state(state.clone(), read_auth));
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            resolve_session_extensions,
+        ));
 
     Router::new()
         .route("/openapi.yaml", get(openapi))
         .route("/sessions", get(list_sessions).post(create_session))
-        .merge(write_routes)
-        .merge(read_routes)
+        .route("/sessions/{id}", delete(stop_session))
+        .route("/sessions/{id}/interrupt", post(interrupt_session))
+        .route("/sessions/{id}/events", get(event_stream))
+        .route("/sessions/{id}/snapshot", get(snapshot))
+        .merge(activation_routes)
         .with_state(state)
+}
+
+async fn resolve_session_extensions(
+    State(state): State<AppState>,
+    Path(id): Path<SessionId>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let entry = if let Some(entry) = state.sessions.read().await.get(&id).cloned() {
+        Some(entry)
+    } else {
+        let _activation = state.activation_lock.lock().await;
+        if let Some(entry) = state.sessions.read().await.get(&id).cloned() {
+            Some(entry)
+        } else {
+            let disk = state.disk_sessions.write().await.remove(&id);
+            if let Some(disk) = disk {
+                start_session(
+                    &state,
+                    SessionBuilder::restore(disk.record),
+                    disk.model,
+                    Some((disk.read_token, disk.write_token)),
+                    Some(disk.events),
+                )
+                .await;
+                state.sessions.read().await.get(&id).cloned()
+            } else {
+                None
+            }
+        }
+    };
+    let Some(entry) = entry else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    request.extensions_mut().insert(entry.handle);
+    request.extensions_mut().insert(entry.events);
+    next.run(request).await
 }
 
 async fn openapi() -> impl IntoResponse {
@@ -156,15 +170,17 @@ async fn openapi() -> impl IntoResponse {
 }
 
 /// List all sessions, including archived sessions.
+#[tracing::instrument(skip(state))]
 async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
+    info!("listing sessions");
     let sessions = state.sessions.read().await;
-    let list: Vec<_> = sessions
+    let mut list: Vec<_> = sessions
         .values()
         .map(|e| {
             json!({
                 "session_id": e.handle.id().as_uuid(),
                 "model": e.model,
-                "created_at": e.created_at,
+                "created_at": e.handle.created_at(),
                 "archived": e.archived.load(Ordering::Relaxed),
                 "context_window": DEFAULT_CONTEXT_WINDOW,
                 "tokens": {
@@ -174,6 +190,20 @@ async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
             })
         })
         .collect();
+    let disk_sessions = state.disk_sessions.read().await;
+    list.extend(disk_sessions.values().map(|e| {
+        json!({
+            "session_id": e.record.data().session_id().as_uuid(),
+            "model": e.model,
+            "created_at": e.record.data().created_at(),
+            "archived": e.archived,
+            "context_window": DEFAULT_CONTEXT_WINDOW,
+            "tokens": {
+                "read": e.read_token.to_string(),
+                "write": e.write_token.to_string(),
+            }
+        })
+    }));
     Json(json!({ "sessions": list }))
 }
 
@@ -183,47 +213,42 @@ async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     let model = req.model.unwrap_or_else(|| state.default_model.clone());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let builder = SessionBuilder::new(model.clone());
+    let session_id = builder.id();
+    let (read_token, write_token) =
+        start_session(&state, builder, model.clone(), None, None).await;
+    Json(
+        json!({ "session_id": session_id, "model": model, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
+        "read": read_token,
+        "write": write_token
+    } }),
+    )
+}
+
+async fn start_session(
+    state: &AppState,
+    builder: SessionBuilder,
+    model: String,
+    tokens: Option<(Uuid, Uuid)>,
+    events: Option<tokio::sync::broadcast::Sender<SessionEvent>>,
+) -> (Uuid, Uuid) {
     let sys_prompt = SystemPrompt::new(SYSTEM_PROMPT.to_string()).inject_cwd();
-    let tools: Vec<Box<dyn agent_tools::Tool>> = vec![
+    let tools: Vec<Box<dyn auger_core::Tool>> = vec![
+        // TODO: add WriteFile, EditFile and Shell back once tool consent works.
         Box::new(builtin_tools::ReadFile),
-        Box::new(builtin_tools::WriteFile),
-        Box::new(builtin_tools::EditFile),
-        Box::new(builtin_tools::Glob),
-        Box::new(builtin_tools::Grep),
-        Box::new(builtin_tools::ListFiles),
-        Box::new(builtin_tools::Shell),
-        Box::new(builtin_tools::TodoList::new()),
-        Box::new(builtin_tools::WebSearch::new()),
-        Box::new(builtin_tools::FetchContent::new()),
     ];
-    // Read-only tools and the conservative shell policy run without consent.
-    let auto_approved: Vec<String> = [
-        "read_file",
-        "grep",
-        "glob",
-        "list_files",
-        "todo_list",
-        "web_search",
-        "fetch_content",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    let mut auto_approval = AutoApprovalPolicies::from(auto_approved);
-    auto_approval.add("shell", builtin_tools::BashAutoApprovalPolicy::new(cwd));
-    let (owner, handle, event_receiver) = Session::start_with_tools(
+    let session_id = builder.id();
+    let (handle, event_rx) = builder.start(
         LlmModel::new(state.provider.clone(), &model),
         sys_prompt,
         tokio::runtime::Handle::current(),
         tools,
-        auto_approval,
     );
-    let session_id = handle.id().as_uuid();
-    let (event_tx, _) = tokio::sync::broadcast::channel(256);
+
+    let event_tx = events.unwrap_or_else(|| tokio::sync::broadcast::channel(256).0);
     let forward_tx = event_tx.clone();
     tokio::task::spawn_blocking(move || {
-        while let Ok(event) = event_receiver.recv_event() {
+        while let Ok(event) = event_rx.recv() {
             let closed = matches!(event, SessionEvent::Closed);
             let _ = forward_tx.send(event);
             if closed {
@@ -231,39 +256,41 @@ async fn create_session(
             }
         }
     });
-    let read_token = Uuid::new_v4();
-    let write_token = Uuid::new_v4();
-    let created_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let (read_token, write_token) = tokens.unwrap_or_else(|| (Uuid::new_v4(), Uuid::new_v4()));
     state.sessions.write().await.insert(
         session_id,
         SessionEntry {
             handle,
-            owner: Arc::new(std::sync::Mutex::new(Some(owner))),
             events: event_tx,
             model,
-            created_at,
             read_token,
             write_token,
             archived: Arc::new(AtomicBool::new(false)),
         },
     );
-    Json(
-        json!({ "session_id": session_id, "context_window": DEFAULT_CONTEXT_WINDOW, "tokens": {
-        "read": read_token,
-        "write": write_token
-    } }),
-    )
+    (read_token, write_token)
 }
 
-async fn stop_session(State(state): State<AppState>, Path(id): Path<Uuid>) -> impl IntoResponse {
-    let Some(entry) = state.sessions.read().await.get(&id).cloned() else {
-        return StatusCode::NOT_FOUND;
-    };
-    entry.archived.store(true, Ordering::Relaxed);
-    StatusCode::NO_CONTENT
+async fn stop_session(
+    State(state): State<AppState>,
+    Path(id): Path<SessionId>,
+) -> impl IntoResponse {
+    if let Some(entry) = state.sessions.read().await.get(&id).cloned() {
+        let (reply_tx, _reply_rx) = mpsc::channel();
+        tokio::task::spawn_blocking(move || {
+            entry.handle.send_command(SessionCommand::Stop { reply_tx })
+        })
+        .await
+        .ok();
+        // do I wait for reply_rx? idk.
+        entry.archived.store(true, Ordering::Release);
+        return StatusCode::NO_CONTENT;
+    }
+    if let Some(entry) = state.disk_sessions.write().await.get_mut(&id) {
+        entry.archived = true;
+        return StatusCode::NO_CONTENT;
+    }
+    StatusCode::NOT_FOUND
 }
 
 /// Submit input to the clanker
@@ -273,7 +300,9 @@ async fn send_input(
     Json(req): Json<UserInputRequest>,
 ) -> impl IntoResponse {
     debug!("Enqueued message: '{}'", req.input);
-    session_handle.send_message(req.into()).expect("closed");
+    session_handle
+        .send_command(SessionCommand::SendMessage(req.into()))
+        .expect("closed");
 
     // TODO: bad return type
     Json(json!({ "status": "ok" }))
@@ -289,191 +318,144 @@ async fn respond_to_tool_call(
     span.record("session_id", tracing::field::display(&session_handle.id()));
     span.record("call_id", tracing::field::display(&req.tool_call_id));
     debug!("Tool call approved: {}", req.approved);
-    session_handle
-        .decide_tool_call(req.tool_call_id, req.approved, req.message)
-        .expect("closed");
+    let decision = SessionCommand::ToolDecision {
+        id: req.tool_call_id,
+        approved: req.approved,
+        message: req.message,
+    };
+    session_handle.send_command(decision).expect("closed");
     // TODO: garbage return type
     Json(json!({ "status": "ok" }))
 }
 
-/// Interrupt in-flight generation or tool execution. Fire-and-forget: the
-/// outcome is observed on the event stream (`interrupted` / tool_call_error).
-#[tracing::instrument(skip(session_handle))]
-async fn interrupt_session(
-    Extension(session_handle): Extension<SessionHandle>,
-) -> impl IntoResponse {
-    debug!(session_id = %session_handle.id(), "Interrupt requested");
-    session_handle.interrupt().expect("closed");
-    Json(json!({ "status": "ok" }))
+/// Interrupt what the session is doing right now
+#[tracing::instrument(skip(state))]
+async fn interrupt_session(State(state): State<AppState>, Path(id): Path<SessionId>) -> Response {
+    if let Some(entry) = state.sessions.read().await.get(&id).cloned() {
+        debug!(session_id = %entry.handle.id(), "Interrupt requested");
+        entry
+            .handle
+            .send_command(SessionCommand::Interrupt)
+            .expect("closed");
+    } else if !state.disk_sessions.read().await.contains_key(&id) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "status": "not_found" })),
+        )
+            .into_response();
+    }
+    Json(json!({ "status": "ok" })).into_response()
 }
 
-/// Get a point-in-time snapshot of the session's conversation history.
-async fn snapshot(Extension(session_handle): Extension<SessionHandle>) -> impl IntoResponse {
-    match tokio::task::spawn_blocking(move || session_handle.snapshot()).await {
-        Ok(Ok(snapshot)) => {
-            let snapshot: Vec<SnapshotMessage> = snapshot
-                .messages()
-                .iter()
-                .cloned()
-                .flat_map(SnapshotMessage::from_provider)
-                .collect();
-            Json(json!({ "messages": snapshot })).into_response()
-        }
+/// Get a trace from its running session or, after archival, its JSONL file.
+#[tracing::instrument(skip(state), fields(session_id))]
+async fn snapshot(State(state): State<AppState>, Path(id): Path<SessionId>) -> Response {
+    info!("Getting snapshot");
+    let entry = state.sessions.read().await.get(&id).cloned();
+    if entry
+        .as_ref()
+        .is_some_and(|entry| entry.archived.load(Ordering::Relaxed))
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "can't read archived yet").into_response();
+    }
+
+    let Some(session_handle) = entry.map(|entry| entry.handle) else {
+        let record = state
+            .disk_sessions
+            .read()
+            .await
+            .get(&id)
+            .map(|entry| entry.record.clone());
+        return match record {
+            Some(record) => snapshot_response(&record),
+            None => StatusCode::NOT_FOUND.into_response(),
+        };
+    };
+
+    let (snapshot_tx, snapshot_rx) = mpsc::channel();
+    // what do I do with snapshot_rx?
+    match tokio::task::spawn_blocking(move || {
+        session_handle.send_command(SessionCommand::Snapshot {
+            reply_tx: snapshot_tx,
+        })
+    })
+    .await
+    {
+        Ok(Ok(())) => match snapshot_rx.recv() {
+            Ok(record) => snapshot_response(&record),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "snapshot channel dropped",
+            )
+                .into_response(),
+        },
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "snapshot failed").into_response(),
     }
 }
 
-/// Get a stream of events for a session, including LLM responses and user events.
-#[tracing::instrument(skip(event_tx))]
-async fn event_stream(
-    Extension(event_tx): Extension<tokio::sync::broadcast::Sender<SessionEvent>>,
-) -> impl IntoResponse {
-    let stream = BroadcastStream::new(event_tx.subscribe());
-    Sse::new(stream.filter_map(|result| async move {
-        let event = result.ok()?;
-        let json = serde_json::to_string(&session_event_json(event)).ok()?;
-        Some(Ok::<_, std::convert::Infallible>(
-            axum::response::sse::Event::default().data(json),
-        ))
-    }))
-}
-
-fn session_event_json(event: SessionEvent) -> serde_json::Value {
-    match event {
-        SessionEvent::StreamEvent(event) => match event {
-            provider::StreamEvent::TextDelta(text) => json!({ "type": "text_delta", "text": text }),
-            provider::StreamEvent::ReasoningDelta(text) => json!({ "type": "reasoning_delta", "text": text }),
-            provider::StreamEvent::ToolCall { id, name, arguments } => json!({
-                "type": "tool_call",
-                "id": id,
-                "name": name,
-                "arguments": arguments,
-            }),
-            provider::StreamEvent::ToolCallComplete { id, name, arguments } => json!({
-                "type": "tool_call_complete",
-                "id": id,
-                "name": name,
-                "arguments": arguments,
-            }),
-            provider::StreamEvent::Done { usage, stop_reason } => json!({
-                "type": "done",
-                "usage": usage,
-                "stop_reason": stop_reason,
-            }),
-        },
-        SessionEvent::ToolConsentRequired { tool_calls } => json!({
-            "type": "tool_consent_required",
-            "tool_calls": tool_calls,
-        }),
-        SessionEvent::ToolCallResult { id, result } => json!({
-            "type": "tool_call_result",
-            "id": id,
-            "result": result,
-        }),
-        SessionEvent::ToolCallError { id, error } => json!({
-            "type": "tool_call_error",
-            "id": id,
-            "error": error,
-        }),
-        SessionEvent::Interrupted => json!({ "type": "interrupted" }),
-        SessionEvent::StreamError { error } => json!({ "type": "stream_error", "error": error }),
-        SessionEvent::Closed => json!({ "type": "closed" }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::body::{Body, to_bytes};
-    use axum::http::{Request, header};
-    use tower::ServiceExt;
-
-    fn test_state() -> AppState {
-        AppState {
-            provider: provider_config::from_env_for_test(),
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            default_model: "test-model".to_string(),
+fn snapshot_response(record: &auger_core::SessionRecord) -> Response {
+    let mut trace = Vec::new();
+    let result = (|| {
+        let mut writer = TraceWriter::new(&mut trace, record.data())?;
+        for turn in record.turns() {
+            writer.write_turn(turn)?;
+            for event in turn.events() {
+                writer.write_event(turn.data().turn_id(), event)?;
+            }
+        }
+        Ok::<_, auger_core::TraceWriteError>(())
+    })();
+    match result {
+        Ok(()) => (
+            [(CONTENT_TYPE, "application/x-ndjson")],
+            String::from_utf8(trace).expect("serialized JSON is UTF-8"),
+        )
+            .into_response(),
+        Err(error) => {
+            tracing::error!(%error, "failed to serialize session snapshot");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "snapshot serialization failed",
+            )
+                .into_response()
         }
     }
+}
 
-    #[tokio::test]
-    async fn openapi_document_is_served() {
-        let response = router(test_state())
-            .oneshot(Request::get("/openapi.yaml").body(Body::empty()).unwrap())
+/// Get a stream of events for a session, including LLM responses and user
+/// events.
+#[tracing::instrument(skip(state), fields(session_id))]
+async fn event_stream(State(state): State<AppState>, Path(id): Path<SessionId>) -> Response {
+    info!("Opening event stream");
+    let event_tx = if let Some(events) = state
+        .sessions
+        .read()
+        .await
+        .get(&id)
+        .map(|entry| entry.events.clone())
+    {
+        Some(events)
+    } else {
+        state
+            .disk_sessions
+            .read()
             .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        assert!(std::str::from_utf8(&body).unwrap().contains("openapi: 3.1.0"));
-    }
-
-    #[tokio::test]
-    async fn create_snapshot_and_archive_session() {
-        let app = router(test_state());
-        let response = app
-            .clone()
-            .oneshot(
-                Request::post("/sessions")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
+            .get(&id)
+            .map(|entry| entry.events.clone())
+    };
+    let Some(event_tx) = event_tx else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let stream = BroadcastStream::new(event_tx.subscribe())
+        .scan(BlockTracker::default(), |tracker, result| {
+            let events = result.map(|event| tracker.translate(event)).unwrap_or_default();
+            futures::future::ready(Some(futures::stream::iter(events)))
+        })
+        .flatten()
+        .map(|event| {
+            Ok::<_, std::convert::Infallible>(
+                axum::response::sse::Event::default().data(event.to_string()),
             )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let id = created["session_id"].as_str().unwrap();
-        let read_token = created["tokens"]["read"].as_str().unwrap();
-        let write_token = created["tokens"]["write"].as_str().unwrap();
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::get(format!("/sessions/{id}/snapshot"))
-                    .header(header::AUTHORIZATION, format!("Bearer {read_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let snapshot: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(snapshot["messages"], json!([]));
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::post(format!("/sessions/{id}/interrupt"))
-                    .header(header::AUTHORIZATION, format!("Bearer {write_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::delete(format!("/sessions/{id}"))
-                    .header(header::AUTHORIZATION, format!("Bearer {write_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-
-        let response = app
-            .oneshot(Request::get("/sessions").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let sessions: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(sessions["sessions"][0]["archived"], true);
-    }
+        });
+    Sse::new(stream).into_response()
 }

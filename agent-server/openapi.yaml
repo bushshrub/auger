@@ -83,15 +83,21 @@ paths:
         "404": { description: Session not found }
   /sessions/{id}/snapshot:
     get:
-      summary: Get committed conversation history
+      summary: Get a session trace snapshot
       security: [{ bearerAuth: [] }]
       parameters: [{ $ref: "#/components/parameters/SessionId" }]
       responses:
         "200":
-          description: Conversation snapshot
+          description: >-
+            Session trace snapshot: the same ordered TraceRecord stream that is
+            persisted to trace.jsonl. A turn record carries the conversation
+            content; the tool events that occurred during an assistant turn
+            follow that turn.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/SnapshotResponse" }
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TraceRecord" }
         "401": { description: Invalid read token }
         "404": { description: Session not found }
   /sessions/{id}/events:
@@ -176,31 +182,155 @@ components:
           properties:
             read: { type: string, format: uuid }
             write: { type: string, format: uuid }
-    SnapshotResponse:
+    ModelInfo:
       type: object
-      required: [messages]
+      required: [provider, id]
       properties:
-        messages:
-          type: array
-          items: { $ref: "#/components/schemas/SnapshotMessage" }
-    SnapshotMessage:
+        provider: { type: string }
+        id: { type: string }
+    ToolData:
       oneOf:
         - type: object
           required: [type, text]
-          properties: { type: { const: user }, text: { type: string } }
-        - type: object
-          required: [type, content, tool_calls]
           properties:
-            type: { const: assistant }
-            reasoning: { type: [string, "null"] }
-            content: { type: string }
-            tool_calls: { type: array, items: { $ref: "#/components/schemas/ToolCall" } }
+            type: { const: text }
+            text: { type: string }
+    # Externally tagged, as serialized by auger-core: the payload of a tool
+    # call result on the event stream, e.g.
+    #   {"success": {"content": [{"text": {"text": "..."}}]}}
+    ToolOutcome:
+      oneOf:
+        - type: object
+          required: [success]
+          properties:
+            success:
+              type: object
+              required: [content]
+              properties:
+                content: { type: array, items: { $ref: "#/components/schemas/EventToolData" } }
+        - type: object
+          required: [error]
+          properties:
+            error:
+              type: object
+              required: [error]
+              properties:
+                error: { type: array, items: { $ref: "#/components/schemas/EventToolData" } }
+        - type: object
+          required: [denied]
+          properties:
+            denied:
+              type: object
+              properties:
+                reason: { type: [string, "null"] }
+        - const: interrupted
+    EventToolData:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: object
+          required: [text]
+          properties:
+            text: { type: string }
+    InputContent:
+      oneOf:
+        - type: object
+          required: [type, text]
+          properties:
+            type: { const: text }
+            text: { type: string }
         - type: object
           required: [type, tool_call_id, content]
           properties:
-            type: { const: tool }
+            type: { const: tool_result }
             tool_call_id: { type: string }
-            content: { type: string }
+            content: { type: array, items: { $ref: "#/components/schemas/ToolData" } }
+    AssistantContent:
+      oneOf:
+        - type: object
+          required: [type, text]
+          properties: { type: { const: reasoning }, text: { type: string } }
+        - type: object
+          required: [type, text]
+          properties: { type: { const: text }, text: { type: string } }
+        - type: object
+          required: [type, id, name, arguments]
+          properties:
+            type: { const: tool_call }
+            id: { type: string }
+            name: { type: string }
+            arguments: { type: string, description: JSON-encoded tool arguments }
+    TraceRecord:
+      description: >-
+        One record in the trace stream, discriminated by `kind`. Turns hold the
+        conversation; the tool events for an assistant turn follow that turn.
+      oneOf:
+        - type: object
+          required: [kind, version, session_id, root_turn_id, created_at, cwd, model]
+          properties:
+            kind: { const: session }
+            version: { type: integer }
+            session_id: { type: string, format: uuid }
+            root_turn_id: { type: string, format: uuid }
+            created_at: { type: string, format: date-time }
+            cwd: { type: string }
+            model: { $ref: "#/components/schemas/ModelInfo" }
+        - type: object
+          required: [kind, type, id, parent_turn_id, timestamp, content]
+          properties:
+            kind: { const: turn }
+            type: { const: input_message }
+            id: { type: string, format: uuid }
+            parent_turn_id: { type: [string, "null"], format: uuid }
+            timestamp: { type: string, format: date-time }
+            content: { type: array, items: { $ref: "#/components/schemas/InputContent" } }
+        - type: object
+          required: [kind, type, id, parent_turn_id, timestamp, status, content]
+          properties:
+            kind: { const: turn }
+            type: { const: assistant_message }
+            id: { type: string, format: uuid }
+            parent_turn_id: { type: [string, "null"], format: uuid }
+            timestamp: { type: string, format: date-time }
+            status: { type: string, enum: [completed, interrupted, failed] }
+            content: { type: array, items: { $ref: "#/components/schemas/AssistantContent" } }
+        - type: object
+          required: [kind, type, id, turn_id, parent_event_id, timestamp, tool_call_id, tool_name, arguments]
+          properties:
+            kind: { const: event }
+            type: { const: tool_call_requested }
+            id: { type: string, format: uuid }
+            turn_id: { type: string, format: uuid }
+            parent_event_id: { type: [string, "null"], format: uuid }
+            timestamp: { type: string, format: date-time }
+            tool_call_id: { type: string }
+            tool_name: { type: string }
+            arguments: { type: string, description: JSON-encoded tool arguments }
+        - type: object
+          required: [kind, type, id, turn_id, parent_event_id, timestamp, tool_call_id, decision, source, reason]
+          properties:
+            kind: { const: event }
+            type: { const: tool_authorization }
+            id: { type: string, format: uuid }
+            turn_id: { type: string, format: uuid }
+            parent_event_id: { type: [string, "null"], format: uuid }
+            timestamp: { type: string, format: date-time }
+            tool_call_id: { type: string }
+            decision: { type: string, enum: [approved, denied] }
+            source: { type: string, enum: [user, policy] }
+            reason: { type: [string, "null"] }
+        - type: object
+          required: [kind, type, id, turn_id, parent_event_id, timestamp, tool_call_id, content]
+          properties:
+            kind: { const: event }
+            type: { const: tool_call_result }
+            id: { type: string, format: uuid }
+            turn_id: { type: string, format: uuid }
+            parent_event_id: { type: [string, "null"], format: uuid }
+            timestamp: { type: string, format: date-time }
+            tool_call_id: { type: string }
+            content: { type: array, items: { $ref: "#/components/schemas/ToolData" } }
     SessionEvent:
       oneOf:
         - type: object
@@ -223,7 +353,12 @@ components:
           properties:
             type: { const: tool_call_result }
             id: { type: string }
-            result: { type: string }
+            result:
+              type: object
+              required: [tool_call_id, outcome]
+              properties:
+                tool_call_id: { type: string }
+                outcome: { $ref: "#/components/schemas/ToolOutcome" }
         - type: object
           required: [type, id, error]
           properties:

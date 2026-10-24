@@ -2,11 +2,18 @@ mod request;
 mod response;
 mod tool;
 
+use getset::Getters;
 pub use request::*;
 pub use response::*;
+use serde::{de, Deserialize, Deserializer};
+use serde::Serialize;
 pub use tool::*;
 
-#[derive(Debug, Clone)]
+/// Sink for events emitted during an LLM stream.
+pub type EventSink<'a> = &'a mut (dyn FnMut(StreamEvent) + Send + 'a);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Message {
     /// The system prompt
     System(String),
@@ -20,20 +27,53 @@ pub enum Message {
         tool_call_results: Vec<ToolResult>,
     }, // TODO: in the future we will need to support images
     /// A message from the model.
-    Assistant {
-        reasoning: Option<String>,
-        content: String,
-        tool_calls: Vec<ToolCallRequest>,
-    },
+    Assistant { response: AssistantResponse },
 }
 
-impl From<LlmResponse> for Message {
-    fn from(response: LlmResponse) -> Self {
-        let tool_calls = response.tool_calls.unwrap_or_default();
-        Message::Assistant {
-            reasoning: None,
-            content: response.content,
-            tool_calls,
+/// auger's wire type for responses from the Assistant
+#[derive(Debug, Clone, Serialize, Getters)]
+pub struct AssistantResponse {
+    #[get = "pub"]
+    blocks: Vec<Block>
+}
+
+impl AssistantResponse {
+    pub fn new(blocks: Vec<Block>) -> Option<Self> {
+        if blocks.is_empty() {
+            None
+        } else {
+            Some(Self { blocks })
         }
+    }
+    pub fn tool_calls(&self) -> Vec<ToolCallRequest> {
+        self.blocks.iter().filter_map(|b| match b {
+            Block::ToolCall(tc) => Some(tc.clone()),
+            _ => None,
+        }).collect()
+    }
+
+    pub fn from_interrupted(blocks: Vec<Block>) -> Option<Self> {
+        let blocks: Vec<Block> = blocks
+            .into_iter()
+            .filter(|b| !matches!(b, Block::ToolCall(_)))
+            .collect();
+        // Reasoning alone isn't worth sealing.
+        if blocks.iter().all(|b| matches!(b, Block::Reasoning { .. })) {
+            return None;
+        }
+        Self::new(blocks)
+    }
+}
+
+impl<'de> Deserialize<'de> for AssistantResponse {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let blocks = Vec::<Block>::deserialize(d)?;
+        Self::new(blocks).ok_or_else(|| de::Error::custom("assistant response must be non-empty"))
+    }
+}
+
+impl From<AssistantResponse> for Message {
+    fn from(response: AssistantResponse) -> Self {
+        Self::Assistant { response }
     }
 }

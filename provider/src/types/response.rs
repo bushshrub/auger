@@ -1,13 +1,13 @@
-use crate::Message;
+use std::collections::BTreeMap;
+use crate::AssistantResponse;
 use crate::types::ToolCallRequest;
-use futures_core::Stream;
-use serde::{Deserialize, Serialize};
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use serde::Deserialize;
+use serde::Serialize;
+use std::time::Duration;
 use thiserror::Error;
 
 /// Token usage details
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TokenUsage {
     pub prompt_tokens: Option<i32>,
     pub completion_tokens: Option<i32>,
@@ -17,65 +17,58 @@ pub struct TokenUsage {
 }
 
 /// Events that can be emitted while streaming a response from the clanker.
-#[derive(Debug, Clone)]
+///
+/// Some clankers are more advanced and can interleave reasoning and yap.
+/// Example:
+/// <some reasoning>
+/// <text yap>
+/// <more reasoning>
+/// <text yap>
+/// <call a tool>
+/// <text yap>
+/// <call another tool>
+/// etc. etc.
+///
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StreamEvent {
-    TextDelta(String),
-    /// Thinking output from clanker
-    ReasoningDelta(String),
-    /// Tool call delta from clanker.
-    ToolCall {
-        id: String,
-        name: String,
-        /// Incomplete arguments
-        arguments: String,
-    },
-    ToolCallComplete {
-        id: String,
-        name: String,
-        /// Complete arguments
-        arguments: String,
-    },
-    /// Clanker is done clanking.
-    Done {
-        usage: Option<TokenUsage>,
-        stop_reason: Option<String>,
-    },
+    BlockStart { index: usize, kind: BlockKind },
+    BlockDelta { index: usize, delta: String },
+    BlockEnd { index: usize },
+    Usage(TokenUsage),
 }
 
-pub struct ClankerMessage {
-    reasoning: Option<String>,
-    pub(crate) tool_calls: Vec<ToolCallRequest>,
-    content: String,
+/// The type of block being emitted
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockKind {
+    Reasoning,
+    Text,
+    ToolCall { id: String, name: String },
 }
 
-impl From<LlmResponse> for ClankerMessage {
-    fn from(response: LlmResponse) -> Self {
-        Self {
-            reasoning: response.reasoning,
-            tool_calls: response.tool_calls.unwrap_or_default(),
-            content: response.content,
-        }
-    }
+/// The LLM stream has successfully returned
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamEnd {
+    pub usage: Option<TokenUsage>,
+    pub stop_reason: Option<String>,
 }
 
-impl From<ClankerMessage> for Message {
-    fn from(msg: ClankerMessage) -> Self {
-        Message::Assistant {
-            reasoning: msg.reasoning,
-            tool_calls: msg.tool_calls,
-            content: msg.content,
-        }
-    }
+/// A block of response from the clanker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Block {
+    Text (String),
+    Reasoning {
+        text: String,
+    },
+    ToolCall(ToolCallRequest)
 }
 
 #[derive(Debug, Clone)]
-pub struct LlmResponse {
-    pub content: String,
-    /// Optional reasoning output, if the model supports reasoning.
-    pub reasoning: Option<String>,
-    /// Tool calls requested by the model.
-    /// These are not guaranteed to be complete or valid.
-    pub tool_calls: Option<Vec<ToolCallRequest>>,
+pub struct CompletedLlmResponse {
+    /// The final response from the clanker.
+    pub response: AssistantResponse,
     /// Token usage details after this response is complete.
     /// May be None if the provider doesn't expose token usage details
     pub usage: Option<TokenUsage>,
@@ -83,59 +76,74 @@ pub struct LlmResponse {
     pub stop_reason: Option<String>,
 }
 
-/// Convert a stream of events into a single LlmResponse.
-impl From<Vec<StreamEvent>> for LlmResponse {
-    fn from(events: Vec<StreamEvent>) -> Self {
-        let mut content = String::new();
-        let mut reasoning = None;
-        let mut tool_calls = Vec::new();
-        let mut usage = None;
-        let mut stop_reason = None;
+/// Fold stream events into blocks, in index order, plus any reported usage.
+/// Truncated blocks just come out shorter; the caller decides what that means.
+pub fn fold_events(events: &[StreamEvent]) -> (Vec<Block>, Option<TokenUsage>) {
+    let mut open: BTreeMap<usize, (BlockKind, String)> = BTreeMap::new();
+    let mut usage: Option<TokenUsage> = None;
 
-        for event in events {
-            match event {
-                StreamEvent::TextDelta(delta) => content.push_str(&delta),
-                StreamEvent::ReasoningDelta(delta) => {
-                    reasoning.get_or_insert(String::new()).push_str(&delta)
-                }
-                // discard tool call deltas.
-                StreamEvent::ToolCall { .. } => {}
-                StreamEvent::ToolCallComplete {
-                    id,
-                    name,
-                    arguments,
-                } => tool_calls.push(ToolCallRequest {
-                    id,
-                    name,
-                    arguments,
-                }),
-                StreamEvent::Done {
-                    usage: u,
-                    stop_reason: sr,
-                } => {
-                    usage = u;
-                    stop_reason = sr;
+    for event in events {
+        match event {
+            StreamEvent::BlockStart { index, kind } => {
+                open.insert(*index, (kind.clone(), String::new()));
+            }
+            StreamEvent::BlockDelta { index, delta } => {
+                if let Some((_, text)) = open.get_mut(index) {
+                    text.push_str(delta);
                 }
             }
-        }
-
-        Self {
-            content,
-            reasoning,
-            tool_calls: if tool_calls.is_empty() {
-                None
-            } else {
-                Some(tool_calls)
-            },
-            usage,
-            stop_reason,
+            StreamEvent::BlockEnd { .. } => {}
+            StreamEvent::Usage(reported) => {
+                // Usage arrives in pieces, so merge per field rather than replacing.
+                let acc = usage.get_or_insert_with(TokenUsage::default);
+                acc.prompt_tokens = reported.prompt_tokens.or(acc.prompt_tokens);
+                acc.completion_tokens = reported.completion_tokens.or(acc.completion_tokens);
+                acc.total_tokens = reported.total_tokens.or(acc.total_tokens);
+                acc.cached_tokens = reported.cached_tokens.or(acc.cached_tokens);
+                acc.cache_creation_tokens =
+                    reported.cache_creation_tokens.or(acc.cache_creation_tokens);
+            }
         }
     }
+
+    let blocks = open
+        .into_values()
+        .filter_map(|(kind, text)| match kind {
+            BlockKind::Text => (!text.is_empty()).then_some(Block::Text(text)),
+            BlockKind::Reasoning => (!text.is_empty()).then_some(Block::Reasoning { text }),
+            BlockKind::ToolCall { id, name } => Some(Block::ToolCall(ToolCallRequest {
+                id,
+                name,
+                arguments: text,
+            })),
+        })
+        .collect();
+
+    (blocks, usage)
 }
 
-#[derive(Error, Debug, Clone)]
+/// The kind of LLM error received.
+/// There are 2 kinds really, one in which we can just retry the request unchanged
+/// and one in which we cannot.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmErrorKind {
+    /// Resending the request unchanged may work
+    Transient { retry_after: Option<Duration> },
+    /// Resending the request unchanged will not work
+    Fatal
+}
+
+#[derive(Error, Serialize, Deserialize, Debug, Clone)]
 pub struct LlmError {
+    /// What kind of error it is.
+    pub kind: LlmErrorKind,
+    /// The error message
     pub message: String,
+    /// HTTP status code, if any
+    pub status: Option<u16>,
+    /// Request ID if any
+    pub request_id: Option<String>
 }
 
 impl std::fmt::Display for LlmError {
@@ -144,33 +152,30 @@ impl std::fmt::Display for LlmError {
     }
 }
 
-/// Stream of events from the LLM. You can either get StreamEvents, or Errors.
-pub struct LlmStream {
-    inner: Option<Pin<Box<dyn Stream<Item = Result<StreamEvent, LlmError>> + Send>>>,
-}
+#[cfg(test)]
+mod tests {
+    use super::{Block, BlockKind, StreamEvent};
+    use serde_json::json;
 
-impl LlmStream {
-    pub fn new(stream: impl Stream<Item = Result<StreamEvent, LlmError>> + Send + 'static) -> Self {
-        Self {
-            inner: Some(Box::pin(stream)),
-        }
+    #[test]
+    fn serializes_enum_tags_as_snake_case() {
+        assert_eq!(
+            serde_json::to_value(Block::Reasoning { text: "why".to_string() }).unwrap(),
+            json!({"reasoning": {"text": "why"}}),
+        );
+        assert_eq!(
+            serde_json::to_value(StreamEvent::BlockStart {
+                index: 0,
+                kind: BlockKind::ToolCall {
+                    id: "call_1".to_string(),
+                    name: "read".to_string(),
+                },
+            })
+            .unwrap(),
+            json!({"block_start": {
+                "index": 0,
+                "kind": {"tool_call": {"id": "call_1", "name": "read"}},
+            }}),
+        );
     }
-
-    /// Abort the stream and release the provider's underlying stream.
-    pub fn abort(&mut self) {
-        self.inner = None;
-    }
 }
-
-impl Stream for LlmStream {
-    type Item = Result<StreamEvent, LlmError>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.inner.as_mut() {
-            Some(stream) => stream.as_mut().poll_next(cx),
-            None => Poll::Ready(None),
-        }
-    }
-}
-
-impl Unpin for LlmStream {}

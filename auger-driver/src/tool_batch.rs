@@ -1,142 +1,87 @@
-use std::collections::{HashMap, HashSet};
+use provider::ToolCallRequest;
+use provider::ToolResult;
+use serde::Deserialize;
+use serde::Serialize;
 use std::marker::PhantomData;
 
-use either::Either;
-use provider::{ToolCallRequest, ToolResult};
-use thiserror::Error;
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub struct ToolCallId(String);
 
-pub type ToolCallId = String;
+impl From<String> for ToolCallId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
 
-#[derive(Error, Debug)]
-pub enum AddToolResponseIssue {
-    #[error("The tool with id '{0}' was not requested by the LLM")]
-    NotRequested(String),
-    #[error("The tool with id '{0}' already has a result in this batch")]
-    AlreadyProvided(String),
-    #[error("Missing results for tool calls: {0:?}")]
-    Incomplete(Vec<String>),
+impl From<ToolCallId> for String {
+    fn from(value: ToolCallId) -> Self {
+        value.0
+    }
 }
 
 /// The state of a tool batch.
 pub trait ToolBatchState {}
 
-pub struct Resolving;
+/// Calls the model requested. No results yet.
+#[derive(Debug)]
+pub struct Unresolved;
+
+/// Every call has exactly one result.
+#[derive(Debug)]
 pub struct Resolved;
 
-impl ToolBatchState for Resolving {}
+impl ToolBatchState for Unresolved {}
 impl ToolBatchState for Resolved {}
 
 /// Tool calls requested by the model and their results.
+#[derive(Debug)]
 pub struct ToolBatch<S: ToolBatchState> {
-    pending_calls: HashMap<ToolCallId, ToolCallRequest>,
-    results: HashMap<ToolCallId, ToolResult>,
+    calls: Vec<ToolCallRequest>,
+    results: Vec<ToolResult>,
     _state: PhantomData<S>,
 }
 
-impl ToolBatch<Resolving> {
-    pub(crate) fn new(tool_calls: Vec<ToolCallRequest>) -> Self {
-        let pending_calls = tool_calls
-            .into_iter()
-            .map(|call| (call.id.clone(), call))
-            .collect();
-
+impl ToolBatch<Unresolved> {
+    pub(crate) fn new(calls: Vec<ToolCallRequest>) -> Self {
         Self {
-            pending_calls,
-            results: HashMap::new(),
+            calls,
+            results: Vec::new(),
             _state: PhantomData,
         }
     }
 
-    /// The calls still awaiting a result.
-    pub fn requested(&self) -> impl Iterator<Item = &ToolCallRequest> {
-        self.pending_calls.values()
+    pub fn calls(&self) -> &[ToolCallRequest] {
+        &self.calls
     }
 
-    /// Add a result for one requested call.
-    pub fn add_result(
-        mut self,
-        call_id: impl Into<ToolCallId>,
-        result: ToolResult,
-    ) -> Result<Either<Self, ToolBatch<Resolved>>, AddToolResponseIssue> {
-        let call_id = call_id.into();
-
-        if self.results.contains_key(&call_id) {
-            return Err(AddToolResponseIssue::AlreadyProvided(call_id));
-        }
-
-        self.pending_calls
-            .remove(&call_id)
-            .ok_or_else(|| AddToolResponseIssue::NotRequested(call_id.clone()))?;
-
-        self.results.insert(call_id, result);
-
-        if self.pending_calls.is_empty() {
-            Ok(Either::Right(ToolBatch {
-                pending_calls: self.pending_calls,
-                results: self.results,
-                _state: PhantomData,
-            }))
-        } else {
-            Ok(Either::Left(self))
-        }
-    }
-
-    /// Resolve every requested tool call into a completed batch.
-    pub fn resolve_all(
+    /// Resolve the tool batch by providing a function that returns the result for each tool call.
+    ///
+    /// ```
+    /// use auger_driver::{TypedAgent, WaitingForToolResponses};
+    /// use std::collections::HashMap;
+    ///
+    /// fn submit(agent: TypedAgent<WaitingForToolResponses>, mut outputs: HashMap<String, String>) {
+    ///     let batch = agent
+    ///         .get_batch()
+    ///         .resolve(|call| outputs.remove(&call.id).unwrap_or_default());
+    ///     let _ready = agent.add_all_tool_responses(batch);
+    /// }
+    /// ```
+    pub fn resolve(
         self,
-        results: impl IntoIterator<Item = ToolResult>,
-    ) -> Result<ToolBatch<Resolved>, AddToolResponseIssue> {
-        let results = results.into_iter().collect::<Vec<_>>();
-        let mut seen = HashSet::new();
-        for result in &results {
-            let id = result.id();
-            if !self.pending_calls.contains_key(id) {
-                return Err(AddToolResponseIssue::NotRequested(id.to_string()));
-            }
-            if !seen.insert(id.to_string()) {
-                return Err(AddToolResponseIssue::AlreadyProvided(id.to_string()));
-            }
-        }
-
-        if seen.len() != self.pending_calls.len() {
-            return Err(AddToolResponseIssue::Incomplete(
-                self.pending_calls
-                    .keys()
-                    .filter(|id| !seen.contains(*id))
-                    .cloned()
-                    .collect(),
-            ));
-        }
-
-        let mut batch = self;
-
-        for result in results {
-            batch = match batch.add_result(result.id().to_string(), result)? {
-                Either::Left(batch) => batch,
-                Either::Right(batch) => return Ok(batch),
-            };
-        }
-
-        Err(AddToolResponseIssue::Incomplete(
-            batch.pending_calls.into_keys().collect(),
-        ))
-    }
-
-    /// Mark all unresolved calls as interrupted without executing them.
-    pub fn interrupt_remaining(mut self) -> ToolBatch<Resolved> {
-        for call_id in self.pending_calls.keys() {
-            self.results.insert(
-                call_id.clone(),
-                ToolResult::new(
-                    call_id.clone(),
-                    "Tool call interrupted before execution".to_string(),
-                ),
-            );
-        }
-
+        mut answer: impl FnMut(&ToolCallRequest) -> String,
+    ) -> ToolBatch<Resolved> {
+        let results = self
+            .calls
+            .iter()
+            .map(|call| ToolResult {
+                tool_call_id: call.id.clone(),
+                content: answer(call),
+            })
+            .collect();
         ToolBatch {
-            pending_calls: HashMap::new(),
-            results: self.results,
+            calls: self.calls,
+            results,
             _state: PhantomData,
         }
     }
@@ -144,7 +89,7 @@ impl ToolBatch<Resolving> {
 
 impl ToolBatch<Resolved> {
     /// Consume the completed batch and return provider tool results.
-    pub fn drain(self) -> Vec<ToolResult> {
-        self.results.into_values().collect()
+    pub(crate) fn into_results(self) -> Vec<ToolResult> {
+        self.results
     }
 }

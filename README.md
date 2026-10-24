@@ -49,7 +49,7 @@ Some LLM generated code may still live around for prototyping.
 This list tracks what is currently "artisanal" and what isn't/
 
 
-- [x] agent-core (Main agentic loop and harness)
+- [x] auger-core (Main agentic loop and harness)
 - [x] auger-driver (Minimal agent state machine)
 - [x] provider (Provider abstraction)
 - [ ] agent webserver

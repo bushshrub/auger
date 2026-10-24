@@ -4,18 +4,15 @@ stateDiagram-v2
     state "LLM streaming" as Streaming
     state "Waiting for tool responses" as Tools
     state "Stream interrupted" as Interrupted
-    state "Stream error" as Error
 
     [*] --> Waiting
 
     Waiting --> Ready: User message
     Tools --> Ready: Tool results
-    Interrupted --> Ready: User message
-    Error --> Ready: User message
+    Interrupted --> Ready: User message/Retry
 
     Ready --> Streaming: Run stream
 
     Streaming --> Waiting: Complete
     Streaming --> Tools: Tool calls
-    Streaming --> Interrupted: Interrupted
-    Streaming --> Error: Failed
+    Streaming --> Interrupted: Interrupted by user/error during streaming

@@ -1,17 +1,17 @@
-use crate::types::{Message, ToolDefinition};
+use getset::Getters;
+use crate::types::Message;
+use crate::types::ToolDefinition;
+use serde::Deserialize;
+use serde::Serialize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserPrompt {
-    message: String,
+    pub message: String,
 }
 
 impl UserPrompt {
-    pub fn new(message: String) -> Self {
-        Self { message }
-    }
-
-    pub fn message(&self) -> &str {
-        &self.message
+    pub fn new(message: String) -> UserPrompt {
+        UserPrompt { message }
     }
 }
 
@@ -25,38 +25,32 @@ impl From<UserPrompt> for Message {
 }
 
 /// A result from a tool call which can be sent back to the model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ToolResult {
     /// The ID of the tool call that this is a result for
-    tool_call_id: String,
+    pub tool_call_id: String,
     /// The output of the tool call.
-    content: String,
+    pub content: String,
 }
 
 impl ToolResult {
-    pub fn new(tool_call_id: String, content: String) -> Self {
-        Self {
+    pub fn new(tool_call_id: String, content: String) -> ToolResult {
+        ToolResult {
             tool_call_id,
             content,
         }
-    }
-
-    pub fn id(&self) -> &str {
-        &self.tool_call_id
-    }
-
-    pub fn content(&self) -> &str {
-        &self.content
     }
 }
 
 /// A request to get a response from the clanker
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Getters)]
+#[get = "pub"]
 pub struct LlmRequest {
     /// Full conversation history and the new message the user asks
     ///
-    /// Provider implementations should perform caching/state management as needed.
+    /// Provider implementations should perform caching/state management as
+    /// needed.
     messages: Vec<Message>,
     /// Tools that are available for the clanker to call.
     // TODO: add option to enforce tool use somehow.
@@ -68,11 +62,4 @@ impl LlmRequest {
         Self { messages, tools }
     }
 
-    pub fn messages(&self) -> &[Message] {
-        &self.messages
-    }
-
-    pub fn tools(&self) -> &[ToolDefinition] {
-        &self.tools
-    }
 }
